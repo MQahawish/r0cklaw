@@ -160,6 +160,10 @@ export const tickAgent = internalAction({
     const action = extractAction(rawResponse);
     if (!action) {
       console.error(`[bridge] Could not parse action from ${agentName}'s response:\n${rawResponse}`);
+      await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
+        agentName,
+        note: 'SYSTEM: Your last response could not be parsed as valid JSON. You MUST respond with a valid JSON action block. No prose outside the JSON.',
+      });
       if (!_manual) {
         await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridge.tickAgent, { agentName });
       }
@@ -169,6 +173,10 @@ export const tickAgent = internalAction({
     // 7. Validate
     if (!validateAction(action)) {
       console.error(`[bridge] Invalid action from ${agentName}:`, action);
+      await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
+        agentName,
+        note: `SYSTEM: Your last action JSON was structurally invalid (missing required fields or unknown action type). Valid action types: move, work, buy, sell, trade, sleep, rest, eat, talk, give, steal, pray, eavesdrop, leave_message, idle.`,
+      });
       if (!_manual) {
         await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridge.tickAgent, { agentName });
       }
@@ -391,6 +399,17 @@ async function readSystemFloat(ctx: any, systemName: string, key: string, defaul
   const v = parseFloat(row.value);
   return isNaN(v) ? defaultVal : v;
 }
+
+export const setAgentPendingNote = internalMutation({
+  args: { agentName: v.string(), note: v.string() },
+  handler: async (ctx, { agentName, note }) => {
+    const agent = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q) => q.eq('name', agentName))
+      .unique();
+    if (agent) await ctx.db.patch(agent._id, { pendingNote: note });
+  },
+});
 
 export const commitAction = internalMutation({
   args: {
