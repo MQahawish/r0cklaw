@@ -3,7 +3,8 @@
  * Called after any inventory-changing action.
  */
 
-import { internalMutation } from '../_generated/server';
+import { internalMutation, internalQuery } from '../_generated/server';
+import { internal } from '../_generated/api';
 
 // Base prices and village-wide supply thresholds
 const ITEM_CONFIG: Record<string, { basePrice: number; criticalSupply: number; moderateSupply: number }> = {
@@ -54,6 +55,8 @@ export const recalculate = internalMutation({
         .withIndex('item', (q) => q.eq('item', item))
         .unique();
 
+      const priceChanged = !existing || existing.price !== newPrice || existing.shortageLevel !== shortageLevel;
+
       if (existing) {
         await ctx.db.patch(existing._id, { price: newPrice, changePct, shortageLevel, lastUpdated: now });
       } else {
@@ -64,6 +67,18 @@ export const recalculate = internalMutation({
           changePct,
           shortageLevel,
           lastUpdated: now,
+        });
+      }
+
+      // Snapshot to price history only when something actually changed
+      if (priceChanged) {
+        const worldState = await ctx.db.query('rl_world_state').unique();
+        await ctx.db.insert('rl_price_history', {
+          tick: worldState?.tick ?? 0,
+          day: worldState?.day ?? 0,
+          item,
+          price: newPrice,
+          shortageLevel,
         });
       }
     }

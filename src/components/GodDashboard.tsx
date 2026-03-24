@@ -1,14 +1,11 @@
 /**
- * God Mode Dashboard -- Phase 5
+ * God Mode Dashboard -- Phase 5 / Phase 7
  *
- * Full visibility and control panel for the simulation:
- *   - World state header (day, tick, tension, running status)
- *   - Agent grid (energy/health/hunger bars, location, coin)
- *   - World log (recent actions feed)
- *   - Active events + resolve
- *   - Event injection (AI suggestions + custom input)
- *   - Economy panel (prices, shortages)
- *   - Prayers feed (private, god-only)
+ * Tabs:
+ *   Overview   -- agents, events, world log, injection, economy summary
+ *   Inspector  -- click agent → browse live workspace files
+ *   Relations  -- SVG interaction graph
+ *   Economy    -- price history sparklines, shortage tracker, trade log
  */
 
 import { useState } from 'react';
@@ -16,6 +13,9 @@ import { useQuery, useMutation, useAction } from 'convex/react';
 import { api } from '../../convex/_generated/api';
 import type { Id } from '../../convex/_generated/dataModel';
 import type { EventSuggestion } from '../../convex/rocklaw/god';
+import AgentInspector from './AgentInspector';
+import RelationshipGraph from './RelationshipGraph';
+import EconomyPanel from './EconomyPanel';
 
 // ── Tension bar colour ────────────────────────────────────────────────────────
 
@@ -168,6 +168,15 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 
 // ── Main dashboard ────────────────────────────────────────────────────────────
 
+type Tab = 'overview' | 'inspector' | 'relations' | 'economy';
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'overview',  label: 'Overview'  },
+  { id: 'inspector', label: 'Inspector' },
+  { id: 'relations', label: 'Relations' },
+  { id: 'economy',   label: 'Economy'   },
+];
+
 export default function GodDashboard({ onClose }: { onClose: () => void }) {
   const dashboard = useQuery(api.rocklaw.god.getDashboard);
   const injectEvent = useMutation(api.rocklaw.god.injectEvent);
@@ -176,6 +185,7 @@ export default function GodDashboard({ onClose }: { onClose: () => void }) {
   const stopSim = useMutation(api.rocklaw.god.stopSim);
   const suggestEventsAction = useAction(api.rocklaw.god.suggestEvents);
 
+  const [activeTab, setActiveTab] = useState<Tab>('overview');
   const [customType, setCustomType] = useState('');
   const [customDesc, setCustomDesc] = useState('');
   const [customSeverity, setCustomSeverity] = useState<'low' | 'medium' | 'high'>('medium');
@@ -258,8 +268,42 @@ export default function GodDashboard({ onClose }: { onClose: () => void }) {
           </div>
         </div>
 
-        {/* ── Main grid ── */}
-        <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr 1fr', gap: 16, minHeight: 0 }}>
+        {/* ── Tabs ── */}
+        <div style={{ display: 'flex', gap: 2, marginBottom: 16, borderBottom: '1px solid #1f2937', paddingBottom: 0 }}>
+          {TABS.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              style={{
+                padding: '6px 16px',
+                fontSize: 12,
+                fontWeight: activeTab === tab.id ? 700 : 400,
+                cursor: 'pointer',
+                background: 'transparent',
+                border: 'none',
+                borderBottom: activeTab === tab.id ? '2px solid #818cf8' : '2px solid transparent',
+                color: activeTab === tab.id ? '#e0e7ff' : '#6b7280',
+                fontFamily: 'inherit',
+                letterSpacing: '0.04em',
+                marginBottom: -1,
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* ── Tab: Inspector ── */}
+        {activeTab === 'inspector' && <AgentInspector />}
+
+        {/* ── Tab: Relations ── */}
+        {activeTab === 'relations' && <RelationshipGraph />}
+
+        {/* ── Tab: Economy ── */}
+        {activeTab === 'economy' && <EconomyPanel />}
+
+        {/* ── Tab: Overview (main grid) ── */}
+        {activeTab === 'overview' && <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr 1fr', gap: 16, minHeight: 0 }}>
 
           {/* ── Column 1: Agents ── */}
           <div style={{ overflowY: 'auto', maxHeight: 540 }}>
@@ -423,7 +467,7 @@ export default function GodDashboard({ onClose }: { onClose: () => void }) {
               </div>
             )}
           </div>
-        </div>
+        </div>}
       </div>
     </div>
   );

@@ -123,6 +123,22 @@ export const rocklawTables = {
     isRunning: v.boolean(),
   }),
 
+  // Price snapshots per tick — for history charts and trend analysis.
+  // Inserted by priceEngine only when a price actually changes.
+  rl_price_history: defineTable({
+    tick: v.number(),
+    day: v.number(),
+    item: v.string(),
+    price: v.number(),
+    shortageLevel: v.union(
+      v.literal('none'),
+      v.literal('moderate'),
+      v.literal('critical'),
+    ),
+  })
+    .index('item_tick', ['item', 'tick'])
+    .index('tick', ['tick']),
+
   // Systems layer state (for future experiment configs).
   rl_systems_state: defineTable({
     systemName: v.string(),
