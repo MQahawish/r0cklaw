@@ -1,11 +1,12 @@
 /**
- * God Mode Dashboard -- Phase 5 / Phase 7
+ * God Mode Dashboard -- Phase 5 / Phase 7 / Phase 8
  *
  * Tabs:
  *   Overview   -- agents, events, world log, injection, economy summary
  *   Inspector  -- click agent → browse live workspace files
  *   Relations  -- SVG interaction graph
  *   Economy    -- price history sparklines, shortage tracker, trade log
+ *   Systems    -- live knob configuration, scenario presets
  */
 
 import { useState } from 'react';
@@ -16,6 +17,7 @@ import type { EventSuggestion } from '../../convex/rocklaw/god';
 import AgentInspector from './AgentInspector';
 import RelationshipGraph from './RelationshipGraph';
 import EconomyPanel from './EconomyPanel';
+import SystemsPanel from './SystemsPanel';
 
 // ── Tension bar colour ────────────────────────────────────────────────────────
 
@@ -168,13 +170,14 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 
 // ── Main dashboard ────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'inspector' | 'relations' | 'economy';
+type Tab = 'overview' | 'inspector' | 'relations' | 'economy' | 'systems';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview',  label: 'Overview'  },
   { id: 'inspector', label: 'Inspector' },
   { id: 'relations', label: 'Relations' },
   { id: 'economy',   label: 'Economy'   },
+  { id: 'systems',   label: 'Systems'   },
 ];
 
 export default function GodDashboard({ onClose }: { onClose: () => void }) {
@@ -301,6 +304,9 @@ export default function GodDashboard({ onClose }: { onClose: () => void }) {
 
         {/* ── Tab: Economy ── */}
         {activeTab === 'economy' && <EconomyPanel />}
+
+        {/* ── Tab: Systems ── */}
+        {activeTab === 'systems' && <SystemsPanel />}
 
         {/* ── Tab: Overview (main grid) ── */}
         {activeTab === 'overview' && <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr 1fr', gap: 16, minHeight: 0 }}>

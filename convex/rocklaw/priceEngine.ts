@@ -3,8 +3,7 @@
  * Called after any inventory-changing action.
  */
 
-import { internalMutation, internalQuery } from '../_generated/server';
-import { internal } from '../_generated/api';
+import { internalMutation } from '../_generated/server';
 
 // Base prices and village-wide supply thresholds
 const ITEM_CONFIG: Record<string, { basePrice: number; criticalSupply: number; moderateSupply: number }> = {
@@ -20,11 +19,25 @@ const ITEM_CONFIG: Record<string, { basePrice: number; criticalSupply: number; m
   herbs:     { basePrice: 6,  criticalSupply: 3,  moderateSupply: 12 },
 };
 
+async function readSysFloat(ctx: any, systemName: string, key: string, def: number) {
+  const row = await ctx.db
+    .query('rl_systems_state')
+    .withIndex('system', (q: any) => q.eq('systemName', systemName).eq('key', key))
+    .unique();
+  if (!row) return def;
+  const v = parseFloat(row.value);
+  return isNaN(v) ? def : v;
+}
+
 export const recalculate = internalMutation({
   args: {},
   handler: async (ctx) => {
     const agents = await ctx.db.query('rl_agents').collect();
     const now = Date.now();
+
+    // Live system knobs
+    const scarcityMultiplier = await readSysFloat(ctx, 'economy', 'scarcity_multiplier', 1.0);
+    const basePriceMultiplier = await readSysFloat(ctx, 'economy', 'base_price_multiplier', 1.0);
 
     for (const [item, config] of Object.entries(ITEM_CONFIG)) {
       // Total supply = sum across all agent inventories
@@ -38,16 +51,17 @@ export const recalculate = internalMutation({
       let shortageLevel: 'none' | 'moderate' | 'critical' = 'none';
 
       if (totalSupply <= config.criticalSupply) {
-        multiplier = 2.0 + (config.criticalSupply - totalSupply) * 0.1;
+        multiplier = (2.0 + (config.criticalSupply - totalSupply) * 0.1) * scarcityMultiplier;
         shortageLevel = 'critical';
       } else if (totalSupply <= config.moderateSupply) {
         const ratio = (totalSupply - config.criticalSupply) / (config.moderateSupply - config.criticalSupply);
-        multiplier = 1.0 + (1.0 - ratio) * 1.0;
+        multiplier = (1.0 + (1.0 - ratio) * 1.0) * scarcityMultiplier;
         shortageLevel = 'moderate';
       }
 
-      const newPrice = Math.round(config.basePrice * multiplier);
-      const changePct = ((newPrice - config.basePrice) / config.basePrice) * 100;
+      const effectiveBasePrice = Math.round(config.basePrice * basePriceMultiplier);
+      const newPrice = Math.round(effectiveBasePrice * multiplier);
+      const changePct = ((newPrice - effectiveBasePrice) / effectiveBasePrice) * 100;
 
       // Upsert
       const existing = await ctx.db
@@ -63,7 +77,7 @@ export const recalculate = internalMutation({
         await ctx.db.insert('rl_market_prices', {
           item,
           price: newPrice,
-          basePrice: config.basePrice,
+          basePrice: effectiveBasePrice,
           changePct,
           shortageLevel,
           lastUpdated: now,

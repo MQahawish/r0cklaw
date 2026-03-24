@@ -373,11 +373,19 @@ const HIGH_EFFORT_ACTIONS = new Set([
   'patrol', 'train', 'gather', 'brew', 'treat',
 ]);
 
-// Minimum energy required to attempt a high-effort action.
-const MIN_ENERGY_FOR_HARD_WORK = 15;
+// These fall back to the hardcoded defaults below if rl_systems_state has no override.
+const DEFAULT_MIN_ENERGY_FOR_HARD_WORK = 15;
+const DEFAULT_HEALTH_DRAIN_PER_ZERO_ENERGY_TICK = 10;
 
-// Health lost per tick when energy is at zero (sustained exhaustion).
-const HEALTH_DRAIN_PER_ZERO_ENERGY_TICK = 10;
+async function readSystemFloat(ctx: any, systemName: string, key: string, defaultVal: number) {
+  const row = await ctx.db
+    .query('rl_systems_state')
+    .withIndex('system', (q: any) => q.eq('systemName', systemName).eq('key', key))
+    .unique();
+  if (!row) return defaultVal;
+  const v = parseFloat(row.value);
+  return isNaN(v) ? defaultVal : v;
+}
 
 export const commitAction = internalMutation({
   args: {
@@ -396,10 +404,14 @@ export const commitAction = internalMutation({
 
     const energyCost = EFFORT_COSTS[parsed.action] ?? 5;
 
+    // Read live system knobs (fall back to defaults if not configured)
+    const minEnergyForHardWork = await readSystemFloat(ctx, 'agents', 'min_energy_for_hard_work', DEFAULT_MIN_ENERGY_FOR_HARD_WORK);
+    const healthDrainPerZeroTick = await readSystemFloat(ctx, 'agents', 'health_drain_per_zero_tick', DEFAULT_HEALTH_DRAIN_PER_ZERO_ENERGY_TICK);
+
     // ── Energy gate ────────────────────────────────────────────────────────
     // High-effort actions fail if the agent is too exhausted.
     const isExhausted = HIGH_EFFORT_ACTIONS.has(parsed.action) &&
-      agentDoc.energy < MIN_ENERGY_FOR_HARD_WORK;
+      agentDoc.energy < minEnergyForHardWork;
 
     if (isExhausted) {
       const failNote = `Too exhausted to ${parsed.action}. Energy: ${agentDoc.energy}/100. Rest first.`;
@@ -433,7 +445,7 @@ export const commitAction = internalMutation({
     // Health degradation: if energy was already zero before this tick, health suffers.
     const sustainedExhaustion = agentDoc.energy === 0 && parsed.action !== 'sleep' && parsed.action !== 'rest';
     const newHealth = sustainedExhaustion
-      ? Math.max(0, agentDoc.health - HEALTH_DRAIN_PER_ZERO_ENERGY_TICK)
+      ? Math.max(0, agentDoc.health - healthDrainPerZeroTick)
       : agentDoc.health;
 
     // Handle prayer -- log it but apply no world changes
