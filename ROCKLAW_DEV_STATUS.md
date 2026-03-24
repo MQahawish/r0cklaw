@@ -13,10 +13,10 @@
 | 2 | Full Village | ✅ Complete (pending live verify) |
 | 3 | Economy and Energy | ✅ Complete (pending live verify) |
 | 4 | Memory and Social | ✅ Complete (pending live verify) |
-| 5 | God-Mode Dashboard | 🔲 Not started |
-| 6 | Compaction and Stability | 🔲 Not started |
-| 7 | Observation Layer | 🔲 Not started |
-| 8 | Systems Layer | 🔲 Not started |
+| 5 | God-Mode Dashboard | ✅ Complete (pending live verify) |
+| 6 | Compaction and Stability | ✅ Complete (pending live verify) |
+| 7 | Observation Layer | ✅ Complete (pending live verify) |
+| 8 | Systems Layer | ✅ Complete (pending live verify) |
 
 ---
 
@@ -122,21 +122,95 @@
 
 ---
 
+## Phase 5 -- God-Mode Dashboard ✅
+
+**What was built:**
+
+`convex/rocklaw/god.ts` -- new file:
+- `getDashboard` public query -- returns full world snapshot: agents, activeEvents, recentActions, prices, recentPrayers, tension object, worldState
+- `injectEvent` public mutation -- inserts into `rl_world_events` with `source: 'god'`; shows in all agents' `village_news.md` next tick automatically
+- `resolveEvent` public mutation -- marks an event resolved
+- `startSim` / `stopSim` public mutations -- god controls the engine from the dashboard
+- `suggestEvents` public action -- calls OpenRouter (gemini-flash-1.5) with full world snapshot, returns 5 event suggestions as structured JSON; falls back to 5 hardcoded suggestions if `OPENROUTER_API_KEY` not set or call fails
+- `computeTension` internal helper -- scores world tension 0-100 from: agent physical stress (energy/health/hunger), economic shortages, stale unanswered letters, active high-severity events
+
+`src/components/GodDashboard.tsx` -- new file:
+- Modal overlay triggered by ⚡ God Mode button in footer
+- Three-column layout: agents | events + injection | world log + economy + prayers
+- Agent cards: click to expand inventory; energy/health/hunger mini bars; busy indicator
+- Active events list with one-click resolve
+- Event injection: AI suggestions panel (calls `suggestEvents`) + custom event form with type/description/severity
+- World log: scrolling feed of recent actions with outcome colours
+- Economy panel: all prices, shortage highlights
+- Prayers panel: private god-only feed of agent prayers
+
+`src/App.tsx`:
+- Added `GodDashboard` import
+- Added `godModeOpen` state
+- Added ⚡ God Mode button to footer
+- Dashboard renders as overlay when open
+
+**Decisions made:**
+- `injectEvent` writes directly to `rl_world_events`. No extra plumbing needed -- `buildVillageNewsMd` already reads active events every tick.
+- Tension score is a simple additive formula capped at 100. Enough to be a meaningful signal without overcalibrating.
+- `suggestEvents` uses gemini-flash-1.5 for cost. One call per button press, not automatic.
+- Suggestions fall back to 5 hardcoded events if no API key or call fails. Dashboard works offline.
+- Start/stop wired directly into god.ts to avoid needing the footer buttons.
+
+---
+
+## Phase 6 -- Compaction and Stability ✅
+
+**What was built:**
+
+`convex/rocklaw/compact.ts` (new):
+- `runCompaction` internalAction -- loops all agents sequentially; triggered by the world clock every 10 ticks
+- `compactAgent` internalAction -- checks each file for one agent; compacts if over threshold
+- `compactIfOver` helper -- reads file, counts lines, calls compact fn if threshold exceeded, writes result
+- `compactSentLog` helper -- keeps last 5 sent_log entries verbatim, LLM-summarises older ones
+- `summariseWithLLM` helper -- calls OpenRouter (gemini-flash-1.5, temp 0.3) for summarisation; falls back to line truncation if no API key
+- File thresholds: `05_MEMORY.md` > 150 lines, `self/beliefs.md` > 60 lines, `self/messages/sent_log.md` > 20 entries, `self/social/*/private.md` > 80 lines
+- `06_HEARTBEAT.md` -- already managed inline in `appendHeartbeat` (max 7 entries), not touched by compact
+- Social private files: gracefully skipped if `self/social/` doesn't exist yet (requires agents to have formed relationships first)
+
+`convex/rocklaw/engine.ts` (refactored -- action-driven ticks):
+- `runRocklawTick` no longer fires agents. It is now purely the **world clock**: advance time, clear busy flags, trigger compaction every 10 ticks, reschedule itself
+- `startRocklaw` now starts the world clock AND kicks off one `bridge.tickAgent` per agent
+- `manualTick` passes `_manual: true` to skip self-scheduling
+- Exported `TICK_INTERVAL_MS` so bridge can import it
+
+`convex/rocklaw/bridge.ts` (refactored -- self-scheduling):
+- `tickAgent` args: `{ agentName, _manual? }` -- tick/day/timeOfDay read from world state at call time, not passed in
+- After committing an action with `duration_ticks: N`, schedules next `tickAgent` in `N * TICK_INTERVAL_MS` ms
+- Graceful shutdown: checks `worldState.isRunning` at start; exits loop if false
+- Gateway failure / parse failure: retries after one tick interval rather than dropping the agent loop permanently
+- Busy at call time: retries in `TICK_INTERVAL_MS / 2` (handles edge case where scheduling fires before `busyUntilTick` cleared)
+
+`convex/rocklaw/god.ts` (updated):
+- `startSim` / `stopSim` now correctly start all agent loops (not just the world clock)
+
+**Decisions made:**
+- Compaction uses LLM (gemini-flash-1.5) for all summary types. temp 0.3 to keep summaries coherent and consistent. Falls back to line truncation if no API key.
+- Agents run truly asynchronously now. Sera doing `serve` (1 tick) ticks every 30s; Finn doing `harvest` (3 ticks) ticks every 90s. World time still advances globally.
+- `_manual` flag avoids self-scheduling in test/manual mode so one `manualTick` call doesn't accidentally start a production loop.
+- Agent loop never dies permanently on errors — gateway failures and parse failures reschedule rather than dropping.
+
+---
+
 ## Open Items / Known Gaps
 
 ### Functional gaps (will affect live runs)
 - **`replace AI Town LLM calls`** -- AI Town's default agents still use OpenAI. For Phase 2 standalone Rocklaw (no AI Town rendering), this doesn't matter. Defer to Phase 7 (Observation Layer) when we wire the visual layer.
-- **Inventory mutations** -- `buy`, `sell`, `craft`, `give`, `trade`, `eat` don't currently update inventory in Convex (no item transfer logic). The price engine recalculates after these actions, but the actual inventory numbers don't change. Fix in Phase 5 or as a standalone patch.
-- **`busyUntilTick` cleanup** -- if an agent sets `duration_ticks > 1`, they're marked busy. But when `busyUntilTick <= tick`, `getNonBusyAgents` should flip `busy = false`. Currently it just filters; the flag stays set. Could cause a permanently-busy agent if the engine restarts between ticks. Minor.
 - **worldRefresh path resolution** -- `path.resolve(workspacePath, 'world')` resolves relative to Convex process CWD. Works in local dev (CWD = project root). Will break in production Convex cloud. Fix: store absolute paths, or use an environment variable.
 
-### Design decisions still open
-- **Letter file path convention** -- TOOLS.md tells agents to call `leave_message.sh marcus "self/messages/outbox/to_marcus_day6.md"`. The bridge reads the `message` field of the JSON action, not a file. Agents may try to write to outbox files first. This is fine -- ZeroClaw's write tool will create the file, but the bridge will still use the inline `message` field. May want to align the TOOLS.md description.
-- **Social file writes** -- agents can choose `write` action to update `self/social/<name>/private.md`. ZeroClaw's built-in write tool handles the actual file write. The bridge doesn't need to do anything special for `write` actions. Social state evolves purely on disk.
-- **`eavesdrop` action** -- currently just logged. Should it write to HEARTBEAT or inject a context note next tick? Defer to Phase 4 polish.
+### Fixed in pre-Phase-5 patch
+- ✅ **Inventory mutations** -- buy/sell/craft/give/trade/eat now apply consumes/produces to inventory and coin
+- ✅ **`busyUntilTick` cleanup** -- clearStaleBusy mutation runs each tick
+- ✅ **leave_message TOOLS.md** -- all 8 agents now show inline message content, not file path
+- ✅ **eavesdrop context** -- overheard note stored as pendingNote, injected into location.md next tick
 
 ---
 
 ## Branch
 
-All development on: `claude/start-rocklaw-build-bknBO`
+All development on: `claude/multi-agent-village-sim-CT24z`

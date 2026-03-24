@@ -146,8 +146,28 @@ export const initRocklaw = mutation({
       }
     }
 
+    // Seed reputation for all agents at neutral score (50)
+    for (const agentData of AGENT_ROSTER) {
+      const existingRep = await ctx.db
+        .query('rl_reputation')
+        .withIndex('agentName', (q) => q.eq('agentName', agentData.name))
+        .unique();
+      if (existingRep && force) {
+        await ctx.db.patch(existingRep._id, { score: 50, recentIncidents: '[]' });
+      } else if (!existingRep) {
+        await ctx.db.insert('rl_reputation', {
+          agentName: agentData.name,
+          score: 50,
+          recentIncidents: '[]',
+        });
+      }
+    }
+
     // Seed initial market prices
     await ctx.scheduler.runAfter(0, internal.rocklaw.priceEngine.recalculate, {});
+
+    // Register Rocklaw agents in the AI Town visual layer (1s delay for world to be ready)
+    await ctx.scheduler.runAfter(1000, internal.rocklaw.visualBridge.initVisualAgents, {});
 
     console.log('[init] Rocklaw initialised. 8 villagers, 7 locations, market prices seeded.');
     return { status: 'ok', agents: AGENT_ROSTER.length, locations: LOCATIONS.length };

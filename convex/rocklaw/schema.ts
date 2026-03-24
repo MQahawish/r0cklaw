@@ -24,6 +24,12 @@ export const rocklawTables = {
     // Whether the agent is mid-action (bridge locks this while ticking)
     busy: v.boolean(),
     busyUntilTick: v.optional(v.number()),
+    // Overheard context from eavesdrop -- injected into next tick's location.md then cleared
+    pendingNote: v.optional(v.string()),
+    // God-mode agent controls
+    paused: v.optional(v.boolean()),
+    modelOverride: v.optional(v.string()),
+    providerOverride: v.optional(v.string()),
   })
     .index('name', ['name'])
     .index('location', ['location']),
@@ -120,6 +126,22 @@ export const rocklawTables = {
     timeOfDay: v.union(v.literal('morning'), v.literal('afternoon'), v.literal('evening')),
     isRunning: v.boolean(),
   }),
+
+  // Price snapshots per tick — for history charts and trend analysis.
+  // Inserted by priceEngine only when a price actually changes.
+  rl_price_history: defineTable({
+    tick: v.number(),
+    day: v.number(),
+    item: v.string(),
+    price: v.number(),
+    shortageLevel: v.union(
+      v.literal('none'),
+      v.literal('moderate'),
+      v.literal('critical'),
+    ),
+  })
+    .index('item_tick', ['item', 'tick'])
+    .index('tick', ['tick']),
 
   // Systems layer state (for future experiment configs).
   rl_systems_state: defineTable({

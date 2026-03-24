@@ -1,18 +1,27 @@
 /**
- * HTTP Bridge -- connects AI Town's tick scheduler to ZeroClaw agent gateways.
+ * HTTP Bridge -- connects the action-driven agent loop to ZeroClaw gateways.
+ *
+ * Phase 6 change: tickAgent is now self-scheduling.
+ *   - Arguments: just { agentName } (tick/day/timeOfDay read from world state at call time)
+ *   - After committing the action, schedules the next tick at duration_ticks * TICK_INTERVAL_MS
+ *   - Exits silently if isRunning = false (allows graceful shutdown)
+ *   - _manual: true skips self-scheduling (used by manualTick in engine.ts)
  *
  * For each villager tick:
- *   1. Refresh world/ files in the agent's workspace from Convex
- *   2. Check for unanswered letters and inject warnings if threshold exceeded
- *   3. POST minimal tick message to ZeroClaw gateway
- *   4. Parse the returned JSON action
- *   5. Validate and commit the action to Convex world state
- *   6. Append one line to agent's HEARTBEAT.md
+ *   1. Read current tick/day/timeOfDay from world state
+ *   2. Refresh world/ files in the agent's workspace from Convex
+ *   3. Check for unanswered letters and inject warnings if threshold exceeded
+ *   4. POST minimal tick message to ZeroClaw gateway
+ *   5. Parse the returned JSON action
+ *   6. Validate and commit the action to Convex world state
+ *   7. Append one line to agent's HEARTBEAT.md
+ *   8. Self-schedule next tick in duration_ticks * TICK_INTERVAL_MS
  */
 
 import { v } from 'convex/values';
 import { internalAction, internalMutation, internalQuery } from '../_generated/server';
 import { internal } from '../_generated/api';
+import { TICK_INTERVAL_MS } from './engine';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -71,18 +80,30 @@ const EFFORT_COSTS: Record<string, number> = {
 // ── Main tick action ─────────────────────────────────────────────────────────
 
 /**
- * Runs a single tick for one agent.
- * Called by the Convex scheduler (see crons / main engine).
+ * Runs a single tick for one agent (action-driven, self-scheduling).
+ *
+ * Args:
+ *   agentName  -- which agent to tick
+ *   _manual    -- if true, skip self-scheduling (used by manualTick)
  */
 export const tickAgent = internalAction({
   args: {
     agentName: v.string(),
-    tick: v.number(),
-    day: v.number(),
-    timeOfDay: v.string(),
+    _manual: v.optional(v.boolean()),
   },
-  handler: async (ctx, args) => {
-    const { agentName, tick, day, timeOfDay } = args;
+  handler: async (ctx, { agentName, _manual }) => {
+    // 0. Check if the sim is still running (allows graceful stop without cancelling scheduled jobs)
+    const worldState = await ctx.runQuery(internal.rocklaw.engine.getWorldState);
+    if (!worldState) {
+      console.error(`[bridge] No world state — ${agentName} tick aborted`);
+      return;
+    }
+    if (!worldState.isRunning && !_manual) {
+      console.log(`[bridge] ${agentName}: sim stopped, agent loop exiting`);
+      return;
+    }
+
+    const { tick, day, timeOfDay } = worldState;
 
     // 1. Load agent state from Convex
     const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
@@ -90,8 +111,18 @@ export const tickAgent = internalAction({
       console.error(`[bridge] Agent not found: ${agentName}`);
       return;
     }
+    // Pause check -- god-mode can suspend individual agents
+    if (agent.paused && !_manual) {
+      console.log(`[bridge] ${agentName} is paused — tick skipped`);
+      return;
+    }
     if (agent.busy) {
-      console.log(`[bridge] ${agentName} is busy until tick ${agent.busyUntilTick}, skipping`);
+      // Agent was already re-scheduled but wasn't fully cleared yet — check again soon
+      const waitMs = TICK_INTERVAL_MS / 2;
+      if (!_manual) {
+        await ctx.scheduler.runAfter(waitMs, internal.rocklaw.bridge.tickAgent, { agentName });
+      }
+      console.log(`[bridge] ${agentName} still busy, retrying in ${waitMs}ms`);
       return;
     }
 
@@ -112,12 +143,16 @@ export const tickAgent = internalAction({
     // 4. Build tick message
     const tickMessage = buildTickMessage(day, timeOfDay, letterWarning ?? undefined);
 
-    // 5. Call ZeroClaw gateway
+    // 5. Call ZeroClaw gateway (with optional per-agent model override)
     let rawResponse: string;
     try {
       rawResponse = await callZeroClawGateway(agent.gatewayPort, tickMessage);
     } catch (err) {
       console.error(`[bridge] Gateway call failed for ${agentName}:`, err);
+      // Retry after one tick interval — don't drop the agent loop
+      if (!_manual) {
+        await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridge.tickAgent, { agentName });
+      }
       return;
     }
 
@@ -125,12 +160,26 @@ export const tickAgent = internalAction({
     const action = extractAction(rawResponse);
     if (!action) {
       console.error(`[bridge] Could not parse action from ${agentName}'s response:\n${rawResponse}`);
+      await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
+        agentName,
+        note: 'SYSTEM: Your last response could not be parsed as valid JSON. You MUST respond with a valid JSON action block. No prose outside the JSON.',
+      });
+      if (!_manual) {
+        await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridge.tickAgent, { agentName });
+      }
       return;
     }
 
     // 7. Validate
     if (!validateAction(action)) {
       console.error(`[bridge] Invalid action from ${agentName}:`, action);
+      await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
+        agentName,
+        note: `SYSTEM: Your last action JSON was structurally invalid (missing required fields or unknown action type). Valid action types: move, work, buy, sell, trade, sleep, rest, eat, talk, give, steal, pray, eavesdrop, leave_message, idle.`,
+      });
+      if (!_manual) {
+        await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridge.tickAgent, { agentName });
+      }
       return;
     }
 
@@ -148,7 +197,15 @@ export const tickAgent = internalAction({
       line: summariseAction(action, day, timeOfDay, result?.outcome, result?.note),
     });
 
-    console.log(`[bridge] ${agentName} tick ${tick} complete: ${action.action} → ${action.target ?? 'null'} [${result?.outcome ?? 'success'}]`);
+    const durationTicks = Math.max(1, action.duration_ticks ?? 1);
+    const nextMs = durationTicks * TICK_INTERVAL_MS;
+
+    console.log(`[bridge] ${agentName} tick ${tick}: ${action.action} → ${action.target ?? 'null'} [${result?.outcome ?? 'success'}] next in ${nextMs}ms`);
+
+    // 10. Self-schedule next tick based on how long this action takes
+    if (!_manual) {
+      await ctx.scheduler.runAfter(nextMs, internal.rocklaw.bridge.tickAgent, { agentName });
+    }
   },
 });
 
@@ -225,6 +282,69 @@ function summariseAction(
   return `- Day ${day} ${timeOfDay}: ${action.action}${target}${note}${failed}${warning}`;
 }
 
+// ── Inventory helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Parses a list of item strings (e.g. ["coal:3", "iron_ore", "coin:10"])
+ * into a Record<itemName, quantity>.
+ */
+function parseItemList(items: string[]): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const entry of items) {
+    const colonIdx = entry.lastIndexOf(':');
+    let name: string;
+    let qty: number;
+    if (colonIdx > 0) {
+      name = entry.slice(0, colonIdx).trim();
+      qty = parseInt(entry.slice(colonIdx + 1), 10);
+      if (isNaN(qty) || qty <= 0) qty = 1;
+    } else {
+      name = entry.trim();
+      qty = 1;
+    }
+    result[name] = (result[name] ?? 0) + qty;
+  }
+  return result;
+}
+
+/**
+ * Applies consumes/produces to inventory and coin.
+ * Returns updated inventory (JSON string) and coin.
+ * Never goes below zero for any item.
+ */
+function applyInventoryChanges(
+  inventoryJson: string,
+  coin: number,
+  consumes: string[],
+  produces: string[],
+  _action: string,
+): { newInventory: string; newCoin: number } {
+  const inv = JSON.parse(inventoryJson) as Record<string, number>;
+  let newCoin = coin;
+
+  const toConsume = parseItemList(consumes);
+  const toProduce = parseItemList(produces);
+
+  for (const [item, qty] of Object.entries(toConsume)) {
+    if (item === 'coin') {
+      newCoin = Math.max(0, newCoin - qty);
+    } else {
+      inv[item] = Math.max(0, (inv[item] ?? 0) - qty);
+      if (inv[item] === 0) delete inv[item];
+    }
+  }
+
+  for (const [item, qty] of Object.entries(toProduce)) {
+    if (item === 'coin') {
+      newCoin += qty;
+    } else {
+      inv[item] = (inv[item] ?? 0) + qty;
+    }
+  }
+
+  return { newInventory: JSON.stringify(inv), newCoin };
+}
+
 // ── Convex queries / mutations ───────────────────────────────────────────────
 
 export const getAgent = internalQuery({
@@ -266,11 +386,30 @@ const HIGH_EFFORT_ACTIONS = new Set([
   'patrol', 'train', 'gather', 'brew', 'treat',
 ]);
 
-// Minimum energy required to attempt a high-effort action.
-const MIN_ENERGY_FOR_HARD_WORK = 15;
+// These fall back to the hardcoded defaults below if rl_systems_state has no override.
+const DEFAULT_MIN_ENERGY_FOR_HARD_WORK = 15;
+const DEFAULT_HEALTH_DRAIN_PER_ZERO_ENERGY_TICK = 10;
 
-// Health lost per tick when energy is at zero (sustained exhaustion).
-const HEALTH_DRAIN_PER_ZERO_ENERGY_TICK = 10;
+async function readSystemFloat(ctx: any, systemName: string, key: string, defaultVal: number) {
+  const row = await ctx.db
+    .query('rl_systems_state')
+    .withIndex('system', (q: any) => q.eq('systemName', systemName).eq('key', key))
+    .unique();
+  if (!row) return defaultVal;
+  const v = parseFloat(row.value);
+  return isNaN(v) ? defaultVal : v;
+}
+
+export const setAgentPendingNote = internalMutation({
+  args: { agentName: v.string(), note: v.string() },
+  handler: async (ctx, { agentName, note }) => {
+    const agent = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q) => q.eq('name', agentName))
+      .unique();
+    if (agent) await ctx.db.patch(agent._id, { pendingNote: note });
+  },
+});
 
 export const commitAction = internalMutation({
   args: {
@@ -289,10 +428,34 @@ export const commitAction = internalMutation({
 
     const energyCost = EFFORT_COSTS[parsed.action] ?? 5;
 
+    // ── Reputation gating ───────────────────────────────────────────────────
+    // Low-rep agents (<20) are refused service at social locations.
+    const SOCIALLY_GATED_ACTIONS = new Set(['treat', 'counsel', 'serve', 'rent_room', 'buy', 'bless']);
+    const GATED_LOCATIONS = new Set(['shrine', 'inn', 'market']);
+    if (SOCIALLY_GATED_ACTIONS.has(parsed.action) && GATED_LOCATIONS.has(agentDoc.location)) {
+      const rep = await ctx.db
+        .query('rl_reputation')
+        .withIndex('agentName', (q) => q.eq('agentName', agentName))
+        .unique();
+      if ((rep?.score ?? 50) < 20) {
+        const failNote = `Refused service — your reputation (${rep?.score ?? 50}/100) is too low here.`;
+        await ctx.db.insert('rl_actions_log', {
+          agentName, action: parsed.action, target: parsed.target ?? undefined,
+          message: parsed.message, tick, day, outcome: 'failed', outcomeNote: failNote,
+        });
+        await ctx.db.patch(agentDoc._id, { busy: false });
+        return { outcome: 'failed', note: failNote };
+      }
+    }
+
+    // Read live system knobs (fall back to defaults if not configured)
+    const minEnergyForHardWork = await readSystemFloat(ctx, 'agents', 'min_energy_for_hard_work', DEFAULT_MIN_ENERGY_FOR_HARD_WORK);
+    const healthDrainPerZeroTick = await readSystemFloat(ctx, 'agents', 'health_drain_per_zero_tick', DEFAULT_HEALTH_DRAIN_PER_ZERO_ENERGY_TICK);
+
     // ── Energy gate ────────────────────────────────────────────────────────
     // High-effort actions fail if the agent is too exhausted.
     const isExhausted = HIGH_EFFORT_ACTIONS.has(parsed.action) &&
-      agentDoc.energy < MIN_ENERGY_FOR_HARD_WORK;
+      agentDoc.energy < minEnergyForHardWork;
 
     if (isExhausted) {
       const failNote = `Too exhausted to ${parsed.action}. Energy: ${agentDoc.energy}/100. Rest first.`;
@@ -316,6 +479,13 @@ export const commitAction = internalMutation({
         hunger: newHunger,
       });
 
+      // Failing on a targeted action is a broken promise — small rep hit
+      if (parsed.target) {
+        await ctx.scheduler.runAfter(0, internal.rocklaw.reputation.updateReputation, {
+          agentName, delta: -3, note: `failed ${parsed.action} (exhausted)`, tick,
+        });
+      }
+
       return { outcome: 'failed', note: failNote };
     }
 
@@ -326,12 +496,19 @@ export const commitAction = internalMutation({
     // Health degradation: if energy was already zero before this tick, health suffers.
     const sustainedExhaustion = agentDoc.energy === 0 && parsed.action !== 'sleep' && parsed.action !== 'rest';
     const newHealth = sustainedExhaustion
-      ? Math.max(0, agentDoc.health - HEALTH_DRAIN_PER_ZERO_ENERGY_TICK)
+      ? Math.max(0, agentDoc.health - healthDrainPerZeroTick)
       : agentDoc.health;
 
     // Handle prayer -- log it but apply no world changes
     if (parsed.action === 'pray' && parsed.message) {
       await ctx.db.insert('rl_prayers', { agentName, message: parsed.message, tick, day });
+    }
+
+    // Handle eavesdrop -- store overheard note for injection into next tick's world files
+    if (parsed.action === 'eavesdrop' && parsed.message) {
+      await ctx.db.patch(agentDoc._id, {
+        pendingNote: `You overheard: "${parsed.message}"`,
+      });
     }
 
     // Handle letter -- insert into rl_messages for delivery at current location
@@ -357,6 +534,31 @@ export const commitAction = internalMutation({
       newLocation = parsed.target;
     }
 
+    // ── Reputation coin modifier for trade actions ──────────────────────────
+    // High rep (>70): 5% discount; low rep (<30): 10% markup on buy/sell.
+    let repCoinModifier = 1.0;
+    if (['buy', 'sell', 'trade'].includes(parsed.action)) {
+      const rep = await ctx.db
+        .query('rl_reputation')
+        .withIndex('agentName', (q) => q.eq('agentName', agentName))
+        .unique();
+      const repScore = rep?.score ?? 50;
+      if (repScore > 70) repCoinModifier = 0.95;
+      else if (repScore < 30) repCoinModifier = 1.10;
+    }
+
+    // Apply inventory changes from consumes/produces
+    const { newInventory, newCoin: rawCoin } = applyInventoryChanges(
+      agentDoc.inventory,
+      agentDoc.coin,
+      parsed.consumes,
+      parsed.produces,
+      parsed.action,
+    );
+    // Apply rep modifier to coin delta only
+    const coinDelta = rawCoin - agentDoc.coin;
+    const newCoin = agentDoc.coin + Math.round(coinDelta * repCoinModifier);
+
     const outcomeNote = sustainedExhaustion
       ? 'Acting on zero energy -- health is degrading. Sleep urgently.'
       : undefined;
@@ -373,12 +575,18 @@ export const commitAction = internalMutation({
       outcomeNote,
     });
 
+    // Eating reduces hunger
+    const eatingHungerReduction = parsed.action === 'eat' ? 40 : 0;
+    const finalHunger = Math.max(0, newHunger - eatingHungerReduction);
+
     // Update agent state
     await ctx.db.patch(agentDoc._id, {
       energy: newEnergy,
       health: newHealth,
-      hunger: newHunger,
+      hunger: finalHunger,
       location: newLocation,
+      inventory: newInventory,
+      coin: newCoin,
       busy: parsed.duration_ticks > 1,
       busyUntilTick: parsed.duration_ticks > 1 ? tick + parsed.duration_ticks : undefined,
     });
@@ -387,6 +595,31 @@ export const commitAction = internalMutation({
     if (['buy', 'sell', 'craft', 'give', 'trade', 'eat'].includes(parsed.action)) {
       await ctx.scheduler.runAfter(0, internal.rocklaw.priceEngine.recalculate, {});
     }
+
+    // ── Reputation changes ─────────────────────────────────────────────────
+    const REP_DELTAS: Record<string, number> = {
+      give: 2, treat: 2, counsel: 2, bless: 2, run_errand: 2,
+      trade: 1, sell: 1, buy: 1,
+    };
+    const repDelta = REP_DELTAS[parsed.action] ?? 0;
+    if (repDelta !== 0) {
+      await ctx.scheduler.runAfter(0, internal.rocklaw.reputation.updateReputation, {
+        agentName, delta: repDelta, note: parsed.action, tick,
+      });
+    }
+
+    // ── Visual bridge: sync sprite position and activity emoji ─────────────
+    const durationTicks = Math.max(1, parsed.duration_ticks ?? 1);
+    const durationMs = durationTicks * TICK_INTERVAL_MS;
+
+    if (parsed.action === 'move' && newLocation !== agentDoc.location) {
+      await ctx.scheduler.runAfter(0, internal.rocklaw.visualBridge.syncAgentPosition, {
+        agentName, newLocation,
+      });
+    }
+    await ctx.scheduler.runAfter(0, internal.rocklaw.visualBridge.setAgentActivity, {
+      agentName, action: parsed.action, durationMs,
+    });
 
     return { outcome: 'success', note: outcomeNote };
   },
