@@ -1,0 +1,13 @@
+workspace_dir = "workspace"
+default_provider = "openrouter"
+default_model = "google/gemini-flash-1.5"
+default_temperature = 0.8
+
+[gateway]
+port = 42618
+host = "127.0.0.1"
+require_pairing = false
+allow_public_bind = false
+
+[cost]
+enabled = false

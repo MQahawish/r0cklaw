@@ -42,3 +42,9 @@ dist
 
 convex-local*
 convex_local*
+
+# Rocklaw -- generated world files (refreshed each tick, machine-specific)
+agents/*/workspace/world/
+# ZeroClaw runtime files
+/tmp/zeroclaw-*.log
+/tmp/zeroclaw-*.pid
