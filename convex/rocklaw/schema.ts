@@ -26,6 +26,10 @@ export const rocklawTables = {
     busyUntilTick: v.optional(v.number()),
     // Overheard context from eavesdrop -- injected into next tick's location.md then cleared
     pendingNote: v.optional(v.string()),
+    // God-mode agent controls
+    paused: v.optional(v.boolean()),
+    modelOverride: v.optional(v.string()),
+    providerOverride: v.optional(v.string()),
   })
     .index('name', ['name'])
     .index('location', ['location']),

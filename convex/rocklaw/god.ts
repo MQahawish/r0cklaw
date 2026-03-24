@@ -51,6 +51,13 @@ export const getDashboard = query({
 
     const tension = computeTension(agents, prices, staleLetters, activeEvents);
 
+    // Reputation scores for all agents
+    const reputations = await ctx.db.query('rl_reputation').collect();
+    const repByAgent: Record<string, number> = {};
+    for (const r of reputations) {
+      repByAgent[r.agentName] = r.score;
+    }
+
     return {
       worldState,
       agents,
@@ -59,6 +66,7 @@ export const getDashboard = query({
       prices,
       recentPrayers,
       tension,
+      repByAgent,
     };
   },
 });
@@ -309,6 +317,69 @@ function parseEventSuggestions(content: string): EventSuggestion[] {
 
   return FALLBACK_SUGGESTIONS;
 }
+
+// ── Agent config mutations (god-mode) ─────────────────────────────────────────
+
+export const pauseAgent = mutation({
+  args: { agentName: v.string() },
+  handler: async (ctx, { agentName }) => {
+    const agent = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q) => q.eq('name', agentName))
+      .unique();
+    if (agent) await ctx.db.patch(agent._id, { paused: true });
+  },
+});
+
+export const resumeAgent = mutation({
+  args: { agentName: v.string() },
+  handler: async (ctx, { agentName }) => {
+    const agent = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q) => q.eq('name', agentName))
+      .unique();
+    if (!agent) return;
+    await ctx.db.patch(agent._id, { paused: false });
+    // Re-kick the agent's tick loop
+    await ctx.scheduler.runAfter(0, internal.rocklaw.bridge.tickAgent, { agentName });
+  },
+});
+
+export const setAgentModel = mutation({
+  args: {
+    agentName: v.string(),
+    modelOverride: v.string(),
+    providerOverride: v.optional(v.string()),
+  },
+  handler: async (ctx, { agentName, modelOverride, providerOverride }) => {
+    const agent = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q) => q.eq('name', agentName))
+      .unique();
+    if (agent) await ctx.db.patch(agent._id, { modelOverride, providerOverride });
+  },
+});
+
+export const getAgentDetail = query({
+  args: { agentName: v.string() },
+  handler: async (ctx, { agentName }) => {
+    const agent = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q) => q.eq('name', agentName))
+      .unique();
+    if (!agent) return null;
+    const rep = await ctx.db
+      .query('rl_reputation')
+      .withIndex('agentName', (q) => q.eq('agentName', agentName))
+      .unique();
+    const recentActions = await ctx.db
+      .query('rl_actions_log')
+      .withIndex('agentName', (q) => q.eq('agentName', agentName))
+      .order('desc')
+      .take(20);
+    return { agent, rep, recentActions };
+  },
+});
 
 const FALLBACK_SUGGESTIONS: EventSuggestion[] = [
   { type: 'drought', description: 'A dry spell has set in. The fields are cracking and grain prices will rise unless the harvest comes soon.', severity: 'medium' },

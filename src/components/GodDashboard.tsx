@@ -18,6 +18,7 @@ import AgentInspector from './AgentInspector';
 import RelationshipGraph from './RelationshipGraph';
 import EconomyPanel from './EconomyPanel';
 import SystemsPanel from './SystemsPanel';
+import AgentConfigPanel from './AgentConfigPanel';
 
 // ── Tension bar colour ────────────────────────────────────────────────────────
 
@@ -56,7 +57,14 @@ function StatBar({ value, inverted = false }: { value: number; inverted?: boolea
 
 // ── Agent card ────────────────────────────────────────────────────────────────
 
-function AgentCard({ agent }: { agent: any }) {
+function repColour(score: number): string {
+  if (score >= 70) return '#22c55e';
+  if (score >= 40) return '#f97316';
+  if (score < 20)  return '#ef4444';
+  return '#fbbf24';
+}
+
+function AgentCard({ agent, repScore }: { agent: any; repScore?: number }) {
   const [expanded, setExpanded] = useState(false);
   const inv = JSON.parse(agent.inventory ?? '{}') as Record<string, number>;
 
@@ -79,15 +87,25 @@ function AgentCard({ agent }: { agent: any }) {
           <span style={{ fontWeight: 600, color: '#f9fafb', fontSize: 13 }}>{agent.name}</span>
           <span style={{ color: '#9ca3af', fontSize: 11, marginLeft: 6 }}>{agent.role}</span>
         </div>
-        <span style={{
-          fontSize: 11,
-          padding: '1px 6px',
-          borderRadius: 3,
-          background: agent.busy ? '#7c3aed22' : '#05966922',
-          color: agent.busy ? '#a78bfa' : '#34d399',
-        }}>
-          {agent.busy ? 'busy' : agent.location}
-        </span>
+        <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
+          {repScore !== undefined && (
+            <span style={{
+              fontSize: 10, padding: '1px 5px', borderRadius: 3,
+              background: repColour(repScore) + '22',
+              color: repColour(repScore),
+              fontWeight: 700,
+            }}>★{repScore}</span>
+          )}
+          <span style={{
+            fontSize: 11,
+            padding: '1px 6px',
+            borderRadius: 3,
+            background: agent.busy ? '#7c3aed22' : '#05966922',
+            color: agent.busy ? '#a78bfa' : '#34d399',
+          }}>
+            {agent.busy ? 'busy' : agent.location}
+          </span>
+        </div>
       </div>
       <div style={{ marginTop: 6, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 2 }}>
         <div>
@@ -170,7 +188,7 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 
 // ── Main dashboard ────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'inspector' | 'relations' | 'economy' | 'systems';
+type Tab = 'overview' | 'inspector' | 'relations' | 'economy' | 'systems' | 'agents';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview',  label: 'Overview'  },
@@ -178,6 +196,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'relations', label: 'Relations' },
   { id: 'economy',   label: 'Economy'   },
   { id: 'systems',   label: 'Systems'   },
+  { id: 'agents',    label: 'Agents'    },
 ];
 
 export default function GodDashboard({ onClose }: { onClose: () => void }) {
@@ -227,7 +246,7 @@ export default function GodDashboard({ onClose }: { onClose: () => void }) {
     );
   }
 
-  const { worldState, agents, activeEvents, recentActions, prices, recentPrayers, tension } = dashboard;
+  const { worldState, agents, activeEvents, recentActions, prices, recentPrayers, tension, repByAgent } = dashboard as any;
 
   const shortages = prices.filter((p: any) => p.shortageLevel !== 'none');
   const isRunning = worldState?.isRunning ?? false;
@@ -296,6 +315,11 @@ export default function GodDashboard({ onClose }: { onClose: () => void }) {
           ))}
         </div>
 
+        {/* ── Tab: Agents (config panel) ── */}
+        {activeTab === 'agents' && (
+          <AgentConfigPanel agents={agents} repByAgent={repByAgent ?? {}} />
+        )}
+
         {/* ── Tab: Inspector ── */}
         {activeTab === 'inspector' && <AgentInspector />}
 
@@ -315,7 +339,7 @@ export default function GodDashboard({ onClose }: { onClose: () => void }) {
           <div style={{ overflowY: 'auto', maxHeight: 540 }}>
             <SectionHeader>Agents ({agents.length})</SectionHeader>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {agents.map((a: any) => <AgentCard key={a._id} agent={a} />)}
+              {agents.map((a: any) => <AgentCard key={a._id} agent={a} repScore={(repByAgent ?? {})[a.name]} />)}
             </div>
           </div>
 

@@ -149,6 +149,9 @@ export const initRocklaw = mutation({
     // Seed initial market prices
     await ctx.scheduler.runAfter(0, internal.rocklaw.priceEngine.recalculate, {});
 
+    // Register Rocklaw agents in the AI Town visual layer (1s delay for world to be ready)
+    await ctx.scheduler.runAfter(1000, internal.rocklaw.visualBridge.initVisualAgents, {});
+
     console.log('[init] Rocklaw initialised. 8 villagers, 7 locations, market prices seeded.');
     return { status: 'ok', agents: AGENT_ROSTER.length, locations: LOCATIONS.length };
   },

@@ -111,6 +111,11 @@ export const tickAgent = internalAction({
       console.error(`[bridge] Agent not found: ${agentName}`);
       return;
     }
+    // Pause check -- god-mode can suspend individual agents
+    if (agent.paused && !_manual) {
+      console.log(`[bridge] ${agentName} is paused — tick skipped`);
+      return;
+    }
     if (agent.busy) {
       // Agent was already re-scheduled but wasn't fully cleared yet — check again soon
       const waitMs = TICK_INTERVAL_MS / 2;
@@ -138,10 +143,10 @@ export const tickAgent = internalAction({
     // 4. Build tick message
     const tickMessage = buildTickMessage(day, timeOfDay, letterWarning ?? undefined);
 
-    // 5. Call ZeroClaw gateway
+    // 5. Call ZeroClaw gateway (with optional per-agent model override)
     let rawResponse: string;
     try {
-      rawResponse = await callZeroClawGateway(agent.gatewayPort, tickMessage);
+      rawResponse = await callZeroClawGateway(agent.gatewayPort, tickMessage, agent.modelOverride ?? undefined);
     } catch (err) {
       console.error(`[bridge] Gateway call failed for ${agentName}:`, err);
       // Retry after one tick interval — don't drop the agent loop
@@ -198,12 +203,12 @@ export const tickAgent = internalAction({
 
 // ── ZeroClaw gateway call ────────────────────────────────────────────────────
 
-async function callZeroClawGateway(port: number, message: string): Promise<string> {
+async function callZeroClawGateway(port: number, message: string, model?: string): Promise<string> {
   const url = `http://127.0.0.1:${port}/webhook`;
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, ...(model ? { model } : {}) }),
   });
   if (!response.ok) {
     throw new Error(`ZeroClaw gateway returned ${response.status}: ${await response.text()}`);
@@ -404,6 +409,26 @@ export const commitAction = internalMutation({
 
     const energyCost = EFFORT_COSTS[parsed.action] ?? 5;
 
+    // ── Reputation gating ───────────────────────────────────────────────────
+    // Low-rep agents (<20) are refused service at social locations.
+    const SOCIALLY_GATED_ACTIONS = new Set(['treat', 'counsel', 'serve', 'rent_room', 'buy', 'bless']);
+    const GATED_LOCATIONS = new Set(['shrine', 'inn', 'market']);
+    if (SOCIALLY_GATED_ACTIONS.has(parsed.action) && GATED_LOCATIONS.has(agentDoc.location)) {
+      const rep = await ctx.db
+        .query('rl_reputation')
+        .withIndex('agentName', (q) => q.eq('agentName', agentName))
+        .unique();
+      if ((rep?.score ?? 50) < 20) {
+        const failNote = `Refused service — your reputation (${rep?.score ?? 50}/100) is too low here.`;
+        await ctx.db.insert('rl_actions_log', {
+          agentName, action: parsed.action, target: parsed.target ?? undefined,
+          message: parsed.message, tick, day, outcome: 'failed', outcomeNote: failNote,
+        });
+        await ctx.db.patch(agentDoc._id, { busy: false });
+        return { outcome: 'failed', note: failNote };
+      }
+    }
+
     // Read live system knobs (fall back to defaults if not configured)
     const minEnergyForHardWork = await readSystemFloat(ctx, 'agents', 'min_energy_for_hard_work', DEFAULT_MIN_ENERGY_FOR_HARD_WORK);
     const healthDrainPerZeroTick = await readSystemFloat(ctx, 'agents', 'health_drain_per_zero_tick', DEFAULT_HEALTH_DRAIN_PER_ZERO_ENERGY_TICK);
@@ -434,6 +459,13 @@ export const commitAction = internalMutation({
         energy: penaltyEnergy,
         hunger: newHunger,
       });
+
+      // Failing on a targeted action is a broken promise — small rep hit
+      if (parsed.target) {
+        await ctx.scheduler.runAfter(0, internal.rocklaw.reputation.updateReputation, {
+          agentName, delta: -3, note: `failed ${parsed.action} (exhausted)`, tick,
+        });
+      }
 
       return { outcome: 'failed', note: failNote };
     }
@@ -483,14 +515,30 @@ export const commitAction = internalMutation({
       newLocation = parsed.target;
     }
 
+    // ── Reputation coin modifier for trade actions ──────────────────────────
+    // High rep (>70): 5% discount; low rep (<30): 10% markup on buy/sell.
+    let repCoinModifier = 1.0;
+    if (['buy', 'sell', 'trade'].includes(parsed.action)) {
+      const rep = await ctx.db
+        .query('rl_reputation')
+        .withIndex('agentName', (q) => q.eq('agentName', agentName))
+        .unique();
+      const repScore = rep?.score ?? 50;
+      if (repScore > 70) repCoinModifier = 0.95;
+      else if (repScore < 30) repCoinModifier = 1.10;
+    }
+
     // Apply inventory changes from consumes/produces
-    const { newInventory, newCoin } = applyInventoryChanges(
+    const { newInventory, newCoin: rawCoin } = applyInventoryChanges(
       agentDoc.inventory,
       agentDoc.coin,
       parsed.consumes,
       parsed.produces,
       parsed.action,
     );
+    // Apply rep modifier to coin delta only
+    const coinDelta = rawCoin - agentDoc.coin;
+    const newCoin = agentDoc.coin + Math.round(coinDelta * repCoinModifier);
 
     const outcomeNote = sustainedExhaustion
       ? 'Acting on zero energy -- health is degrading. Sleep urgently.'
@@ -528,6 +576,31 @@ export const commitAction = internalMutation({
     if (['buy', 'sell', 'craft', 'give', 'trade', 'eat'].includes(parsed.action)) {
       await ctx.scheduler.runAfter(0, internal.rocklaw.priceEngine.recalculate, {});
     }
+
+    // ── Reputation changes ─────────────────────────────────────────────────
+    const REP_DELTAS: Record<string, number> = {
+      give: 2, treat: 2, counsel: 2, bless: 2, run_errand: 2,
+      trade: 1, sell: 1, buy: 1,
+    };
+    const repDelta = REP_DELTAS[parsed.action] ?? 0;
+    if (repDelta !== 0) {
+      await ctx.scheduler.runAfter(0, internal.rocklaw.reputation.updateReputation, {
+        agentName, delta: repDelta, note: parsed.action, tick,
+      });
+    }
+
+    // ── Visual bridge: sync sprite position and activity emoji ─────────────
+    const durationTicks = Math.max(1, parsed.duration_ticks ?? 1);
+    const durationMs = durationTicks * TICK_INTERVAL_MS;
+
+    if (parsed.action === 'move' && newLocation !== agentDoc.location) {
+      await ctx.scheduler.runAfter(0, internal.rocklaw.visualBridge.syncAgentPosition, {
+        agentName, newLocation,
+      });
+    }
+    await ctx.scheduler.runAfter(0, internal.rocklaw.visualBridge.setAgentActivity, {
+      agentName, action: parsed.action, durationMs,
+    });
 
     return { outcome: 'success', note: outcomeNote };
   },
