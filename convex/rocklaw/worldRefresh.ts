@@ -6,7 +6,7 @@
  */
 
 import { v } from 'convex/values';
-import { internalAction, internalQuery } from '../_generated/server';
+import { internalAction, internalMutation, internalQuery } from '../_generated/server';
 import { internal } from '../_generated/api';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -31,15 +31,54 @@ export const refreshWorldFiles = internalAction({
       return;
     }
 
+    // Deliver any unread letters waiting for the agent at their current location,
+    // marking them as read so they don't re-appear next tick.
+    const letters = await ctx.runMutation(internal.rocklaw.worldRefresh.deliverLetters, {
+      agentName,
+      locationId: data.locationDoc?._id ?? null,
+      day,
+    });
+
     const workspacePath = path.resolve(data.workspacePath, 'world');
 
     await Promise.all([
       writeFile(workspacePath, 'inventory.md',      buildInventoryMd(agentName, day, data)),
-      writeFile(workspacePath, 'location.md',       buildLocationMd(agentName, day, timeOfDay, data)),
+      writeFile(workspacePath, 'location.md',       buildLocationMd(agentName, day, timeOfDay, data, letters)),
       writeFile(workspacePath, 'village_news.md',   buildVillageNewsMd(day, data)),
       writeFile(workspacePath, 'market_prices.md',  buildMarketPricesMd(day, data)),
       writeFile(workspacePath, 'status.md',         buildStatusMd(agentName, day, timeOfDay, data)),
     ]);
+  },
+});
+
+// ── Letter delivery ───────────────────────────────────────────────────────────
+
+/**
+ * Finds unread letters addressed to agentName at their current location,
+ * marks them as read, and returns the letter objects for inclusion in location.md.
+ */
+export const deliverLetters = internalMutation({
+  args: {
+    agentName: v.string(),
+    locationId: v.union(v.id('rl_locations'), v.null()),
+    day: v.number(),
+  },
+  handler: async (ctx, { agentName, locationId, day }) => {
+    const unread = await ctx.db
+      .query('rl_messages')
+      .withIndex('toAgent', (q) => q.eq('toAgent', agentName).eq('status', 'unread'))
+      .collect();
+
+    // Deliver letters left at this specific location, or direct-delivery letters (no location)
+    const deliverable = unread.filter(
+      (m) => m.deliveryLocationId === undefined || m.deliveryLocationId === locationId,
+    );
+
+    for (const letter of deliverable) {
+      await ctx.db.patch(letter._id, { status: 'read', dayRead: day });
+    }
+
+    return deliverable;
   },
 });
 
@@ -159,7 +198,13 @@ function buildInventoryMd(agentName: string, day: number, data: any): string {
   return `# Inventory -- ${agentName} -- Day ${day}\n\n${lines}\ncoin:         ${data.agent.coin}c\n`;
 }
 
-function buildLocationMd(agentName: string, day: number, timeOfDay: string, data: any): string {
+function buildLocationMd(
+  agentName: string,
+  day: number,
+  timeOfDay: string,
+  data: any,
+  letters: any[] = [],
+): string {
   const nearbyLines = data.nearby.length === 0
     ? '  (nobody nearby)'
     : data.nearby.map((a: any) => `  - ${a.name} (${a.role})`).join('\n');
@@ -168,8 +213,14 @@ function buildLocationMd(agentName: string, day: number, timeOfDay: string, data
     ? JSON.parse(data.locationDoc.messageBoard) as string[]
     : [];
   const boardLines = board.length === 0
-    ? '  - No messages waiting for you'
+    ? '  (none)'
     : board.map((m: string) => `  - ${m}`).join('\n');
+
+  const letterLines = letters.length === 0
+    ? '  (none)'
+    : letters.map((l: any) =>
+        `  From ${l.fromAgent} (Day ${l.daySent}):\n  "${l.content}"`,
+      ).join('\n\n');
 
   return [
     `# Location -- ${agentName} -- Day ${day}, ${timeOfDay}`,
@@ -178,8 +229,11 @@ function buildLocationMd(agentName: string, day: number, timeOfDay: string, data
     'Nearby:',
     nearbyLines,
     '',
-    'Message board at this location:',
+    'Message board:',
     boardLines,
+    '',
+    'Letters waiting for you here:',
+    letterLines,
     '',
   ].join('\n');
 }

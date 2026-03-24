@@ -27,16 +27,45 @@ export type RocklawAction = {
 };
 
 const VALID_ACTIONS = new Set([
-  'talk', 'move', 'craft', 'repair', 'smelt', 'rest', 'sleep',
-  'eat', 'buy', 'sell', 'pay', 'give', 'trade', 'observe', 'write', 'pray',
+  // Universal
+  'talk', 'move', 'rest', 'sleep', 'eat', 'buy', 'sell', 'pay', 'give', 'trade',
+  'observe', 'write', 'pray', 'leave_message', 'recall',
+  // Blacksmith (Elena)
+  'craft', 'repair', 'smelt', 'appraise',
+  // Merchant (Marcus)
+  'negotiate', 'post_price', 'bulk_buy',
+  // Farmer (Finn)
+  'harvest', 'plant', 'water', 'check_field',
+  // Herbalist (Lena)
+  'gather', 'brew', 'treat', 'identify',
+  // Innkeeper (Sera)
+  'serve', 'rent_room', 'eavesdrop', 'post_notice',
+  // Priest (Aldric)
+  'bless', 'counsel', 'preach', 'officiate',
+  // Child (Cora)
+  'play', 'run_errand',
+  // Retired Soldier (Rook)
+  'patrol', 'train', 'recall_war',
 ]);
 
 // Effort costs per action (deducted from energy after completion)
 const EFFORT_COSTS: Record<string, number> = {
+  // Physical labour
   craft: 30, smelt: 40, repair: 20, mine: 45,
-  harvest: 35, patrol: 25, move: 5, talk: 2,
-  gather: 15, brew: 10, eat: 0, rest: -40, sleep: -100,
-  buy: 2, sell: 2, pay: 1, give: 1, trade: 2, observe: 1, write: 2, pray: 0,
+  harvest: 35, plant: 30, water: 15, check_field: 5,
+  gather: 15, brew: 10, treat: 8, identify: 3,
+  patrol: 25, train: 20,
+  // Commerce & social
+  negotiate: 5, bulk_buy: 3, post_price: 1, appraise: 2,
+  serve: 5, rent_room: 3, eavesdrop: 2, post_notice: 2,
+  bless: 3, counsel: 4, preach: 6, officiate: 8,
+  play: -10,  // play restores child energy
+  run_errand: 8, recall_war: 2,
+  // Universal
+  move: 5, talk: 2, buy: 2, sell: 2, pay: 1, give: 1,
+  trade: 2, observe: 1, write: 2, pray: 0,
+  leave_message: 2, recall: 0,
+  eat: 0, rest: -40, sleep: -100,
 };
 
 // ── Main tick action ─────────────────────────────────────────────────────────
@@ -303,6 +332,23 @@ export const commitAction = internalMutation({
     // Handle prayer -- log it but apply no world changes
     if (parsed.action === 'pray' && parsed.message) {
       await ctx.db.insert('rl_prayers', { agentName, message: parsed.message, tick, day });
+    }
+
+    // Handle letter -- insert into rl_messages for delivery at current location
+    if (parsed.action === 'leave_message' && parsed.target && parsed.message) {
+      const locationDoc = await ctx.db
+        .query('rl_locations')
+        .withIndex('name', (q) => q.eq('name', agentDoc.location))
+        .unique();
+      await ctx.db.insert('rl_messages', {
+        fromAgent: agentName,
+        toAgent: parsed.target,
+        content: parsed.message,
+        status: 'unread',
+        deliveryLocationId: locationDoc?._id ?? undefined,
+        daySent: day,
+        tickSent: tick,
+      });
     }
 
     // Apply movement
