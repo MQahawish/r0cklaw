@@ -9,7 +9,7 @@
  */
 
 import { useState } from 'react';
-import { useQuery, useMutation } from 'convex/react';
+import { useQuery, useMutation, useAction } from 'convex/react';
 import { api } from '../../convex/_generated/api';
 
 function repColour(score: number): string {
@@ -80,7 +80,7 @@ function AgentDetail({ agentName, repByAgent }: { agentName: string; repByAgent:
   const detail = useQuery(api.rocklaw.god.getAgentDetail, { agentName });
   const pauseAgent = useMutation(api.rocklaw.god.pauseAgent);
   const resumeAgent = useMutation(api.rocklaw.god.resumeAgent);
-  const setAgentModel = useMutation(api.rocklaw.god.setAgentModel);
+  const setAgentModel = useAction(api.rocklaw.god.setAgentModel);
 
   const [modelInput, setModelInput] = useState('');
   const [providerInput, setProviderInput] = useState('');

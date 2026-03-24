@@ -146,7 +146,7 @@ export const tickAgent = internalAction({
     // 5. Call ZeroClaw gateway (with optional per-agent model override)
     let rawResponse: string;
     try {
-      rawResponse = await callZeroClawGateway(agent.gatewayPort, tickMessage, agent.modelOverride ?? undefined);
+      rawResponse = await callZeroClawGateway(agent.gatewayPort, tickMessage);
     } catch (err) {
       console.error(`[bridge] Gateway call failed for ${agentName}:`, err);
       // Retry after one tick interval — don't drop the agent loop
@@ -211,12 +211,12 @@ export const tickAgent = internalAction({
 
 // ── ZeroClaw gateway call ────────────────────────────────────────────────────
 
-async function callZeroClawGateway(port: number, message: string, model?: string): Promise<string> {
+async function callZeroClawGateway(port: number, message: string): Promise<string> {
   const url = `http://127.0.0.1:${port}/webhook`;
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, ...(model ? { model } : {}) }),
+    body: JSON.stringify({ message }),
   });
   if (!response.ok) {
     throw new Error(`ZeroClaw gateway returned ${response.status}: ${await response.text()}`);
