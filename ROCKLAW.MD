@@ -1288,39 +1288,41 @@ Upgrade any agent at any time.
 
 ## Build Phases
 
-### Phase 1 -- Skeleton (Get Something Visible)
-- [ ] Fork AI Town, run locally with default agents
-- [ ] Stand up one ZeroClaw instance (Elena), point at OpenRouter
-- [ ] Populate Elena's workspace: IDENTITY.md, SOUL.md, AGENTS.md, TOOLS.md
-- [ ] Write one world/ refresh script (inventory)
-- [ ] Build HTTP bridge (one tick, one action)
+### Phase 1 -- Skeleton (Get Something Visible) ✅
+- [x] Fork AI Town, run locally with default agents
+- [x] Stand up one ZeroClaw instance (Elena), point at OpenRouter
+- [x] Populate Elena's workspace: IDENTITY.md, SOUL.md, AGENTS.md, TOOLS.md
+- [x] Write all world/ refresh scripts (inventory, location, village_news, market_prices, status)
+- [x] Build HTTP bridge (one tick, one action) -- tickAgent internalAction
+- [x] Build Rocklaw tick engine: self-scheduling loop, startRocklaw / stopRocklaw / manualTick
+- [x] Fix start-agent.sh (--config-dir flag, gateway start subcommand)
 - [ ] Verify: Elena ticks, reads her files, returns a valid action
 
-### Phase 2 -- Full Village
-- [ ] Stand up all 8 ZeroClaw instances
-- [ ] Populate all workspace files for all agents
-- [ ] Write all world/ refresh scripts
-- [ ] Write all universal action scripts (talk, move, eat, rest, sleep, pay, buy, sell, give)
-- [ ] Write all occupation skill scripts per agent (craft, repair, harvest, gather etc.)
+### Phase 2 -- Full Village ✅
+- [x] Stand up all 8 ZeroClaw instances (config.toml, ports 42617-42624)
+- [x] Populate all workspace files for all agents (IDENTITY, SOUL, AGENTS, TOOLS, MEMORY, HEARTBEAT, self/)
+- [x] Write all occupation skill scripts per agent (craft/smelt/repair, harvest/plant/water, gather/brew/treat, bless/counsel/preach, patrol/train, etc.)
+- [x] start-all-agents.sh / stop-all-agents.sh convenience scripts
 - [ ] Replace all AI Town LLM calls with bridge calls
 - [ ] Verify: all 8 agents living independently
 
-### Phase 3 -- Economy and Energy
-- [ ] Build price engine in Convex (recalculate on inventory change)
-- [ ] Add energy, health, hunger fields to agents table
-- [ ] Implement effort_costs table and deduction after each action
-- [ ] Implement hunger tick (rises automatically each tick)
-- [ ] Implement health degradation from sustained zero energy
-- [ ] Build world/status.md refresh (pre-tick, world engine writes it)
-- [ ] Add script error response when energy insufficient
+### Phase 3 -- Economy and Energy ✅
+- [x] Build price engine in Convex (recalculate on inventory change)
+- [x] Add energy, health, hunger fields to agents table
+- [x] Implement effort_costs and deduction after each action (30+ actions costed)
+- [x] Implement hunger tick (rises +5/tick automatically)
+- [x] Implement health degradation from sustained zero energy (-10/tick at energy=0)
+- [x] Build world/status.md refresh with dynamic Conditions section
+- [x] Energy gate: high-effort actions fail with [FAILED] HEARTBEAT note when energy < 15
 - [ ] Verify: Elena overworks, energy depletes, craft fails, she must rest
 
-### Phase 4 -- Memory and Social
-- [ ] Implement HEARTBEAT.md append after each tick
-- [ ] Create social/ folders for all agents at init
-- [ ] Implement letter system + message boards per location in Convex
-- [ ] Implement unanswered letter detection and injection
-- [ ] Implement recall.sh bridge to ZeroClaw memory
+### Phase 4 -- Memory and Social ✅
+- [x] Implement HEARTBEAT.md append after each tick (success + failure + warning lines)
+- [x] Create social/ folder stubs for all agents (seeded in Phase 2)
+- [x] Implement full letter system: leave_message → rl_messages → delivered in location.md → marked read
+- [x] Implement unanswered letter detection and injection (>3 ticks without reply)
+- [x] Expand VALID_ACTIONS to all 30+ occupation skills (previously silently failing)
+- [ ] recall.sh: ZeroClaw auto-recalls memory per turn -- no separate bridge action needed
 - [ ] Verify: agents reference past events, private feelings shift over time
 
 ### Phase 5 -- God-Mode Dashboard and Events
