@@ -190,6 +190,12 @@ export const getWorldSnapshot = internalQuery({
       .order('desc')
       .take(5);
 
+    // Reputation score for this agent
+    const reputation = await ctx.db
+      .query('rl_reputation')
+      .withIndex('agentName', (q) => q.eq('agentName', agentName))
+      .unique();
+
     return {
       agent,
       nearby: nearby.filter((a) => a.name !== agentName),
@@ -198,6 +204,7 @@ export const getWorldSnapshot = internalQuery({
       locationDoc: location,
       recentTrades,
       mentions,
+      reputation,
       workspacePath: agent.workspacePath,
     };
   },
@@ -326,12 +333,26 @@ function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: 
   if (hunger > 80) conditions.push('Starving: health will degrade until you eat.');
   const conditionLine = conditions.length === 0 ? 'none' : conditions.map((c) => `  ! ${c}`).join('\n');
 
+  // Reputation section
+  const repScore = data.reputation?.score ?? 50;
+  const repLabel = repScore >= 70 ? '[RESPECTED -- you receive discounts and open doors]'
+    : repScore >= 50 ? '[neutral]'
+    : repScore >= 30 ? '[mixed -- some distrust you]'
+    : repScore >= 20 ? '[poor -- merchants charge you more]'
+    : '[NOTORIOUS -- you will be refused service at inn, shrine, and market]';
+  const repWarning = repScore < 20
+    ? '\n  ! Your reputation is too low for service at social locations. Improve it through helpful actions.'
+    : repScore < 30
+    ? '\n  ! Low reputation: you pay 10% more at market. Help others to improve your standing.'
+    : '';
+
   return [
     `# Status -- ${agentName} -- Day ${day}, ${timeOfDay}`,
     '',
-    `Energy:  ${energy}/100  ${energyLabel}`,
-    `Health:  ${health}/100  ${healthLabel}`,
-    `Hunger:  ${hunger}/100  ${hungerLabel}`,
+    `Energy:     ${energy}/100  ${energyLabel}`,
+    `Health:     ${health}/100  ${healthLabel}`,
+    `Hunger:     ${hunger}/100  ${hungerLabel}`,
+    `Reputation: ${repScore}/100  ${repLabel}${repWarning}`,
     '',
     `Conditions: ${conditionLine}`,
     '',

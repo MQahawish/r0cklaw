@@ -74,6 +74,9 @@ export const runRocklawTick = internalAction({
     // Clear any stale busy flags
     await ctx.runMutation(internal.rocklaw.engine.clearStaleBusy, { tick });
 
+    // Refresh lastInput for Rocklaw sprites — prevents AI Town idle-kick after 5 min
+    await ctx.runMutation(internal.rocklaw.visualBridge.keepAliveVisualAgents, {});
+
     // Run compaction every COMPACT_EVERY_N_TICKS
     if (tick % COMPACT_EVERY_N_TICKS === 0) {
       console.log(`[engine] tick ${tick}: triggering compaction`);

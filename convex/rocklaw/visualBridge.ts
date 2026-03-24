@@ -153,6 +153,13 @@ export const syncAgentPosition = internalMutation({
 
     const destination = tileFor(newLocation);
 
+    // Refresh lastInput to prevent AI Town idle-kick (HUMAN_IDLE_TOO_LONG = 5 min)
+    const now = Date.now();
+    const updatedPlayers = players.map((p) =>
+      p.human === token ? { ...p, lastInput: now } : p,
+    );
+    await ctx.db.patch(worldStatus.worldId, { players: updatedPlayers });
+
     await insertInput(ctx, worldStatus.worldId, 'moveTo', {
       playerId: player.id,
       destination,
@@ -186,17 +193,46 @@ export const setAgentActivity = internalMutation({
     const emoji = ACTION_EMOJI[action];
     if (!emoji) return;
 
-    // Patch the player's activity in the world document
+    // Patch the player's activity + refresh lastInput to prevent idle-kick
+    const now = Date.now();
     const updatedPlayers = [...players];
     updatedPlayers[playerIdx] = {
       ...updatedPlayers[playerIdx],
+      lastInput: now,
       activity: {
         description: action,
         emoji,
-        until: Date.now() + durationMs,
+        until: now + durationMs,
       },
     };
 
+    await ctx.db.patch(worldStatus.worldId, { players: updatedPlayers });
+  },
+});
+
+// ── Keep-alive: refresh lastInput for all Rocklaw players every world clock tick ──
+// Prevents idle-kick for paused agents (AI Town kicks human players after 5 minutes idle).
+
+export const keepAliveVisualAgents = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const worldStatus = await ctx.db
+      .query('worldStatus')
+      .filter((q) => q.eq(q.field('isDefault'), true))
+      .unique();
+    if (!worldStatus) return;
+
+    const worldDoc = await ctx.db.get(worldStatus.worldId);
+    if (!worldDoc) return;
+
+    const players = worldDoc.players as Array<{ human?: string; lastInput: number; [k: string]: unknown }>;
+    const rocklawPlayers = players.filter((p) => p.human?.startsWith('rocklaw:'));
+    if (rocklawPlayers.length === 0) return;
+
+    const now = Date.now();
+    const updatedPlayers = players.map((p) =>
+      p.human?.startsWith('rocklaw:') ? { ...p, lastInput: now } : p,
+    );
     await ctx.db.patch(worldStatus.worldId, { players: updatedPlayers });
   },
 });

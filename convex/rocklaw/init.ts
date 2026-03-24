@@ -146,6 +146,23 @@ export const initRocklaw = mutation({
       }
     }
 
+    // Seed reputation for all agents at neutral score (50)
+    for (const agentData of AGENT_ROSTER) {
+      const existingRep = await ctx.db
+        .query('rl_reputation')
+        .withIndex('agentName', (q) => q.eq('agentName', agentData.name))
+        .unique();
+      if (existingRep && force) {
+        await ctx.db.patch(existingRep._id, { score: 50, recentIncidents: '[]' });
+      } else if (!existingRep) {
+        await ctx.db.insert('rl_reputation', {
+          agentName: agentData.name,
+          score: 50,
+          recentIncidents: '[]',
+        });
+      }
+    }
+
     // Seed initial market prices
     await ctx.scheduler.runAfter(0, internal.rocklaw.priceEngine.recalculate, {});
 
