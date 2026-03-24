@@ -16,9 +16,11 @@ import InteractButton from './components/buttons/InteractButton.tsx';
 import FreezeButton from './components/FreezeButton.tsx';
 import { MAX_HUMAN_PLAYERS } from '../convex/constants.ts';
 import PoweredByConvex from './components/PoweredByConvex.tsx';
+import GodDashboard from './components/GodDashboard.tsx';
 
 export default function Home() {
   const [helpModalOpen, setHelpModalOpen] = useState(false);
+  const [godModeOpen, setGodModeOpen] = useState(false);
   return (
     <main className="relative flex min-h-screen flex-col items-center justify-between font-body game-background">
       <PoweredByConvex />
@@ -88,6 +90,8 @@ export default function Home() {
 
         <Game />
 
+        {godModeOpen && <GodDashboard onClose={() => setGodModeOpen(false)} />}
+
         <footer className="justify-end bottom-0 left-0 w-full flex items-center mt-4 gap-3 p-6 flex-wrap pointer-events-none">
           <div className="flex gap-4 flex-grow pointer-events-none">
             <FreezeButton />
@@ -96,6 +100,23 @@ export default function Home() {
               Star
             </Button>
             <InteractButton />
+            <button
+              onClick={() => setGodModeOpen(true)}
+              className="pointer-events-auto"
+              style={{
+                background: '#4f46e5',
+                color: '#e0e7ff',
+                border: '1px solid #6366f144',
+                borderRadius: 4,
+                padding: '6px 14px',
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+            >
+              ⚡ God Mode
+            </button>
             <Button imgUrl={helpImg} onClick={() => setHelpModalOpen(true)}>
               Help
             </Button>
