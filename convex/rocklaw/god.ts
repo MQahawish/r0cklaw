@@ -12,6 +12,25 @@ import { v } from 'convex/values';
 import { query, mutation, action } from '../_generated/server';
 import { api, internal } from '../_generated/api';
 
+// ── Prayers query (standalone) ───────────────────────────────────────────────
+
+export const getPrayers = query({
+  args: {
+    agentName: v.optional(v.string()),  // omit for all agents
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, { agentName, limit = 20 }) => {
+    if (agentName) {
+      return ctx.db
+        .query('rl_prayers')
+        .withIndex('agentName', (q) => q.eq('agentName', agentName))
+        .order('desc')
+        .take(limit);
+    }
+    return ctx.db.query('rl_prayers').order('desc').take(limit);
+  },
+});
+
 // ── Dashboard query ───────────────────────────────────────────────────────────
 
 export const getDashboard = query({
@@ -37,7 +56,7 @@ export const getDashboard = query({
 
     const recentPrayers = await ctx.db
       .query('rl_prayers')
-      .withIndex('agentName', (q) => q.gt('tick', (worldState?.tick ?? 0) - 15))
+      .filter((q) => q.gt(q.field('tick'), (worldState?.tick ?? 0) - 15))
       .order('desc')
       .take(5);
 
