@@ -228,9 +228,23 @@ function buildMarketPricesMd(day: number, data: any): string {
 
 function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: any): string {
   const { energy, health, hunger } = data.agent;
-  const energyLabel = energy < 30 ? '[CRITICAL -- rest before demanding work]' : energy < 50 ? '[low -- demanding actions may fail]' : '[fine]';
-  const healthLabel = health < 30 ? '[POOR]' : health < 70 ? '[injured]' : '[fine]';
-  const hungerLabel = hunger > 80 ? '[STARVING -- health will degrade]' : hunger > 60 ? '[hungry -- eat soon]' : hunger > 40 ? '[getting hungry]' : '[fine]';
+  const energyLabel = energy < 15 ? '[EXHAUSTED -- demanding actions will FAIL until you rest]'
+    : energy < 30 ? '[CRITICAL -- rest before demanding work]'
+    : energy < 50 ? '[low -- demanding actions may fail]'
+    : '[fine]';
+  const healthLabel = health < 30 ? '[POOR -- you need treatment urgently]'
+    : health < 70 ? '[injured -- take care of yourself]'
+    : '[fine]';
+  const hungerLabel = hunger > 80 ? '[STARVING -- health will degrade if you don\'t eat]'
+    : hunger > 60 ? '[hungry -- eat soon]'
+    : hunger > 40 ? '[getting hungry]'
+    : '[fine]';
+
+  const conditions: string[] = [];
+  if (energy === 0) conditions.push('Sustained exhaustion: health is degrading each tick. SLEEP NOW.');
+  if (health < 30) conditions.push('Poor health: your body is failing. Seek treatment and rest.');
+  if (hunger > 80) conditions.push('Starving: health will degrade until you eat.');
+  const conditionLine = conditions.length === 0 ? 'none' : conditions.map((c) => `  ! ${c}`).join('\n');
 
   return [
     `# Status -- ${agentName} -- Day ${day}, ${timeOfDay}`,
@@ -239,7 +253,7 @@ function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: 
     `Health:  ${health}/100  ${healthLabel}`,
     `Hunger:  ${hunger}/100  ${hungerLabel}`,
     '',
-    'Conditions: none',
+    `Conditions: ${conditionLine}`,
     '',
   ].join('\n');
 }

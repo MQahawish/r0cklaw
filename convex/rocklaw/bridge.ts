@@ -106,7 +106,7 @@ export const tickAgent = internalAction({
     }
 
     // 8. Commit action to Convex world state
-    await ctx.runMutation(internal.rocklaw.bridge.commitAction, {
+    const result = await ctx.runMutation(internal.rocklaw.bridge.commitAction, {
       agentName,
       action: JSON.stringify(action),
       tick,
@@ -116,10 +116,10 @@ export const tickAgent = internalAction({
     // 9. Append to HEARTBEAT.md (world engine only -- agent never writes this)
     await ctx.runAction(internal.rocklaw.worldRefresh.appendHeartbeat, {
       agentName,
-      line: summariseAction(action, day, timeOfDay),
+      line: summariseAction(action, day, timeOfDay, result?.outcome, result?.note),
     });
 
-    console.log(`[bridge] ${agentName} tick ${tick} complete: ${action.action} → ${action.target ?? 'null'}`);
+    console.log(`[bridge] ${agentName} tick ${tick} complete: ${action.action} → ${action.target ?? 'null'} [${result?.outcome ?? 'success'}]`);
   },
 });
 
@@ -182,10 +182,18 @@ function validateAction(action: RocklawAction): boolean {
   );
 }
 
-function summariseAction(action: RocklawAction, day: number, timeOfDay: string): string {
+function summariseAction(
+  action: RocklawAction,
+  day: number,
+  timeOfDay: string,
+  outcome?: string,
+  outcomeNote?: string | null,
+): string {
   const target = action.target ? ` → ${action.target}` : '';
   const note = action.message ? ` (${action.message.slice(0, 60)})` : '';
-  return `- Day ${day} ${timeOfDay}: ${action.action}${target}${note}`;
+  const failed = outcome === 'failed' ? ' [FAILED]' : '';
+  const warning = outcomeNote ? ` ⚠ ${outcomeNote.slice(0, 80)}` : '';
+  return `- Day ${day} ${timeOfDay}: ${action.action}${target}${note}${failed}${warning}`;
 }
 
 // ── Convex queries / mutations ───────────────────────────────────────────────
@@ -222,6 +230,19 @@ export const checkUnreadLetters = internalQuery({
   },
 });
 
+// Actions requiring significant physical effort -- gated by energy.
+// Low-effort actions (talk, pray, observe, write, eat, rest, sleep) always proceed.
+const HIGH_EFFORT_ACTIONS = new Set([
+  'craft', 'smelt', 'repair', 'mine', 'harvest', 'plant', 'water',
+  'patrol', 'train', 'gather', 'brew', 'treat',
+]);
+
+// Minimum energy required to attempt a high-effort action.
+const MIN_ENERGY_FOR_HARD_WORK = 15;
+
+// Health lost per tick when energy is at zero (sustained exhaustion).
+const HEALTH_DRAIN_PER_ZERO_ENERGY_TICK = 10;
+
 export const commitAction = internalMutation({
   args: {
     agentName: v.string(),
@@ -235,20 +256,53 @@ export const commitAction = internalMutation({
       .query('rl_agents')
       .withIndex('name', (q) => q.eq('name', agentName))
       .unique();
-    if (!agentDoc) return;
+    if (!agentDoc) return { outcome: 'failed', note: 'Agent not found' };
 
     const energyCost = EFFORT_COSTS[parsed.action] ?? 5;
-    const newEnergy = Math.max(0, Math.min(100, agentDoc.energy - energyCost));
-    const newHunger = Math.min(100, agentDoc.hunger + 5); // hunger rises each tick
 
-    // Handle prayer separately -- log it but don't apply world changes
-    if (parsed.action === 'pray' && parsed.message) {
-      await ctx.db.insert('rl_prayers', {
+    // ── Energy gate ────────────────────────────────────────────────────────
+    // High-effort actions fail if the agent is too exhausted.
+    const isExhausted = HIGH_EFFORT_ACTIONS.has(parsed.action) &&
+      agentDoc.energy < MIN_ENERGY_FOR_HARD_WORK;
+
+    if (isExhausted) {
+      const failNote = `Too exhausted to ${parsed.action}. Energy: ${agentDoc.energy}/100. Rest first.`;
+      // Attempting still costs a small effort
+      const penaltyEnergy = Math.max(0, agentDoc.energy - 3);
+      const newHunger = Math.min(100, agentDoc.hunger + 5);
+
+      await ctx.db.insert('rl_actions_log', {
         agentName,
+        action: parsed.action,
+        target: parsed.target ?? undefined,
         message: parsed.message,
         tick,
         day,
+        outcome: 'failed',
+        outcomeNote: failNote,
       });
+
+      await ctx.db.patch(agentDoc._id, {
+        energy: penaltyEnergy,
+        hunger: newHunger,
+      });
+
+      return { outcome: 'failed', note: failNote };
+    }
+
+    // ── Normal path ────────────────────────────────────────────────────────
+    const newEnergy = Math.max(0, Math.min(100, agentDoc.energy - energyCost));
+    const newHunger = Math.min(100, agentDoc.hunger + 5); // hunger rises every tick
+
+    // Health degradation: if energy was already zero before this tick, health suffers.
+    const sustainedExhaustion = agentDoc.energy === 0 && parsed.action !== 'sleep' && parsed.action !== 'rest';
+    const newHealth = sustainedExhaustion
+      ? Math.max(0, agentDoc.health - HEALTH_DRAIN_PER_ZERO_ENERGY_TICK)
+      : agentDoc.health;
+
+    // Handle prayer -- log it but apply no world changes
+    if (parsed.action === 'pray' && parsed.message) {
+      await ctx.db.insert('rl_prayers', { agentName, message: parsed.message, tick, day });
     }
 
     // Apply movement
@@ -256,6 +310,10 @@ export const commitAction = internalMutation({
     if (parsed.action === 'move' && parsed.target) {
       newLocation = parsed.target;
     }
+
+    const outcomeNote = sustainedExhaustion
+      ? 'Acting on zero energy -- health is degrading. Sleep urgently.'
+      : undefined;
 
     // Log the action
     await ctx.db.insert('rl_actions_log', {
@@ -266,11 +324,13 @@ export const commitAction = internalMutation({
       tick,
       day,
       outcome: 'success',
+      outcomeNote,
     });
 
     // Update agent state
     await ctx.db.patch(agentDoc._id, {
       energy: newEnergy,
+      health: newHealth,
       hunger: newHunger,
       location: newLocation,
       busy: parsed.duration_ticks > 1,
@@ -281,5 +341,7 @@ export const commitAction = internalMutation({
     if (['buy', 'sell', 'craft', 'give', 'trade', 'eat'].includes(parsed.action)) {
       await ctx.scheduler.runAfter(0, internal.rocklaw.priceEngine.recalculate, {});
     }
+
+    return { outcome: 'success', note: outcomeNote };
   },
 });
