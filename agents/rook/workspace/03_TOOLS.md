@@ -65,10 +65,11 @@ pray.sh "<message>"
 
 ## Messages
 
-leave_message.sh <agent> "<file>"
+leave_message.sh <agent> "<message>"
   Leave a note at your current location for someone.
   They find it the next time they visit here.
-  Example: leave_message.sh marcus "self/messages/outbox/to_marcus_day6.md"
+  Write the letter content directly as the second argument.
+  Example: leave_message.sh lena "Lena, my knee is bad again. I will come to the shrine when I can. -- Rook"
 
 
 ## Retired Soldier skills

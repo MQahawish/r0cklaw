@@ -65,6 +65,9 @@ export const runRocklawTick = internalAction({
     const { tick, day, timeOfDay } = next;
     console.log(`[engine] tick ${tick} — Day ${day}, ${timeOfDay}`);
 
+    // Clear any stale busy flags before collecting agents
+    await ctx.runMutation(internal.rocklaw.engine.clearStaleBusy, { tick });
+
     // Collect all non-busy agents and fire their ticks concurrently
     const agents = await ctx.runQuery(internal.rocklaw.engine.getNonBusyAgents, { tick });
     await Promise.all(
@@ -75,6 +78,22 @@ export const runRocklawTick = internalAction({
 
     // Reschedule
     await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.engine.runRocklawTick, {});
+  },
+});
+
+/**
+ * Clears the busy flag on any agent whose busyUntilTick has passed.
+ * Called at the start of each tick before collecting agents.
+ */
+export const clearStaleBusy = internalMutation({
+  args: { tick: v.number() },
+  handler: async (ctx, { tick }) => {
+    const allAgents = await ctx.db.query('rl_agents').collect();
+    for (const agent of allAgents) {
+      if (agent.busy && agent.busyUntilTick !== undefined && agent.busyUntilTick <= tick) {
+        await ctx.db.patch(agent._id, { busy: false, busyUntilTick: undefined });
+      }
+    }
   },
 });
 

@@ -225,6 +225,69 @@ function summariseAction(
   return `- Day ${day} ${timeOfDay}: ${action.action}${target}${note}${failed}${warning}`;
 }
 
+// ── Inventory helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Parses a list of item strings (e.g. ["coal:3", "iron_ore", "coin:10"])
+ * into a Record<itemName, quantity>.
+ */
+function parseItemList(items: string[]): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const entry of items) {
+    const colonIdx = entry.lastIndexOf(':');
+    let name: string;
+    let qty: number;
+    if (colonIdx > 0) {
+      name = entry.slice(0, colonIdx).trim();
+      qty = parseInt(entry.slice(colonIdx + 1), 10);
+      if (isNaN(qty) || qty <= 0) qty = 1;
+    } else {
+      name = entry.trim();
+      qty = 1;
+    }
+    result[name] = (result[name] ?? 0) + qty;
+  }
+  return result;
+}
+
+/**
+ * Applies consumes/produces to inventory and coin.
+ * Returns updated inventory (JSON string) and coin.
+ * Never goes below zero for any item.
+ */
+function applyInventoryChanges(
+  inventoryJson: string,
+  coin: number,
+  consumes: string[],
+  produces: string[],
+  _action: string,
+): { newInventory: string; newCoin: number } {
+  const inv = JSON.parse(inventoryJson) as Record<string, number>;
+  let newCoin = coin;
+
+  const toConsume = parseItemList(consumes);
+  const toProduce = parseItemList(produces);
+
+  for (const [item, qty] of Object.entries(toConsume)) {
+    if (item === 'coin') {
+      newCoin = Math.max(0, newCoin - qty);
+    } else {
+      inv[item] = Math.max(0, (inv[item] ?? 0) - qty);
+      if (inv[item] === 0) delete inv[item];
+    }
+  }
+
+  for (const [item, qty] of Object.entries(toProduce)) {
+    if (item === 'coin') {
+      newCoin += qty;
+    } else {
+      inv[item] = (inv[item] ?? 0) + qty;
+    }
+  }
+
+  return { newInventory: JSON.stringify(inv), newCoin };
+}
+
 // ── Convex queries / mutations ───────────────────────────────────────────────
 
 export const getAgent = internalQuery({
@@ -334,6 +397,13 @@ export const commitAction = internalMutation({
       await ctx.db.insert('rl_prayers', { agentName, message: parsed.message, tick, day });
     }
 
+    // Handle eavesdrop -- store overheard note for injection into next tick's world files
+    if (parsed.action === 'eavesdrop' && parsed.message) {
+      await ctx.db.patch(agentDoc._id, {
+        pendingNote: `You overheard: "${parsed.message}"`,
+      });
+    }
+
     // Handle letter -- insert into rl_messages for delivery at current location
     if (parsed.action === 'leave_message' && parsed.target && parsed.message) {
       const locationDoc = await ctx.db
@@ -357,6 +427,15 @@ export const commitAction = internalMutation({
       newLocation = parsed.target;
     }
 
+    // Apply inventory changes from consumes/produces
+    const { newInventory, newCoin } = applyInventoryChanges(
+      agentDoc.inventory,
+      agentDoc.coin,
+      parsed.consumes,
+      parsed.produces,
+      parsed.action,
+    );
+
     const outcomeNote = sustainedExhaustion
       ? 'Acting on zero energy -- health is degrading. Sleep urgently.'
       : undefined;
@@ -373,12 +452,18 @@ export const commitAction = internalMutation({
       outcomeNote,
     });
 
+    // Eating reduces hunger
+    const eatingHungerReduction = parsed.action === 'eat' ? 40 : 0;
+    const finalHunger = Math.max(0, newHunger - eatingHungerReduction);
+
     // Update agent state
     await ctx.db.patch(agentDoc._id, {
       energy: newEnergy,
       health: newHealth,
-      hunger: newHunger,
+      hunger: finalHunger,
       location: newLocation,
+      inventory: newInventory,
+      coin: newCoin,
       busy: parsed.duration_ticks > 1,
       busyUntilTick: parsed.duration_ticks > 1 ? tick + parsed.duration_ticks : undefined,
     });

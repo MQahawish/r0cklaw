@@ -48,6 +48,11 @@ export const refreshWorldFiles = internalAction({
       writeFile(workspacePath, 'market_prices.md',  buildMarketPricesMd(day, data)),
       writeFile(workspacePath, 'status.md',         buildStatusMd(agentName, day, timeOfDay, data)),
     ]);
+
+    // Clear pendingNote after it has been written into location.md
+    if (data.agent.pendingNote) {
+      await ctx.runMutation(internal.rocklaw.worldRefresh.clearPendingNote, { agentName });
+    }
   },
 });
 
@@ -79,6 +84,19 @@ export const deliverLetters = internalMutation({
     }
 
     return deliverable;
+  },
+});
+
+// ── Pending note cleanup ──────────────────────────────────────────────────────
+
+export const clearPendingNote = internalMutation({
+  args: { agentName: v.string() },
+  handler: async (ctx, { agentName }) => {
+    const agent = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q) => q.eq('name', agentName))
+      .unique();
+    if (agent) await ctx.db.patch(agent._id, { pendingNote: undefined });
   },
 });
 
@@ -222,7 +240,7 @@ function buildLocationMd(
         `  From ${l.fromAgent} (Day ${l.daySent}):\n  "${l.content}"`,
       ).join('\n\n');
 
-  return [
+  const sections = [
     `# Location -- ${agentName} -- Day ${day}, ${timeOfDay}`,
     '',
     `Current: ${data.agent.location}`,
@@ -235,7 +253,15 @@ function buildLocationMd(
     'Letters waiting for you here:',
     letterLines,
     '',
-  ].join('\n');
+  ];
+
+  if (data.agent.pendingNote) {
+    sections.push('From last tick:');
+    sections.push(`  ${data.agent.pendingNote}`);
+    sections.push('');
+  }
+
+  return sections.join('\n');
 }
 
 function buildVillageNewsMd(day: number, data: any): string {
