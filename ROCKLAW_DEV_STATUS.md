@@ -14,7 +14,7 @@
 | 3 | Economy and Energy | ✅ Complete (pending live verify) |
 | 4 | Memory and Social | ✅ Complete (pending live verify) |
 | 5 | God-Mode Dashboard | ✅ Complete (pending live verify) |
-| 6 | Compaction and Stability | 🔲 Not started |
+| 6 | Compaction and Stability | ✅ Complete (pending live verify) |
 | 7 | Observation Layer | 🔲 Not started |
 | 8 | Systems Layer | 🔲 Not started |
 
@@ -156,6 +156,44 @@
 - `suggestEvents` uses gemini-flash-1.5 for cost. One call per button press, not automatic.
 - Suggestions fall back to 5 hardcoded events if no API key or call fails. Dashboard works offline.
 - Start/stop wired directly into god.ts to avoid needing the footer buttons.
+
+---
+
+## Phase 6 -- Compaction and Stability ✅
+
+**What was built:**
+
+`convex/rocklaw/compact.ts` (new):
+- `runCompaction` internalAction -- loops all agents sequentially; triggered by the world clock every 10 ticks
+- `compactAgent` internalAction -- checks each file for one agent; compacts if over threshold
+- `compactIfOver` helper -- reads file, counts lines, calls compact fn if threshold exceeded, writes result
+- `compactSentLog` helper -- keeps last 5 sent_log entries verbatim, LLM-summarises older ones
+- `summariseWithLLM` helper -- calls OpenRouter (gemini-flash-1.5, temp 0.3) for summarisation; falls back to line truncation if no API key
+- File thresholds: `05_MEMORY.md` > 150 lines, `self/beliefs.md` > 60 lines, `self/messages/sent_log.md` > 20 entries, `self/social/*/private.md` > 80 lines
+- `06_HEARTBEAT.md` -- already managed inline in `appendHeartbeat` (max 7 entries), not touched by compact
+- Social private files: gracefully skipped if `self/social/` doesn't exist yet (requires agents to have formed relationships first)
+
+`convex/rocklaw/engine.ts` (refactored -- action-driven ticks):
+- `runRocklawTick` no longer fires agents. It is now purely the **world clock**: advance time, clear busy flags, trigger compaction every 10 ticks, reschedule itself
+- `startRocklaw` now starts the world clock AND kicks off one `bridge.tickAgent` per agent
+- `manualTick` passes `_manual: true` to skip self-scheduling
+- Exported `TICK_INTERVAL_MS` so bridge can import it
+
+`convex/rocklaw/bridge.ts` (refactored -- self-scheduling):
+- `tickAgent` args: `{ agentName, _manual? }` -- tick/day/timeOfDay read from world state at call time, not passed in
+- After committing an action with `duration_ticks: N`, schedules next `tickAgent` in `N * TICK_INTERVAL_MS` ms
+- Graceful shutdown: checks `worldState.isRunning` at start; exits loop if false
+- Gateway failure / parse failure: retries after one tick interval rather than dropping the agent loop permanently
+- Busy at call time: retries in `TICK_INTERVAL_MS / 2` (handles edge case where scheduling fires before `busyUntilTick` cleared)
+
+`convex/rocklaw/god.ts` (updated):
+- `startSim` / `stopSim` now correctly start all agent loops (not just the world clock)
+
+**Decisions made:**
+- Compaction uses LLM (gemini-flash-1.5) for all summary types. temp 0.3 to keep summaries coherent and consistent. Falls back to line truncation if no API key.
+- Agents run truly asynchronously now. Sera doing `serve` (1 tick) ticks every 30s; Finn doing `harvest` (3 ticks) ticks every 90s. World time still advances globally.
+- `_manual` flag avoids self-scheduling in test/manual mode so one `manualTick` call doesn't accidentally start a production loop.
+- Agent loop never dies permanently on errors — gateway failures and parse failures reschedule rather than dropping.
 
 ---
 

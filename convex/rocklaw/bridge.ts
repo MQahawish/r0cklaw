@@ -1,18 +1,27 @@
 /**
- * HTTP Bridge -- connects AI Town's tick scheduler to ZeroClaw agent gateways.
+ * HTTP Bridge -- connects the action-driven agent loop to ZeroClaw gateways.
+ *
+ * Phase 6 change: tickAgent is now self-scheduling.
+ *   - Arguments: just { agentName } (tick/day/timeOfDay read from world state at call time)
+ *   - After committing the action, schedules the next tick at duration_ticks * TICK_INTERVAL_MS
+ *   - Exits silently if isRunning = false (allows graceful shutdown)
+ *   - _manual: true skips self-scheduling (used by manualTick in engine.ts)
  *
  * For each villager tick:
- *   1. Refresh world/ files in the agent's workspace from Convex
- *   2. Check for unanswered letters and inject warnings if threshold exceeded
- *   3. POST minimal tick message to ZeroClaw gateway
- *   4. Parse the returned JSON action
- *   5. Validate and commit the action to Convex world state
- *   6. Append one line to agent's HEARTBEAT.md
+ *   1. Read current tick/day/timeOfDay from world state
+ *   2. Refresh world/ files in the agent's workspace from Convex
+ *   3. Check for unanswered letters and inject warnings if threshold exceeded
+ *   4. POST minimal tick message to ZeroClaw gateway
+ *   5. Parse the returned JSON action
+ *   6. Validate and commit the action to Convex world state
+ *   7. Append one line to agent's HEARTBEAT.md
+ *   8. Self-schedule next tick in duration_ticks * TICK_INTERVAL_MS
  */
 
 import { v } from 'convex/values';
 import { internalAction, internalMutation, internalQuery } from '../_generated/server';
 import { internal } from '../_generated/api';
+import { TICK_INTERVAL_MS } from './engine';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -71,18 +80,30 @@ const EFFORT_COSTS: Record<string, number> = {
 // ── Main tick action ─────────────────────────────────────────────────────────
 
 /**
- * Runs a single tick for one agent.
- * Called by the Convex scheduler (see crons / main engine).
+ * Runs a single tick for one agent (action-driven, self-scheduling).
+ *
+ * Args:
+ *   agentName  -- which agent to tick
+ *   _manual    -- if true, skip self-scheduling (used by manualTick)
  */
 export const tickAgent = internalAction({
   args: {
     agentName: v.string(),
-    tick: v.number(),
-    day: v.number(),
-    timeOfDay: v.string(),
+    _manual: v.optional(v.boolean()),
   },
-  handler: async (ctx, args) => {
-    const { agentName, tick, day, timeOfDay } = args;
+  handler: async (ctx, { agentName, _manual }) => {
+    // 0. Check if the sim is still running (allows graceful stop without cancelling scheduled jobs)
+    const worldState = await ctx.runQuery(internal.rocklaw.engine.getWorldState);
+    if (!worldState) {
+      console.error(`[bridge] No world state — ${agentName} tick aborted`);
+      return;
+    }
+    if (!worldState.isRunning && !_manual) {
+      console.log(`[bridge] ${agentName}: sim stopped, agent loop exiting`);
+      return;
+    }
+
+    const { tick, day, timeOfDay } = worldState;
 
     // 1. Load agent state from Convex
     const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
@@ -91,7 +112,12 @@ export const tickAgent = internalAction({
       return;
     }
     if (agent.busy) {
-      console.log(`[bridge] ${agentName} is busy until tick ${agent.busyUntilTick}, skipping`);
+      // Agent was already re-scheduled but wasn't fully cleared yet — check again soon
+      const waitMs = TICK_INTERVAL_MS / 2;
+      if (!_manual) {
+        await ctx.scheduler.runAfter(waitMs, internal.rocklaw.bridge.tickAgent, { agentName });
+      }
+      console.log(`[bridge] ${agentName} still busy, retrying in ${waitMs}ms`);
       return;
     }
 
@@ -118,6 +144,10 @@ export const tickAgent = internalAction({
       rawResponse = await callZeroClawGateway(agent.gatewayPort, tickMessage);
     } catch (err) {
       console.error(`[bridge] Gateway call failed for ${agentName}:`, err);
+      // Retry after one tick interval — don't drop the agent loop
+      if (!_manual) {
+        await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridge.tickAgent, { agentName });
+      }
       return;
     }
 
@@ -125,12 +155,18 @@ export const tickAgent = internalAction({
     const action = extractAction(rawResponse);
     if (!action) {
       console.error(`[bridge] Could not parse action from ${agentName}'s response:\n${rawResponse}`);
+      if (!_manual) {
+        await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridge.tickAgent, { agentName });
+      }
       return;
     }
 
     // 7. Validate
     if (!validateAction(action)) {
       console.error(`[bridge] Invalid action from ${agentName}:`, action);
+      if (!_manual) {
+        await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridge.tickAgent, { agentName });
+      }
       return;
     }
 
@@ -148,7 +184,15 @@ export const tickAgent = internalAction({
       line: summariseAction(action, day, timeOfDay, result?.outcome, result?.note),
     });
 
-    console.log(`[bridge] ${agentName} tick ${tick} complete: ${action.action} → ${action.target ?? 'null'} [${result?.outcome ?? 'success'}]`);
+    const durationTicks = Math.max(1, action.duration_ticks ?? 1);
+    const nextMs = durationTicks * TICK_INTERVAL_MS;
+
+    console.log(`[bridge] ${agentName} tick ${tick}: ${action.action} → ${action.target ?? 'null'} [${result?.outcome ?? 'success'}] next in ${nextMs}ms`);
+
+    // 10. Self-schedule next tick based on how long this action takes
+    if (!_manual) {
+      await ctx.scheduler.runAfter(nextMs, internal.rocklaw.bridge.tickAgent, { agentName });
+    }
   },
 });
 

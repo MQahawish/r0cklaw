@@ -150,6 +150,8 @@ export const resolveEvent = mutation({
 });
 
 // ── Engine controls (god can start/stop) ─────────────────────────────────────
+// These delegate to engine.startRocklaw / engine.stopRocklaw which handle
+// the world clock + per-agent loop scheduling correctly.
 
 export const startSim = mutation({
   args: {},
@@ -157,9 +159,19 @@ export const startSim = mutation({
     const state = await ctx.db.query('rl_world_state').unique();
     if (!state) throw new Error('Run initRocklaw first');
     if (state.isRunning) return { status: 'already_running' };
+
     await ctx.db.patch(state._id, { isRunning: true });
+
+    // Start world clock
     await ctx.scheduler.runAfter(0, internal.rocklaw.engine.runRocklawTick, {});
-    return { status: 'started' };
+
+    // Start each agent's individual loop
+    const agents = await ctx.db.query('rl_agents').collect();
+    for (const agent of agents) {
+      await ctx.scheduler.runAfter(0, internal.rocklaw.bridge.tickAgent, { agentName: agent.name });
+    }
+
+    return { status: 'started', agentCount: agents.length };
   },
 });
 
@@ -168,6 +180,9 @@ export const stopSim = mutation({
   handler: async (ctx) => {
     const state = await ctx.db.query('rl_world_state').unique();
     if (!state) return { status: 'no_world_state' };
+    // Setting isRunning = false causes:
+    //   - world clock to exit after next tick
+    //   - each agent loop to exit at start of their next wake
     await ctx.db.patch(state._id, { isRunning: false });
     return { status: 'stopped' };
   },
