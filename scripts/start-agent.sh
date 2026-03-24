@@ -27,14 +27,14 @@ if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
   exit 1
 fi
 
-CONFIG="$AGENT_DIR/config.toml"
 LOG_FILE="/tmp/zeroclaw-$AGENT.log"
 
 echo "Starting ZeroClaw gateway for: $AGENT"
-echo "Config: $CONFIG"
-echo "Log:    $LOG_FILE"
+echo "Config dir: $AGENT_DIR"
+echo "Log:        $LOG_FILE"
 echo ""
 
-# Run zeroclaw gateway from the agent's directory so relative workspace_dir works
+# Run from agent dir so relative workspace_dir resolves correctly.
+# --config-dir points zeroclaw at the directory containing config.toml.
 cd "$AGENT_DIR"
-exec zeroclaw gateway --config "$CONFIG" 2>&1 | tee "$LOG_FILE"
+exec zeroclaw --config-dir "$AGENT_DIR" gateway start 2>&1 | tee "$LOG_FILE"
