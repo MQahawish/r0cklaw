@@ -84,6 +84,7 @@ else
   echo "[3/6] Ensuring Rocklaw world exists (continuing current state)..."
   npx convex run rocklaw/init:initRocklaw >/dev/null
 fi
+npx convex run rocklaw/init:setWorkspaceRoot "{\"rootPath\":\"$ROOT_DIR\"}" >/dev/null
 
 echo "[4/6] Restarting Rocklaw simulation..."
 npx convex run rocklaw/god:stopSim >/dev/null 2>&1 || true

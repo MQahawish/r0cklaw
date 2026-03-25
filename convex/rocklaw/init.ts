@@ -174,6 +174,26 @@ export const initRocklaw = mutation({
   },
 });
 
+export const setWorkspaceRoot = mutation({
+  args: { rootPath: v.string() },
+  handler: async (ctx, { rootPath }) => {
+    const agents = await ctx.db.query('rl_agents').collect();
+    let updated = 0;
+
+    for (const agent of agents) {
+      const suffix = extractWorkspaceSuffix(agent.workspacePath);
+      if (!suffix) continue;
+      const nextPath = joinRootAndSuffix(rootPath, suffix);
+      if (agent.workspacePath !== nextPath) {
+        await ctx.db.patch(agent._id, { workspacePath: nextPath });
+        updated += 1;
+      }
+    }
+
+    return { updated };
+  },
+});
+
 // Convenience: tick the simulation forward by one step (morning → afternoon → evening → next day morning)
 export const advanceTick = internalMutation({
   args: {},
@@ -199,3 +219,20 @@ export const advanceTick = internalMutation({
     return { tick: nextTick, day: nextDay, timeOfDay: nextTime };
   },
 });
+
+function extractWorkspaceSuffix(workspacePath: string): string | null {
+  const normalized = workspacePath.replace(/\\/g, '/');
+  const marker = '/agents/';
+  if (normalized.startsWith('agents/')) return normalized;
+  const idx = normalized.indexOf(marker);
+  if (idx >= 0) {
+    return normalized.slice(idx + 1);
+  }
+  return null;
+}
+
+function joinRootAndSuffix(rootPath: string, suffix: string): string {
+  const cleanRoot = rootPath.replace(/[\\/]+$/, '');
+  const cleanSuffix = suffix.replace(/^[\\/]+/, '').replace(/\\/g, '/');
+  return `${cleanRoot}/${cleanSuffix}`;
+}

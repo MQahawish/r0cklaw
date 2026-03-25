@@ -77,6 +77,7 @@ else
   echo "[3/5] Keeping current Rocklaw world state..."
   npx convex run rocklaw/init:initRocklaw >/dev/null
 fi
+npx convex run rocklaw/init:setWorkspaceRoot "{\"rootPath\":\"$ROOT_DIR\"}" >/dev/null
 
 echo "[4/5] Enabling full runtime traces for $AGENT..."
 mkdir -p "$(dirname "$TRACE_PATH")"

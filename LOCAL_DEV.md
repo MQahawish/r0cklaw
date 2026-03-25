@@ -157,6 +157,7 @@ Notes:
 - Rocklaw ticks now use ZeroClaw `ws/chat` sessions, persist tool-stream events to `tick-debug.jsonl`, and parse only the final `done.full_response` as the world action
 - startup helpers now sync the self-hosted Convex admin key and deploy local Convex functions automatically
 - startup helpers also loosen local `agents/` workspace permissions so the self-hosted Convex container can write shared world/debug files
+- startup helpers also patch absolute `workspacePath` values into Convex so local Node actions write to the host-visible workspace tree
 
 ## Agent Provider / Model Overrides
 
