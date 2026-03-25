@@ -40,6 +40,18 @@ Start fresh local world:
 npm run dev:rocklaw:fresh
 ```
 
+Prepare the whole world in the background without starting the continuous sim:
+
+```bash
+npm run lab:rocklaw -- --continue
+```
+
+Prepare a fresh world and all agent gateways for interactive stepping:
+
+```bash
+npm run lab:rocklaw -- --fresh
+```
+
 Stop local Rocklaw stack:
 
 ```bash
@@ -70,6 +82,12 @@ Prepare one agent and step through ticks interactively in one terminal:
 
 ```bash
 npm run step:agent -- elena --fresh
+```
+
+Step the whole Rocklaw world interactively in one terminal:
+
+```bash
+npm run step:rocklaw -- --fresh
 ```
 
 Start one agent only, keep current world:
@@ -146,6 +164,18 @@ After each tick it prints the watcher snapshot and prompts:
 
 ```text
 Continue to next tick? [Y/n]
+```
+
+Interactive full-world step loop:
+
+```bash
+npm run step:rocklaw -- --fresh
+```
+
+After each world tick it prints a compact per-agent summary and prompts:
+
+```text
+Continue to next world tick? [Y/n]
 ```
 
 Foreground deep-debug flow:
