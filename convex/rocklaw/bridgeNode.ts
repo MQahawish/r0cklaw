@@ -10,11 +10,20 @@ import WebSocket from 'ws';
 
 type RocklawAction = {
   action: string;
-  target: string | null;
+  target?: string | null;
+  location?: string | null;
+  text?: string;
+  topic?: string;
+  item?: string | null;
+  quantity?: number | null;
+  amount?: number | null;
+  offer?: unknown[];
+  request?: unknown[];
   duration_ticks: number;
+  thought?: string;
   message?: string;
-  consumes: string[];
-  produces: string[];
+  consumes: unknown[];
+  produces: unknown[];
   memory_note?: string;
 };
 
@@ -26,6 +35,18 @@ type WsEvent =
   | { type: 'done'; full_response?: string }
   | { type: 'error'; message?: string; code?: string }
   | { type: string; [key: string]: unknown };
+
+class ZeroClawTurnError extends Error {
+  host?: string;
+  events: WsEvent[];
+
+  constructor(message: string, options?: { host?: string; events?: WsEvent[] }) {
+    super(message);
+    this.name = 'ZeroClawTurnError';
+    this.host = options?.host;
+    this.events = options?.events ?? [];
+  }
+}
 
 const VALID_ACTIONS = new Set([
   'talk', 'move', 'rest', 'sleep', 'eat', 'buy', 'sell', 'pay', 'give', 'trade',
@@ -116,6 +137,10 @@ export const tickAgent = internalAction({
       debugRecord.phase = 'transport_failed';
       debugRecord.timestamp = new Date().toISOString();
       debugRecord.error = err instanceof Error ? err.message : String(err);
+      if (err instanceof ZeroClawTurnError) {
+        debugRecord.gatewayHost = err.host;
+        debugRecord.events = err.events;
+      }
       console.error(`[bridge] Gateway call failed for ${agentName}:`, err);
       await appendTickDebug(agent.workspacePath, debugRecord);
       if (!_manual) {
@@ -125,6 +150,26 @@ export const tickAgent = internalAction({
     }
 
     debugRecord.rawResponse = rawResponse;
+
+    const trimmedResponse = rawResponse.trimStart();
+    if (!trimmedResponse.startsWith('{')) {
+      debugRecord.phase = 'parse_failed';
+      debugRecord.timestamp = new Date().toISOString();
+      debugRecord.validation = {
+        outcome: 'parse_failed',
+        note: 'Final response must start with { and contain only one JSON object.',
+      };
+      console.error(`[bridge] Non-JSON-prefixed response from ${agentName}:\n${rawResponse}`);
+      await appendTickDebug(agent.workspacePath, debugRecord);
+      await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
+        agentName,
+        note: 'SYSTEM: Next response must begin with { immediately. Return only one JSON object.',
+      });
+      if (!_manual) {
+        await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridgeNode.tickAgent, { agentName });
+      }
+      return;
+    }
 
     const action = extractAction(rawResponse);
     if (!action) {
@@ -138,7 +183,7 @@ export const tickAgent = internalAction({
       await appendTickDebug(agent.workspacePath, debugRecord);
       await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
         agentName,
-        note: 'SYSTEM: Your final response could not be parsed as valid JSON. Use tools if needed, but finish with exactly one JSON action object and nothing else.',
+        note: 'SYSTEM: Next response must be JSON only. Start with { and end with }.',
       });
       if (!_manual) {
         await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridgeNode.tickAgent, { agentName });
@@ -159,7 +204,7 @@ export const tickAgent = internalAction({
       await appendTickDebug(agent.workspacePath, debugRecord);
       await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
         agentName,
-        note: 'SYSTEM: Your final JSON action was structurally invalid. Return one JSON object with action, target, duration_ticks, consumes, produces, and optional message/memory_note.',
+        note: 'SYSTEM: Next response must be one valid JSON action object only.',
       });
       if (!_manual) {
         await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridgeNode.tickAgent, { agentName });
@@ -204,16 +249,23 @@ export const tickAgent = internalAction({
 function buildTickMessage(day: number, timeOfDay: string, tick: number, letterWarning?: string): string {
   const sections = [
     `It is ${timeOfDay}, Day ${day}, tick ${tick} in Rocklaw.`,
-    'Use your files and tools as needed to understand your situation before deciding.',
-    'Think silently. Use tools for reading, recall, and note updates only.',
+    'Use your files and tools only to understand the situation and decide.',
+    'Think silently. Read only the minimum files needed. In most ticks, 3-5 reads are enough.',
+    'When you know what to do, stop using tools and return the final answer immediately.',
+    'Return exactly one JSON object and nothing else.',
+    'The first character must be { and the last character must be }.',
+    'No prose before or after the JSON object.',
     'Do not ask clarifying questions. Do not emit tool_code. Do not execute shell commands for world actions.',
-    'Your FINAL response must be exactly one JSON object for the world engine and nothing else.',
-    'The first character of your final response must be { and the last character must be }.',
-    'Do not include prose, markdown fences, commentary, repetition, or explanation outside the JSON object.',
-    'If you want to explain intent, put it inside "message" or "memory_note" fields in the JSON.',
+    'If you want to explain why, put it in "thought".',
+    'Use "message" for outward wording. Use "memory_note" for the private takeaway.',
     '',
     'Final response schema:',
-    '{"action":"...","target":"agent_name|location_name|item_name|null","duration_ticks":1,"message":"optional","consumes":[],"produces":[],"memory_note":"optional"}',
+    '{"action":"...","duration_ticks":1,"target":"optional","location":"optional","text":"optional","topic":"optional","item":"optional","quantity":1,"amount":0,"consumes":[],"produces":[],"offer":[],"request":[],"thought":"optional","message":"optional","memory_note":"optional"}',
+    '',
+    'Examples:',
+    '{"action":"rest","duration_ticks":1,"thought":"Energy is too low for demanding work.","message":"Resting for a bit."}',
+    '{"action":"move","location":"market","duration_ticks":1,"thought":"Need supplies before work stalls.","message":"Going to the market."}',
+    '{"action":"craft","item":"horseshoe","quantity":2,"duration_ticks":1,"consumes":[{"item":"iron_ore","quantity":4},{"item":"coal","quantity":2}],"produces":[{"item":"horseshoe","quantity":2}],"thought":"Market demand is severe and I have the materials.","message":"Crafting two horseshoes."}',
   ];
 
   if (letterWarning) {
@@ -241,11 +293,21 @@ async function runZeroClawTurn(
       const result = await runZeroClawTurnOnUrl(url, prompt);
       return { host, finalResponse: result.finalResponse, events: result.events };
     } catch (error) {
-      lastError = new Error(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+      if (error instanceof ZeroClawTurnError) {
+        lastError = new ZeroClawTurnError(`${url}: ${error.message}`, {
+          host,
+          events: error.events,
+        });
+      } else {
+        lastError = new ZeroClawTurnError(`${url}: ${error instanceof Error ? error.message : String(error)}`, {
+          host,
+          events: [],
+        });
+      }
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error(`ZeroClaw gateway unavailable on port ${port}`);
+  throw lastError instanceof Error ? lastError : new ZeroClawTurnError(`ZeroClaw gateway unavailable on port ${port}`);
 }
 
 async function runZeroClawTurnOnUrl(
@@ -265,7 +327,9 @@ async function runZeroClawTurnOnUrl(
       }
       if (!resolved) {
         resolved = true;
-        reject(new Error(`Timed out waiting for ZeroClaw session response after ${WS_TIMEOUT_MS}ms`));
+        reject(new ZeroClawTurnError(`Timed out waiting for ZeroClaw session response after ${WS_TIMEOUT_MS}ms`, {
+          events,
+        }));
       }
     }, WS_TIMEOUT_MS);
 
@@ -273,7 +337,7 @@ async function runZeroClawTurnOnUrl(
       if (resolved) return;
       resolved = true;
       clearTimeout(timeout);
-      reject(error);
+      reject(new ZeroClawTurnError(error.message, { events }));
     };
 
     ws.addEventListener('open', () => {
@@ -342,11 +406,13 @@ function extractAction(response: string): RocklawAction | null {
     }
   }
 
-  const jsonMatches = [...response.matchAll(/\{[\s\S]*?\}/g)];
-  for (let i = jsonMatches.length - 1; i >= 0; i--) {
+  const jsonCandidates = extractJsonObjects(response);
+  for (let i = jsonCandidates.length - 1; i >= 0; i--) {
     try {
-      const parsed = JSON.parse(jsonMatches[i][0]);
-      if (parsed.action) return parsed;
+      const parsed = JSON.parse(jsonCandidates[i]);
+      if (parsed && typeof parsed === 'object' && 'action' in parsed) {
+        return parsed as RocklawAction;
+      }
     } catch {
       // keep looking
     }
@@ -354,15 +420,98 @@ function extractAction(response: string): RocklawAction | null {
   return null;
 }
 
+function extractJsonObjects(text: string): string[] {
+  const results: string[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaping = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (inString) {
+      if (escaping) {
+        escaping = false;
+      } else if (ch === '\\') {
+        escaping = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === '{') {
+      if (depth === 0) start = i;
+      depth += 1;
+      continue;
+    }
+
+    if (ch === '}') {
+      if (depth === 0) continue;
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        results.push(text.slice(start, i + 1));
+        start = -1;
+      }
+    }
+  }
+
+  return results;
+}
+
 function validateAction(action: RocklawAction): boolean {
-  return (
-    typeof action.action === 'string' &&
-    VALID_ACTIONS.has(action.action) &&
-    typeof action.duration_ticks === 'number' &&
-    action.duration_ticks >= 1 &&
-    Array.isArray(action.consumes) &&
-    Array.isArray(action.produces)
-  );
+  if (typeof action.action !== 'string' || !VALID_ACTIONS.has(action.action)) return false;
+  if (typeof action.duration_ticks !== 'number' || action.duration_ticks < 1) return false;
+  if (!Array.isArray(action.consumes) || !Array.isArray(action.produces)) return false;
+
+  const isStringish = (value: unknown) => value === undefined || value === null || typeof value === 'string';
+  const isNumberish = (value: unknown) => value === undefined || value === null || typeof value === 'number';
+  const isEntityList = (value: unknown) =>
+    value === undefined ||
+    (Array.isArray(value) &&
+      value.every((entry) =>
+        typeof entry === 'string' ||
+        (typeof entry === 'object' &&
+          entry !== null &&
+          typeof (entry as Record<string, unknown>).item === 'string' &&
+          typeof (entry as Record<string, unknown>).quantity === 'number')));
+
+  if (!isStringish(action.target) || !isStringish(action.location) || !isStringish(action.text) || !isStringish(action.topic) || !isStringish(action.item) || !isStringish(action.thought)) {
+    return false;
+  }
+  if (!isNumberish(action.quantity) || !isNumberish(action.amount)) return false;
+  if (!isEntityList(action.offer) || !isEntityList(action.request)) return false;
+
+  switch (action.action) {
+    case 'move':
+      return typeof (action.location ?? action.target) === 'string';
+    case 'talk':
+    case 'leave_message':
+    case 'write':
+    case 'pray':
+      return typeof (action.text ?? action.message) === 'string';
+    case 'pay':
+      return typeof action.target === 'string' && typeof action.amount === 'number';
+    case 'buy':
+    case 'sell':
+    case 'give':
+    case 'eat':
+    case 'craft':
+    case 'repair':
+    case 'smelt':
+    case 'appraise':
+      return typeof (action.item ?? action.target) === 'string';
+    case 'trade':
+      return typeof action.target === 'string' && Array.isArray(action.offer) && Array.isArray(action.request);
+    default:
+      return true;
+  }
 }
 
 function summariseAction(
@@ -372,8 +521,9 @@ function summariseAction(
   outcome?: string,
   outcomeNote?: string | null,
 ): string {
-  const target = action.target ? ` → ${action.target}` : '';
-  const note = action.message ? ` (${action.message.slice(0, 60)})` : '';
+  const destination = action.location ?? action.target ?? action.item ?? null;
+  const target = destination ? ` → ${destination}` : '';
+  const note = (action.message ?? action.text) ? ` (${(action.message ?? action.text ?? '').slice(0, 60)})` : '';
   const failed = outcome === 'failed' ? ' [FAILED]' : '';
   const warning = outcomeNote ? ` ⚠ ${outcomeNote.slice(0, 80)}` : '';
   return `- Day ${day} ${timeOfDay}: ${action.action}${target}${note}${failed}${warning}`;

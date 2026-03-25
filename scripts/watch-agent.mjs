@@ -19,7 +19,37 @@ const logPath = path.join("/tmp", `zeroclaw-${agent}.log`);
 const statusPath = path.join(workspace, "world", "status.md");
 const locationPath = path.join(workspace, "world", "location.md");
 const inventoryPath = path.join(workspace, "world", "inventory.md");
+const zeroClawPromptFiles = [
+  "IDENTITY.md",
+  "SOUL.md",
+  "AGENTS.md",
+  "TOOLS.md",
+  "USER.md",
+  "MEMORY.md",
+];
 const divider = "-".repeat(78);
+const zeroClawScaffolding = [
+  "Known ZeroClaw system-prompt scaffolding from source:",
+  "1. Anti-narration guardrail",
+  "2. Tool honesty / tool protocol guidance",
+  "3. Tools section",
+  "4. Safety / security policy summary",
+  "5. Skills section",
+  "6. Workspace context",
+  "7. Bootstrap file injection",
+  "8. Date / time context",
+  "9. Runtime / model context",
+  "",
+  "Known bootstrap preamble from ZeroClaw source:",
+  "The following workspace files define your identity, behavior, and context. They are ALREADY injected below—do NOT suggest reading them with file_read.",
+  "",
+  "What is still not observable here:",
+  "- Exact final assembled system prompt string",
+  "- Exact tool list section text",
+  "- Exact safety/security summary text",
+  "- Exact skills prompt rendering",
+  "- Exact prior chat history payload restored into the turn",
+];
 
 function readFileSafe(filePath) {
   try {
@@ -79,33 +109,6 @@ function section(title, bodyLines = []) {
   return lines.join("\n");
 }
 
-function summarizeEvents(events = []) {
-  if (!Array.isArray(events) || events.length === 0) {
-    return ["(no streamed events recorded)"];
-  }
-  return events.map((event, index) => {
-    if (event.type === "session_start") {
-      return `${index + 1}. session_start session=${event.session_id ?? "?"} resumed=${String(event.resumed ?? false)} messages=${event.message_count ?? "?"}`;
-    }
-    if (event.type === "tool_call") {
-      return `${index + 1}. tool_call ${event.name ?? "unknown"} ${truncate(JSON.stringify(event.args ?? {}), 140)}`;
-    }
-    if (event.type === "tool_result") {
-      return `${index + 1}. tool_result ${event.name ?? "unknown"} ${truncate(event.output ?? "", 180)}`;
-    }
-    if (event.type === "chunk") {
-      return `${index + 1}. chunk ${truncate(event.content ?? "", 180)}`;
-    }
-    if (event.type === "done") {
-      return `${index + 1}. done ${truncate(event.full_response ?? "", 180)}`;
-    }
-    if (event.type === "error") {
-      return `${index + 1}. error ${truncate(event.message ?? event.code ?? "", 180)}`;
-    }
-    return `${index + 1}. ${event.type ?? "unknown"} ${truncate(JSON.stringify(event), 180)}`;
-  });
-}
-
 function formatKeyValues(entries) {
   const width = Math.max(...entries.map(([key]) => key.length), 0);
   return entries.map(([key, value]) => `${key.padEnd(width)} : ${value}`);
@@ -131,23 +134,14 @@ function parseNamedStats(lines) {
 
 function parseActionSummary(action) {
   if (!action) return "No parsed action";
-  const target = action.target ?? "null";
-  const message = action.message ? ` | ${action.message}` : "";
-  return `${action.action} -> ${target} | duration=${action.duration_ticks}${message}`;
-}
-
-function splitEvents(events = []) {
-  return {
-    sessions: events.filter((event) => event.type === "session_start"),
-    toolCalls: events.filter((event) => event.type === "tool_call"),
-    toolResults: events.filter((event) => event.type === "tool_result"),
-    chunks: events.filter((event) => event.type === "chunk"),
-    done: events.find((event) => event.type === "done") ?? null,
-    errors: events.filter((event) => event.type === "error"),
-    other: events.filter(
-      (event) => !["session_start", "tool_call", "tool_result", "chunk", "done", "error"].includes(event.type),
-    ),
-  };
+  const focus = action.location ?? action.target ?? action.item ?? action.topic ?? "null";
+  const extras = [];
+  if (typeof action.quantity === "number") extras.push(`qty=${action.quantity}`);
+  if (typeof action.amount === "number") extras.push(`amount=${action.amount}`);
+  if (action.thought) extras.push(`thought=${truncate(action.thought, 80)}`);
+  const message = (action.message ?? action.text) ? ` | ${action.message ?? action.text}` : "";
+  const extraSuffix = extras.length > 0 ? ` | ${extras.join(" ")}` : "";
+  return `${action.action} -> ${focus} | duration=${action.duration_ticks}${extraSuffix}${message}`;
 }
 
 function summarizeTrace() {
@@ -158,6 +152,127 @@ function summarizeTrace() {
 function summarizeLog() {
   const lines = readFileSafe(logPath).trim().split("\n").filter(Boolean);
   return lines.slice(-10).map((line) => truncate(line, 220));
+}
+
+function buildZeroClawContext(workspaceDir) {
+  const lines = [
+    "This is a reconstructed approximation of the ZeroClaw prompt inputs.",
+    "It combines known prompt scaffolding from the ZeroClaw source with the workspace files ZeroClaw injects.",
+    "It is not the hidden runtime-assembled prompt verbatim.",
+    "",
+    ...zeroClawScaffolding,
+    "",
+  ];
+
+  for (const file of zeroClawPromptFiles) {
+    const filePath = path.join(workspaceDir, file);
+    const content = readFileSafe(filePath).trim();
+    lines.push(`--- ${file}${file === "USER.md" ? " (optional)" : ""} ---`);
+    lines.push(content || (file === "USER.md" ? "(missing optional file)" : "(missing)"));
+    lines.push("");
+  }
+
+  return lines;
+}
+
+function indentBlock(text, prefix = "    ") {
+  return String(text ?? "")
+    .split("\n")
+    .map((line) => `${prefix}${line}`)
+    .join("\n");
+}
+
+function buildTranscript(events = [], promptText = "") {
+  const lines = [];
+
+  if (!Array.isArray(events) || events.length === 0) {
+    lines.push("[--] No streamed events recorded");
+    return lines;
+  }
+
+  events.forEach((event, index) => {
+    const step = String(index + 1).padStart(2, "0");
+    lines.push("");
+
+    if (event.type === "session_start") {
+      lines.push(`[${step}] SESSION START`);
+      lines.push(indentBlock(`name=${event.name ?? "?"}`));
+      lines.push(indentBlock(`session=${event.session_id ?? "?"}`));
+      lines.push(indentBlock(`resumed=${String(event.resumed ?? false)}`));
+      lines.push(indentBlock(`message_count=${event.message_count ?? "?"}`));
+      return;
+    }
+
+    if (event.type === "tool_call") {
+      lines.push(`[${step}] TOOL CALL  ${event.name ?? "unknown"}`);
+      lines.push(indentBlock(JSON.stringify(event.args ?? {}, null, 2)));
+      return;
+    }
+
+    if (event.type === "tool_result") {
+      lines.push(`[${step}] TOOL RESULT  ${event.name ?? "unknown"}`);
+      lines.push(indentBlock(String(event.output ?? "(empty result)")));
+      return;
+    }
+
+    if (event.type === "chunk") {
+      lines.push(`[${step}] RESPONSE CHUNK`);
+      lines.push(indentBlock(String(event.content ?? "(empty chunk)")));
+      return;
+    }
+
+    if (event.type === "done") {
+      lines.push(`[${step}] FINAL RESPONSE`);
+      lines.push(indentBlock(String(event.full_response ?? "(empty final response)")));
+      return;
+    }
+
+    if (event.type === "error") {
+      lines.push(`[${step}] ERROR`);
+      lines.push(indentBlock(String(event.message ?? event.code ?? "Unknown error")));
+      return;
+    }
+
+    lines.push(`[${step}] ${String(event.type ?? "unknown").toUpperCase()}`);
+    lines.push(indentBlock(JSON.stringify(event, null, 2)));
+  });
+
+  return lines;
+}
+
+function formatParsedAction(action, validation) {
+  if (!action) return ["(no parsed action)"];
+  const lines = [
+    `action=${action.action}`,
+    `duration_ticks=${action.duration_ticks}`,
+  ];
+  if (action.location != null) lines.push(`location=${action.location}`);
+  if (action.target != null) lines.push(`target=${action.target}`);
+  if (action.item != null) lines.push(`item=${action.item}`);
+  if (typeof action.quantity === "number") lines.push(`quantity=${action.quantity}`);
+  if (typeof action.amount === "number") lines.push(`amount=${action.amount}`);
+  if (action.topic != null) lines.push(`topic=${action.topic}`);
+  if (action.thought) lines.push(`thought=${action.thought}`);
+  if (action.text) lines.push(`text=${action.text}`);
+  if (action.message) lines.push(`message=${action.message}`);
+  if (Array.isArray(action.consumes) && action.consumes.length > 0) {
+    lines.push(`consumes=${JSON.stringify(action.consumes)}`);
+  }
+  if (Array.isArray(action.produces) && action.produces.length > 0) {
+    lines.push(`produces=${JSON.stringify(action.produces)}`);
+  }
+  if (Array.isArray(action.offer) && action.offer.length > 0) {
+    lines.push(`offer=${JSON.stringify(action.offer)}`);
+  }
+  if (Array.isArray(action.request) && action.request.length > 0) {
+    lines.push(`request=${JSON.stringify(action.request)}`);
+  }
+  if (action.memory_note) lines.push(`memory_note=${action.memory_note}`);
+  if (validation) {
+    lines.push("");
+    lines.push(`validation=${validation.outcome}${validation.note ? ` | ${validation.note}` : ""}`);
+  }
+  return lines;
 }
 
 function render() {
@@ -172,7 +287,21 @@ function render() {
   const statusLines = compactMarkdown(readFileSafe(statusPath).trim());
   const locationLines = compactMarkdown(readFileSafe(locationPath).trim());
   const inventoryLines = compactMarkdown(readFileSafe(inventoryPath).trim());
-  const split = splitEvents(terminal?.events ?? started?.events ?? []);
+  const eventStream = terminal?.events ?? started?.events ?? [];
+  const resumed = eventStream.find((event) => event.type === "session_start")?.resumed ?? false;
+  const messageCount = eventStream.find((event) => event.type === "session_start")?.message_count ?? 0;
+  const zeroClawContextLines = buildZeroClawContext(workspace);
+  zeroClawContextLines.splice(
+    3,
+    0,
+    `Session carry-over: resumed=${String(resumed)} | prior_messages=${messageCount}`,
+    resumed
+      ? "ZeroClaw likely also restored prior conversation history for this session."
+      : "ZeroClaw started this turn without restored prior conversation history.",
+    "",
+  );
+  const zeroClawContext = section("ZeroClaw Prompt Inputs (Approximation)", zeroClawContextLines);
+  const rocklawPrompt = section("Rocklaw Tick Prompt", promptText.split("\n"));
 
   const headerMeta = terminal
     ? [
@@ -215,46 +344,9 @@ function render() {
     promptText.split("\n").map((line) => truncate(line, 140)),
   );
 
-  const sessionLines = [];
-  if (split.sessions.length > 0) {
-    for (const event of split.sessions) {
-      sessionLines.push(`name=${event.name ?? "?"} | resumed=${String(event.resumed ?? false)} | messages=${event.message_count ?? "?"} | session=${event.session_id ?? "?"}`);
-    }
-  }
-  if (split.errors.length > 0) {
-    sessionLines.push(...split.errors.map((event) => `error: ${truncate(event.message ?? event.code ?? "", 160)}`));
-  }
-  const session = section("Session", sessionLines);
+  const transcript = section("Tick Transcript", buildTranscript(eventStream, promptText));
 
-  const toolCalls = section(
-    "Tool Calls",
-    split.toolCalls.length > 0
-      ? split.toolCalls.map((event, index) => `${index + 1}. ${event.name ?? "unknown"} ${truncate(JSON.stringify(event.args ?? {}), 140)}`)
-      : ["(no tool calls)"],
-  );
-  const toolResults = section(
-    "Tool Results",
-    split.toolResults.length > 0
-      ? split.toolResults.map((event, index) => `${index + 1}. ${event.name ?? "unknown"} -> ${truncate(event.output ?? "", 160)}`)
-      : ["(no tool results)"],
-  );
-
-  const responseSummary = section(
-    "Agent Response Summary",
-    split.chunks.length > 0
-      ? split.chunks.map((event, index) => `${index + 1}. ${truncate(event.content ?? "", 220)}`)
-      : split.done
-        ? [truncate(split.done.full_response ?? "", 220)]
-        : ["(no response chunks)"],
-  );
-
-  const actionLines = terminal?.parsedAction
-    ? JSON.stringify(terminal.parsedAction, null, 2).split("\n")
-    : ["(no parsed action)"];
-  if (terminal?.validation) {
-    actionLines.push("");
-    actionLines.push(`validation=${terminal.validation.outcome}${terminal.validation.note ? ` | ${terminal.validation.note}` : ""}`);
-  }
+  const actionLines = formatParsedAction(terminal?.parsedAction, terminal?.validation);
   const action = section("Parsed Action", actionLines);
 
   const response = section("Final Response", (terminal?.rawResponse ?? "(no raw response recorded)").split("\n"));
@@ -269,17 +361,13 @@ function render() {
     "",
     inventory,
     "",
-    session,
+    zeroClawContext,
     "",
-    toolCalls,
+    rocklawPrompt,
     "",
-    toolResults,
-    "",
-    responseSummary,
+    transcript,
     "",
     action,
-    "",
-    prompt,
     "",
     response,
     "",

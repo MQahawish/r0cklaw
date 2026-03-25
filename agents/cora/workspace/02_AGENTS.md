@@ -88,20 +88,35 @@ You may read and think with tools, but you must not try to execute the world act
 
 ## Returning your action
 
-When you have decided what to do, return ONLY this JSON block
-and nothing else after it. This is how you act in the world:
+When you have decided what to do, return ONLY one JSON object and nothing else after it.
+Use only the fields needed for the action you chose. Use `thought` for why now, `message` for outward framing, and `memory_note` for the private takeaway. Do not write any reasoning outside the JSON object; if you would explain yourself in prose, put it in `thought` instead.
 
 ```json
 {
   "action": "talk|move|craft|rest|trade|eat|sleep|pray|give|observe|write",
-  "target": "agent_name|location_name|item_name|null",
   "duration_ticks": 1,
-  "message": "optional dialogue or inner monologue",
+  "target": "optional agent name",
+  "location": "optional location name",
+  "text": "optional spoken or written content",
+  "topic": "optional observation topic",
+  "item": "optional item name",
+  "quantity": 1,
+  "amount": 0,
   "consumes": [],
   "produces": [],
-  "memory_note": "optional -- what you want to remember from this"
+  "offer": [],
+  "request": [],
+  "thought": "optional why you chose this action now",
+  "message": "optional outward wording or visible framing",
+  "memory_note": "optional private takeaway to remember later"
 }
 ```
+
+Examples:
+- move: `{"action":"move","location":"market","duration_ticks":1,"thought":"Need supplies before work stalls.","message":"Going to the market."}`
+- talk: `{"action":"talk","target":"Marcus Hale","text":"I need coal by tomorrow.","duration_ticks":1,"thought":"Secure fuel for the forge."}`
+- craft: `{"action":"craft","item":"horseshoe","quantity":2,"duration_ticks":1,"consumes":[{"item":"iron_ore","quantity":4},{"item":"coal","quantity":2}],"produces":[{"item":"horseshoe","quantity":2}],"thought":"Market demand is severe and I have the materials."}`
+- trade: `{"action":"trade","target":"Finn","offer":[{"item":"horseshoe","quantity":1}],"request":[{"item":"iron_ore","quantity":2}],"duration_ticks":1,"thought":"Turn finished goods into raw materials."}`
 
 Valid actions: talk, move, craft, repair, smelt, rest, sleep, eat,
                buy, sell, pay, give, trade, observe, write, pray

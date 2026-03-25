@@ -2,6 +2,7 @@ workspace_dir = "workspace"
 default_provider = "openrouter"
 default_model = "google/gemini-2.5-flash"
 default_temperature = 0.8
+max_tool_iterations = 16
 
 [gateway]
 port = 42619

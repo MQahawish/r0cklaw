@@ -16,11 +16,20 @@ import { TICK_INTERVAL_MS } from './engine';
 
 export type RocklawAction = {
   action: string;
-  target: string | null;
+  target?: string | null;
+  location?: string | null;
+  text?: string;
+  topic?: string;
+  item?: string | null;
+  quantity?: number | null;
+  amount?: number | null;
+  offer?: unknown[];
+  request?: unknown[];
   duration_ticks: number;
+  thought?: string;
   message?: string;
-  consumes: string[];
-  produces: string[];
+  consumes: unknown[];
+  produces: unknown[];
   memory_note?: string;
 };
 
@@ -94,6 +103,149 @@ function normaliseItemEntry(entry: unknown): { value: string; qty: number; colon
   return null;
 }
 
+function dedupeStringList(items: string[]): string[] {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    counts.set(item, (counts.get(item) ?? 0) + 1);
+  }
+  return Array.from(counts.entries()).flatMap(([item, qty]) =>
+    qty <= 1 ? [item] : [`${item}:${qty}`],
+  );
+}
+
+function normaliseEntityList(entries: unknown[] | undefined): Array<{ item: string; quantity: number }> | undefined {
+  if (!Array.isArray(entries)) return undefined;
+  const parsed = parseItemList(entries);
+  const out = Object.entries(parsed).map(([item, quantity]) => ({ item, quantity }));
+  return out.length > 0 ? out : [];
+}
+
+function normaliseScalarString(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (trimmed === '') return null;
+  if (trimmed === 'null') return null;
+  return trimmed;
+}
+
+function normaliseNumber(value: unknown): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function normaliseAction(parsed: RocklawAction): RocklawAction {
+  const parsedRecord = parsed as RocklawAction & { intent?: unknown };
+  const action = parsed.action;
+  const target = normaliseScalarString(parsed.target);
+  const location = normaliseScalarString(parsed.location);
+  const item = normaliseScalarString(parsed.item);
+  const text = typeof parsed.text === 'string' ? parsed.text.trim() : undefined;
+  const topic = typeof parsed.topic === 'string' ? parsed.topic.trim() : undefined;
+  const legacyIntent = typeof parsedRecord.intent === 'string' ? parsedRecord.intent.trim() : undefined;
+  const thought = typeof parsed.thought === 'string' ? parsed.thought.trim() : legacyIntent;
+  const quantity = normaliseNumber(parsed.quantity);
+  const amount = normaliseNumber(parsed.amount);
+  const consumes = dedupeStringList(
+    (parsed.consumes ?? [])
+      .map((entry) => normaliseItemEntry(entry))
+      .filter((entry): entry is { value: string; qty: number; colonIdx: number } => entry !== null)
+      .flatMap((entry) => Array.from({ length: entry.qty }, () => entry.value)),
+  );
+  const produces = dedupeStringList(
+    (parsed.produces ?? [])
+      .map((entry) => normaliseItemEntry(entry))
+      .filter((entry): entry is { value: string; qty: number; colonIdx: number } => entry !== null)
+      .flatMap((entry) => Array.from({ length: entry.qty }, () => entry.value)),
+  );
+
+  const normalized: RocklawAction = {
+    ...parsed,
+    target,
+    location,
+    text,
+    topic,
+    thought,
+    item,
+    quantity,
+    amount,
+    duration_ticks: Math.max(1, parsed.duration_ticks ?? 1),
+    consumes,
+    produces,
+  };
+
+  if (action === 'move' && !normalized.location && target) {
+    normalized.location = target;
+  }
+  if ((action === 'talk' || action === 'leave_message' || action === 'write' || action === 'pray') && !normalized.text && parsed.message) {
+    normalized.text = parsed.message;
+  }
+  if ((action === 'craft' || action === 'repair' || action === 'smelt' || action === 'eat' || action === 'buy' || action === 'sell' || action === 'give') && !normalized.item && target) {
+    normalized.item = target;
+  }
+  if ((action === 'buy' || action === 'sell' || action === 'give' || action === 'eat' || action === 'craft' || action === 'smelt') && normalized.quantity == null && normalized.item) {
+    normalized.quantity = 1;
+  }
+  if (action === 'pay' && normalized.amount == null && parsed.consumes?.length) {
+    const consumed = parseItemList(parsed.consumes);
+    if (typeof consumed.coin === 'number') normalized.amount = consumed.coin;
+  }
+  if (action === 'trade') {
+    normalized.offer = Array.isArray(parsed.offer) ? normaliseEntityList(parsed.offer) : undefined;
+    normalized.request = Array.isArray(parsed.request) ? normaliseEntityList(parsed.request) : undefined;
+  }
+
+  const hasInventoryDelta = normalized.consumes.length > 0 || normalized.produces.length > 0;
+  if (!hasInventoryDelta) {
+    switch (action) {
+      case 'pay':
+        if (typeof normalized.amount === 'number' && normalized.amount > 0) {
+          normalized.consumes = [{ item: 'coin', quantity: normalized.amount }];
+        }
+        break;
+      case 'buy':
+        if (normalized.item && typeof normalized.quantity === 'number' && normalized.quantity > 0) {
+          normalized.produces = [{ item: normalized.item, quantity: normalized.quantity }];
+        }
+        if (typeof normalized.amount === 'number' && normalized.amount > 0) {
+          normalized.consumes = [{ item: 'coin', quantity: normalized.amount }];
+        }
+        break;
+      case 'sell':
+        if (normalized.item && typeof normalized.quantity === 'number' && normalized.quantity > 0) {
+          normalized.consumes = [{ item: normalized.item, quantity: normalized.quantity }];
+        }
+        if (typeof normalized.amount === 'number' && normalized.amount > 0) {
+          normalized.produces = [{ item: 'coin', quantity: normalized.amount }];
+        }
+        break;
+      case 'give':
+      case 'eat':
+        if (normalized.item && typeof normalized.quantity === 'number' && normalized.quantity > 0) {
+          normalized.consumes = [{ item: normalized.item, quantity: normalized.quantity }];
+        }
+        break;
+      case 'trade':
+        if (Array.isArray(normalized.offer) && normalized.offer.length > 0) {
+          normalized.consumes = normalized.offer;
+        }
+        if (Array.isArray(normalized.request) && normalized.request.length > 0) {
+          normalized.produces = normalized.request;
+        }
+        break;
+    }
+  }
+
+  return normalized;
+}
+
 /**
  * Applies consumes/produces to inventory and coin.
  * Returns updated inventory (JSON string) and coin.
@@ -102,8 +254,8 @@ function normaliseItemEntry(entry: unknown): { value: string; qty: number; colon
 function applyInventoryChanges(
   inventoryJson: string,
   coin: number,
-  consumes: string[],
-  produces: string[],
+  consumes: unknown[],
+  produces: unknown[],
   _action: string,
 ): { newInventory: string; newCoin: number } {
   const inv = JSON.parse(inventoryJson) as Record<string, number>;
@@ -206,7 +358,7 @@ export const commitAction = internalMutation({
     day: v.number(),
   },
   handler: async (ctx, { agentName, action, tick, day }) => {
-    const parsed: RocklawAction = JSON.parse(action);
+    const parsed: RocklawAction = normaliseAction(JSON.parse(action) as RocklawAction);
     const agentDoc = await ctx.db
       .query('rl_agents')
       .withIndex('name', (q) => q.eq('name', agentName))
@@ -227,7 +379,7 @@ export const commitAction = internalMutation({
       if ((rep?.score ?? 50) < 20) {
         const failNote = `Refused service — your reputation (${rep?.score ?? 50}/100) is too low here.`;
         await ctx.db.insert('rl_actions_log', {
-          agentName, action: parsed.action, target: parsed.target ?? undefined,
+          agentName, action: parsed.action, target: parsed.target ?? parsed.location ?? undefined,
           message: parsed.message, tick, day, outcome: 'failed', outcomeNote: failNote,
         });
         await ctx.db.patch(agentDoc._id, { busy: false });
@@ -253,7 +405,7 @@ export const commitAction = internalMutation({
       await ctx.db.insert('rl_actions_log', {
         agentName,
         action: parsed.action,
-        target: parsed.target ?? undefined,
+        target: parsed.target ?? parsed.location ?? undefined,
         message: parsed.message,
         tick,
         day,
@@ -267,7 +419,7 @@ export const commitAction = internalMutation({
       });
 
       // Failing on a targeted action is a broken promise — small rep hit
-      if (parsed.target) {
+      if (parsed.target ?? parsed.location) {
         await ctx.scheduler.runAfter(0, internal.rocklaw.reputation.updateReputation, {
           agentName, delta: -3, note: `failed ${parsed.action} (exhausted)`, tick,
         });
@@ -287,19 +439,26 @@ export const commitAction = internalMutation({
       : agentDoc.health;
 
     // Handle prayer -- log it but apply no world changes
-    if (parsed.action === 'pray' && parsed.message) {
-      await ctx.db.insert('rl_prayers', { agentName, message: parsed.message, tick, day });
+    if (parsed.action === 'pray' && (parsed.text || parsed.message)) {
+      const prayerText = parsed.text ?? parsed.message;
+      if (prayerText) {
+        await ctx.db.insert('rl_prayers', { agentName, message: prayerText, tick, day });
+      }
     }
 
     // Handle eavesdrop -- store overheard note for injection into next tick's world files
-    if (parsed.action === 'eavesdrop' && parsed.message) {
+    if (parsed.action === 'eavesdrop' && (parsed.text || parsed.message)) {
+      const overheard = parsed.text ?? parsed.message;
+      if (!overheard) {
+        return { outcome: 'failed', note: 'Missing eavesdrop text' };
+      }
       await ctx.db.patch(agentDoc._id, {
-        pendingNote: `You overheard: "${parsed.message}"`,
+        pendingNote: `You overheard: "${overheard}"`,
       });
     }
 
     // Handle letter -- insert into rl_messages for delivery at current location
-    if (parsed.action === 'leave_message' && parsed.target && parsed.message) {
+    if (parsed.action === 'leave_message' && parsed.target && (parsed.text || parsed.message)) {
       const locationDoc = await ctx.db
         .query('rl_locations')
         .withIndex('name', (q) => q.eq('name', agentDoc.location))
@@ -307,7 +466,7 @@ export const commitAction = internalMutation({
       await ctx.db.insert('rl_messages', {
         fromAgent: agentName,
         toAgent: parsed.target,
-        content: parsed.message,
+        content: parsed.text ?? parsed.message ?? '',
         status: 'unread',
         deliveryLocationId: locationDoc?._id ?? undefined,
         daySent: day,
@@ -317,8 +476,8 @@ export const commitAction = internalMutation({
 
     // Apply movement
     let newLocation = agentDoc.location;
-    if (parsed.action === 'move' && parsed.target) {
-      newLocation = parsed.target;
+    if (parsed.action === 'move' && (parsed.location ?? parsed.target)) {
+      newLocation = parsed.location ?? parsed.target ?? agentDoc.location;
     }
 
     // ── Reputation coin modifier for trade actions ──────────────────────────
@@ -354,8 +513,8 @@ export const commitAction = internalMutation({
     await ctx.db.insert('rl_actions_log', {
       agentName,
       action: parsed.action,
-      target: parsed.target ?? undefined,
-      message: parsed.message,
+      target: parsed.target ?? parsed.location ?? parsed.item ?? undefined,
+      message: parsed.text ?? parsed.message,
       tick,
       day,
       outcome: 'success',

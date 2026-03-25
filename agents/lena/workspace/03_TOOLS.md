@@ -8,8 +8,8 @@ Use your available tools only to inspect files, recall memory, and update your p
 When you are ready to act in the world, return the final Rocklaw JSON action instead.
 
 
-All interaction with the world happens through these commands.
-You cannot do anything not on this list.
+All interaction with the world happens through JSON actions that the Rocklaw engine executes.
+The legacy `.sh` names in older notes are conceptual labels only, not commands you should run.
 
 Your world/ files are always up to date when you wake up.
 You do not need to refresh them -- they were updated before your tick.
@@ -19,76 +19,81 @@ You do not need to refresh them -- they were updated before your tick.
 Use your available memory recall tool when something feels familiar but is not in your current files.
 Use it to search your full memory for relevant past events.
 
+## Core action schema
+
+Return one JSON object when you are ready to act. Use only the fields that matter.
+
+```json
+{
+  "action": "...",
+  "duration_ticks": 1,
+  "target": "optional agent name",
+  "location": "optional location name",
+  "text": "optional spoken or written content",
+  "topic": "optional observation topic",
+  "item": "optional item name",
+  "quantity": 1,
+  "amount": 0,
+  "consumes": [],
+  "produces": [],
+  "offer": [],
+  "request": [],
+  "thought": "optional why you chose this action now",
+  "message": "optional outward wording or visible framing",
+  "memory_note": "optional private takeaway to remember later"
+}
+```
+
 ## Economic actions
 
-pay.sh <agent> <amount>
-  Hand coin to someone. No conditions.
-  Example: pay.sh marcus 10
-
-buy.sh <agent> <item> <qty>
-  Purchase from someone at your location.
-  Example: buy.sh marcus coal 3
-
-sell.sh <agent> <item> <qty>
-  Sell to someone at your location.
-  Example: sell.sh finn horseshoe 2
-
-give.sh <agent> <item> <qty>
-  Give something freely, no payment expected.
-  Example: give.sh cora bread 1
-
-trade.sh <agent> <give_item> <give_qty> <want_item> <want_qty>
-  Propose a trade to someone at your location.
-  Example: trade.sh marcus iron_ore 3 coin 6
+- `pay`: use `target` and `amount`
+  Example JSON: `{"action":"pay","target":"Marcus Hale","amount":10,"duration_ticks":1}`
+- `buy`: use `target`, `item`, `quantity`, optional `amount`
+  Example JSON: `{"action":"buy","target":"Marcus Hale","item":"coal","quantity":3,"amount":12,"duration_ticks":1}`
+- `sell`: use `target`, `item`, `quantity`, optional `amount`
+  Example JSON: `{"action":"sell","target":"Finn","item":"horseshoe","quantity":2,"amount":62,"duration_ticks":1}`
+- `give`: use `target`, `item`, `quantity`
+  Example JSON: `{"action":"give","target":"Cora","item":"bread","quantity":1,"duration_ticks":1}`
+- `trade`: use `target`, `offer`, `request`
+  Example JSON: `{"action":"trade","target":"Marcus Hale","offer":[{"item":"horseshoe","quantity":1}],"request":[{"item":"coal","quantity":2}],"duration_ticks":1}`
 
 ## Act in the world
 
-talk.sh <agent> "<message>"
-  Speak to someone. They must be at your location.
-  Example: talk.sh marcus "I need coal by Day 9."
-
-move.sh <location>
-  Walk somewhere. Takes time.
-  Locations: forge, market, inn, farm, shrine, gate, square
-  Example: move.sh market
-
-eat.sh <item>
-  Consume food from your inventory.
-  Example: eat.sh bread
-
-rest.sh
-  Rest in place. Restores partial energy. Takes time.
-
-sleep.sh
-  End your day. Fully restores energy. Always run this last.
+- `talk`: use `target` and `text`
+  Example JSON: `{"action":"talk","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1}`
+- `move`: use `location`
+  Example JSON: `{"action":"move","location":"market","duration_ticks":1}`
+- `eat`: use `item`, optional `quantity`
+  Example JSON: `{"action":"eat","item":"bread","quantity":1,"duration_ticks":1}`
+- `rest`: no extra fields beyond `duration_ticks`
+- `sleep`: no extra fields beyond `duration_ticks`; use it when ending the day
+- `observe`: prefer `topic` when you know what you are checking
+  Example JSON: `{"action":"observe","topic":"village_news","duration_ticks":1}`
+- `write`: use `target` and `text`
+  Example JSON: `{"action":"write","target":"self/plans.md","text":"Need more coal before tomorrow.","duration_ticks":1}`
 
 ## Speaking into the world
 
-If you want to pray, decide on a final JSON action with "action": "pray" and put the prayer text in "message".
+If you want to pray, return a final JSON action with `"action": "pray"` and put the prayer text in `text`.
 
 ## Messages
 
-leave_message.sh <agent> "<message>"
-  Leave a note at your current location for someone.
-  They find it the next time they visit here.
-  Write the letter content directly as the second argument.
-  Example: leave_message.sh rook "Rook, rest that knee properly. I will have a salve ready at the shrine. -- Lena"
-
-
+Use `leave_message` with `target` and `text`.
+Example JSON: `{"action":"leave_message","target":"Marcus Hale","text":"Marcus, I need 3 coal before Day 8. I can pay 12 coin. -- Elena","duration_ticks":1,"thought":"Leave terms Marcus can act on later."}`
 ## Herbalist skills
 
-gather.sh <herb> <quantity>
+`gather`
   Collect herbs from the surrounding area. Time-consuming.
-  Example: gather.sh herbs 4
+  Example JSON: use the `gather` action with the typed fields for this verb.
 
-brew.sh <medicine> <quantity>
+`brew`
   Prepare medicines from raw herbs. Must be at shrine or home.
-  Example: brew.sh medicine 2
+  Example JSON: use the `brew` action with the typed fields for this verb.
 
-treat.sh <agent>
+`treat`
   Treat an injured or sick person. Must be at same location.
-  Example: treat.sh rook
+  Example JSON: use the `treat` action with the typed fields for this verb.
 
-identify.sh <item>
+`identify`
   Determine the properties or origin of an unknown substance.
-  Example: identify.sh herb
+  Example JSON: use the `identify` action with the typed fields for this verb.
