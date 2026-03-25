@@ -48,6 +48,9 @@ agents/*/workspace/world/
 # ZeroClaw runtime files
 agents/*/workspace/IDENTITY.md
 agents/*/workspace/SOUL.md
+agents/*/workspace/AGENTS.md
+agents/*/workspace/TOOLS.md
+agents/*/workspace/MEMORY.md
 agents/*/workspace/memory/
 agents/*/workspace/sessions/
 agents/*/workspace/state/
