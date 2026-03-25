@@ -84,10 +84,22 @@ Prepare one agent and step through ticks interactively in one terminal:
 npm run step:agent -- elena --fresh
 ```
 
+Warm up the first 3 ticks automatically, then switch to manual approval:
+
+```bash
+npm run step:agent -- elena --fresh --auto 3
+```
+
 Step the whole Rocklaw world interactively in one terminal:
 
 ```bash
 npm run step:rocklaw -- --fresh
+```
+
+Warm up the first 5 world ticks automatically, then switch to manual approval:
+
+```bash
+npm run step:rocklaw -- --fresh --auto 5
 ```
 
 Start one agent only, keep current world:
@@ -166,6 +178,8 @@ After each tick it prints the watcher snapshot and prompts:
 Continue to next tick? [Y/n]
 ```
 
+If you pass `--auto N`, the first `N` ticks run automatically before prompting.
+
 Interactive full-world step loop:
 
 ```bash
@@ -177,6 +191,8 @@ After each world tick it prints a compact per-agent summary and prompts:
 ```text
 Continue to next world tick? [Y/n]
 ```
+
+If you pass `--auto N`, the first `N` world ticks run automatically before prompting.
 
 Foreground deep-debug flow:
 

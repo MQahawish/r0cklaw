@@ -6,17 +6,40 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 AGENT=${1:-}
-MODE=${2:---continue}
+MODE="--continue"
+AUTO_TICKS=0
 
 if [[ -z "$AGENT" || "$AGENT" == "--help" || "$AGENT" == "-h" ]]; then
-  echo "Usage: $0 <agent-slug> [--continue|--fresh]"
+  echo "Usage: $0 <agent-slug> [--continue|--fresh] [--auto <ticks>]"
   exit 1
 fi
 
-if [[ "$MODE" != "--continue" && "$MODE" != "--fresh" ]]; then
-  echo "Usage: $0 <agent-slug> [--continue|--fresh]"
-  exit 1
-fi
+shift
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h)
+      echo "Usage: $0 <agent-slug> [--continue|--fresh] [--auto <ticks>]"
+      exit 0
+      ;;
+    --continue|--fresh)
+      MODE="$1"
+      shift
+      ;;
+    --auto)
+      if [[ $# -lt 2 || ! "$2" =~ ^[0-9]+$ ]]; then
+        echo "Usage: $0 <agent-slug> [--continue|--fresh] [--auto <ticks>]"
+        exit 1
+      fi
+      AUTO_TICKS="$2"
+      shift 2
+      ;;
+    *)
+      echo "Usage: $0 <agent-slug> [--continue|--fresh] [--auto <ticks>]"
+      exit 1
+      ;;
+  esac
+done
 
 cd "$ROOT_DIR"
 
@@ -32,6 +55,12 @@ while true; do
   echo ""
   node "$SCRIPT_DIR/watch-agent.mjs" "$AGENT" --once
   echo ""
+
+  if [[ "$tick_count" -le "$AUTO_TICKS" ]]; then
+    echo "Auto-continue (${tick_count}/${AUTO_TICKS})"
+    continue
+  fi
+
   read -r -p "Continue to next tick? [Y/n] " reply
   case "${reply:-y}" in
     y|Y|yes|YES|"")
