@@ -20,6 +20,8 @@ services:
       - '${OLLAMA_PORT:-11434}:11434'
     volumes:
       - data:/convex/data
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     environment:
       - INSTANCE_NAME=${INSTANCE_NAME:-}
       - INSTANCE_SECRET=${INSTANCE_SECRET:-}
@@ -28,6 +30,7 @@ services:
       - CONVEX_CLOUD_ORIGIN=${URL_BASE:-http://127.0.0.1}:${PORT:-3210}
       - CONVEX_SITE_ORIGIN=${URL_BASE:-http://127.0.0.1}:${SITE_PROXY_PORT:-3211}
       - DATABASE_URL=${DATABASE_URL:-}
+      - ZEROCLAW_GATEWAY_HOST=${ZEROCLAW_GATEWAY_HOST:-host.docker.internal}
     healthcheck:
       test: curl -f http://localhost:3210/version
       interval: 5s

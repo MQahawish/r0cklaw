@@ -6,6 +6,14 @@ import { internal } from '../_generated/api';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
+const ZEROCLAW_BOOTSTRAP_FILES = [
+  ['00_IDENTITY.md', 'IDENTITY.md'],
+  ['01_SOUL.md', 'SOUL.md'],
+  ['02_AGENTS.md', 'AGENTS.md'],
+  ['03_TOOLS.md', 'TOOLS.md'],
+  ['05_MEMORY.md', 'MEMORY.md'],
+] as const;
+
 export const refreshWorldFiles = internalAction({
   args: {
     agentName: v.string(),
@@ -23,6 +31,8 @@ export const refreshWorldFiles = internalAction({
       console.error(`[worldRefresh] No data for ${agentName}`);
       return;
     }
+
+    await syncZeroClawBootstrapFiles(path.resolve(data.workspacePath));
 
     const letters = await ctx.runMutation(internal.rocklaw.worldRefresh.deliverLetters, {
       agentName,
@@ -224,4 +234,22 @@ function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: 
 async function writeFile(dir: string, filename: string, content: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, filename), content, 'utf8');
+}
+
+async function syncZeroClawBootstrapFiles(workspaceDir: string): Promise<void> {
+  await Promise.all(
+    ZEROCLAW_BOOTSTRAP_FILES.map(async ([sourceName, targetName]) => {
+      const sourcePath = path.join(workspaceDir, sourceName);
+      const targetPath = path.join(workspaceDir, targetName);
+
+      try {
+        const content = await fs.readFile(sourcePath, 'utf8');
+        await fs.writeFile(targetPath, content, 'utf8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
+      }
+    }),
+  );
 }

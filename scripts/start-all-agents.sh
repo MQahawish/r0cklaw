@@ -15,6 +15,8 @@ set -euo pipefail
 
 AGENTS=(elena marcus finn lena sera aldric cora rook)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/load-local-env.sh"
 
 if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
   echo "Error: OPENROUTER_API_KEY is not set."
@@ -36,9 +38,10 @@ for agent in "${AGENTS[@]}"; do
   fi
 
   cd "$AGENT_DIR"
-  zeroclaw --config-dir "$AGENT_DIR" gateway start > "$LOG" 2>&1 &
-  echo $! > "$PID"
-  echo "  $agent -- started (pid $!, log $LOG)"
+  nohup zeroclaw --config-dir "$AGENT_DIR" gateway start > "$LOG" 2>&1 < /dev/null &
+  pid=$!
+  echo "$pid" > "$PID"
+  echo "  $agent -- started (pid $pid, log $LOG)"
 done
 
 echo ""

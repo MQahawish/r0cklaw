@@ -11,6 +11,11 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Load ignored local env files so OPENROUTER_API_KEY does not need manual export.
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/load-local-env.sh"
+
 AGENT=${1:-elena}
 AGENTS_DIR="$(cd "$(dirname "$0")/.." && pwd)/agents"
 AGENT_DIR="$AGENTS_DIR/$AGENT"

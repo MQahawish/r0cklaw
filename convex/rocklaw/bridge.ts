@@ -212,17 +212,32 @@ export const tickAgent = internalAction({
 // ── ZeroClaw gateway call ────────────────────────────────────────────────────
 
 async function callZeroClawGateway(port: number, message: string): Promise<string> {
-  const url = `http://127.0.0.1:${port}/webhook`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message }),
-  });
-  if (!response.ok) {
-    throw new Error(`ZeroClaw gateway returned ${response.status}: ${await response.text()}`);
+  const hosts = [
+    '127.0.0.1',
+    'host.docker.internal',
+  ];
+
+  let lastError: unknown;
+
+  for (const host of hosts) {
+    const url = `http://${host}:${port}/webhook`;
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message }),
+      });
+      if (!response.ok) {
+        throw new Error(`ZeroClaw gateway returned ${response.status}: ${await response.text()}`);
+      }
+      const data = (await response.json()) as { response: string; model?: string };
+      return data.response;
+    } catch (error) {
+      lastError = new Error(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
-  const data = (await response.json()) as { response: string; model?: string };
-  return data.response;
+
+  throw lastError instanceof Error ? lastError : new Error(`ZeroClaw gateway unavailable on port ${port}`);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
