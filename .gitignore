@@ -46,5 +46,10 @@ convex_local*
 # Rocklaw -- generated world files (refreshed each tick, machine-specific)
 agents/*/workspace/world/
 # ZeroClaw runtime files
+agents/*/workspace/IDENTITY.md
+agents/*/workspace/SOUL.md
+agents/*/workspace/memory/
+agents/*/workspace/sessions/
+agents/*/workspace/state/
 /tmp/zeroclaw-*.log
 /tmp/zeroclaw-*.pid

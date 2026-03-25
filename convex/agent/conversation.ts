@@ -39,7 +39,7 @@ export async function startConversationMessage(
   );
 
   const memoryWithOtherPlayer = memories.find(
-    (m) => m.data.type === 'conversation' && m.data.playerIds.includes(otherPlayerId),
+    (m: memory.Memory) => m.data.type === 'conversation' && m.data.playerIds.includes(otherPlayerId),
   );
   const prompt = [
     `You are ${player.name}, and you just started a conversation with ${otherPlayer.name}.`,

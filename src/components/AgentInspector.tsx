@@ -6,13 +6,13 @@
 import { useState } from 'react';
 import { useQuery, useAction } from 'convex/react';
 import { api } from '../../convex/_generated/api';
-import type { AgentFileEntry, SocialFileEntry } from '../../convex/rocklaw/observe';
+import type { AgentFileEntry, SocialFileEntry } from '../../convex/rocklaw/observeNode';
 
 type AgentFiles = { files: AgentFileEntry[]; social: SocialFileEntry[] };
 
 export default function AgentInspector() {
   const agents = useQuery(api.rocklaw.observe.getAgentWorkspacePaths) ?? [];
-  const getAgentFiles = useAction(api.rocklaw.observe.getAgentFiles);
+  const getAgentFiles = useAction(api.rocklaw.observeNode.getAgentFiles);
 
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [loadedFiles, setLoadedFiles] = useState<AgentFiles | null>(null);

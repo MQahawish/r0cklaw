@@ -80,7 +80,7 @@ function AgentDetail({ agentName, repByAgent }: { agentName: string; repByAgent:
   const detail = useQuery(api.rocklaw.god.getAgentDetail, { agentName });
   const pauseAgent = useMutation(api.rocklaw.god.pauseAgent);
   const resumeAgent = useMutation(api.rocklaw.god.resumeAgent);
-  const setAgentModel = useAction(api.rocklaw.god.setAgentModel);
+  const setAgentModel = useAction(api.rocklaw.godNode.setAgentModel);
 
   const [modelInput, setModelInput] = useState('');
   const [providerInput, setProviderInput] = useState('');

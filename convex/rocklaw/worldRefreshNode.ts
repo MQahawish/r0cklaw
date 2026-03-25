@@ -1,136 +1,82 @@
-/**
- * World Refresh -- writes the agent's world/ files from Convex state
- * before each tick fires. The agent reads these files as "reality".
- *
- * Also handles HEARTBEAT.md appends (world engine only, never the agent).
- */
+"use node";
 
 import { v } from 'convex/values';
-import { internalMutation, internalQuery } from '../_generated/server';
+import { internalAction } from '../_generated/server';
+import { internal } from '../_generated/api';
+import * as fs from 'fs/promises';
+import * as path from 'path';
 
-// ── Letter delivery ───────────────────────────────────────────────────────────
-
-/**
- * Finds unread letters addressed to agentName at their current location,
- * marks them as read, and returns the letter objects for inclusion in location.md.
- */
-export const deliverLetters = internalMutation({
+export const refreshWorldFiles = internalAction({
   args: {
     agentName: v.string(),
-    locationId: v.union(v.id('rl_locations'), v.null()),
+    tick: v.number(),
     day: v.number(),
+    timeOfDay: v.string(),
   },
-  handler: async (ctx, { agentName, locationId, day }) => {
-    const unread = await ctx.db
-      .query('rl_messages')
-      .withIndex('toAgent', (q) => q.eq('toAgent', agentName).eq('status', 'unread'))
-      .collect();
-
-    // Deliver letters left at this specific location, or direct-delivery letters (no location)
-    const deliverable = unread.filter(
-      (m) => m.deliveryLocationId === undefined || m.deliveryLocationId === locationId,
-    );
-
-    for (const letter of deliverable) {
-      await ctx.db.patch(letter._id, { status: 'read', dayRead: day });
+  handler: async (ctx, { agentName, tick, day, timeOfDay }) => {
+    const data = await ctx.runQuery(internal.rocklaw.worldRefresh.getWorldSnapshot, {
+      agentName,
+      tick,
+      day,
+    });
+    if (!data) {
+      console.error(`[worldRefresh] No data for ${agentName}`);
+      return;
     }
 
-    return deliverable;
+    const letters = await ctx.runMutation(internal.rocklaw.worldRefresh.deliverLetters, {
+      agentName,
+      locationId: data.locationDoc?._id ?? null,
+      day,
+    });
+
+    const workspacePath = path.resolve(data.workspacePath, 'world');
+
+    await Promise.all([
+      writeFile(workspacePath, 'inventory.md', buildInventoryMd(agentName, day, data)),
+      writeFile(workspacePath, 'location.md', buildLocationMd(agentName, day, timeOfDay, data, letters)),
+      writeFile(workspacePath, 'village_news.md', buildVillageNewsMd(day, data)),
+      writeFile(workspacePath, 'market_prices.md', buildMarketPricesMd(day, data)),
+      writeFile(workspacePath, 'status.md', buildStatusMd(agentName, day, timeOfDay, data)),
+    ]);
+
+    if (data.agent.pendingNote) {
+      await ctx.runMutation(internal.rocklaw.worldRefresh.clearPendingNote, { agentName });
+    }
   },
 });
 
-// ── Pending note cleanup ──────────────────────────────────────────────────────
+export const appendHeartbeat = internalAction({
+  args: { agentName: v.string(), line: v.string() },
+  handler: async (ctx, { agentName, line }) => {
+    const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
+    if (!agent) return;
 
-export const clearPendingNote = internalMutation({
-  args: { agentName: v.string() },
-  handler: async (ctx, { agentName }) => {
-    const agent = await ctx.db
-      .query('rl_agents')
-      .withIndex('name', (q) => q.eq('name', agentName))
-      .unique();
-    if (agent) await ctx.db.patch(agent._id, { pendingNote: undefined });
+    const heartbeatPath = path.resolve(agent.workspacePath, '06_HEARTBEAT.md');
+
+    let existing = '';
+    try {
+      existing = await fs.readFile(heartbeatPath, 'utf8');
+    } catch {
+      existing = `# HEARTBEAT -- ${agentName}\n\n## Recent Activity\n`;
+    }
+
+    const lines = existing.split('\n');
+    const entries = lines.filter((entry) => entry.startsWith('- Day'));
+    const trimmed = entries.slice(-6);
+
+    const newContent = [
+      `# HEARTBEAT -- ${agentName}`,
+      '',
+      '## Recent Activity',
+      ...trimmed,
+      line,
+      '',
+    ].join('\n');
+
+    await fs.writeFile(heartbeatPath, newContent, 'utf8');
   },
 });
-
-// ── Convex query -- snapshot of everything an agent needs ────────────────────
-
-export const getWorldSnapshot = internalQuery({
-  args: { agentName: v.string(), tick: v.number(), day: v.number() },
-  handler: async (ctx, { agentName, tick, day }) => {
-    const agent = await ctx.db
-      .query('rl_agents')
-      .withIndex('name', (q) => q.eq('name', agentName))
-      .unique();
-    if (!agent) return null;
-
-    // Nearby agents (at same location)
-    const nearby = await ctx.db
-      .query('rl_agents')
-      .withIndex('location', (q) => q.eq('location', agent.location))
-      .collect();
-
-    // Market prices
-    const prices = await ctx.db.query('rl_market_prices').collect();
-
-    // Active world events
-    const events = await ctx.db
-      .query('rl_world_events')
-      .withIndex('active', (q) => q.eq('active', true))
-      .order('desc')
-      .take(10);
-
-    // Location message board
-    const location = await ctx.db
-      .query('rl_locations')
-      .withIndex('name', (q) => q.eq('name', agent.location))
-      .unique();
-
-    // Recent trade activity (last 5 actions involving trades)
-    const recentTrades = await ctx.db
-      .query('rl_actions_log')
-      .withIndex('tick', (q) => q.gt('tick', tick - 10))
-      .filter((q) =>
-        q.or(
-          q.eq(q.field('action'), 'buy'),
-          q.eq(q.field('action'), 'sell'),
-          q.eq(q.field('action'), 'trade'),
-        ),
-      )
-      .order('desc')
-      .take(5);
-
-    // Mentions of this agent in recent actions (others talking to/about them)
-    const mentions = await ctx.db
-      .query('rl_actions_log')
-      .withIndex('tick', (q) => q.gt('tick', tick - 6))
-      .filter((q) => q.eq(q.field('target'), agentName))
-      .order('desc')
-      .take(5);
-
-    // Reputation score for this agent
-    const reputation = await ctx.db
-      .query('rl_reputation')
-      .withIndex('agentName', (q) => q.eq('agentName', agentName))
-      .unique();
-
-    return {
-      agent,
-      nearby: nearby.filter((a) => a.name !== agentName),
-      prices,
-      events,
-      locationDoc: location,
-      recentTrades,
-      mentions,
-      reputation,
-      workspacePath: agent.workspacePath,
-    };
-  },
-});
-
-// ── File builders ─────────────────────────────────────────────────────────────
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Snapshot = any; // typed loosely; Convex _generated types handle validation at runtime
 
 function buildInventoryMd(agentName: string, day: number, data: any): string {
   const inv = JSON.parse(data.agent.inventory) as Record<string, number>;
@@ -250,7 +196,6 @@ function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: 
   if (hunger > 80) conditions.push('Starving: health will degrade until you eat.');
   const conditionLine = conditions.length === 0 ? 'none' : conditions.map((c) => `  ! ${c}`).join('\n');
 
-  // Reputation section
   const repScore = data.reputation?.score ?? 50;
   const repLabel = repScore >= 70 ? '[RESPECTED -- you receive discounts and open doors]'
     : repScore >= 50 ? '[neutral]'
@@ -274,4 +219,9 @@ function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: 
     `Conditions: ${conditionLine}`,
     '',
   ].join('\n');
+}
+
+async function writeFile(dir: string, filename: string, content: string): Promise<void> {
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, filename), content, 'utf8');
 }

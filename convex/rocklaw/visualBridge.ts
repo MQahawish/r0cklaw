@@ -15,6 +15,7 @@
 import { v } from 'convex/values';
 import { internalMutation } from '../_generated/server';
 import { insertInput } from '../aiTown/insertInput';
+import { SerializedPlayer } from '../aiTown/player';
 
 // ── Location → tile coordinate map ──────────────────────────────────────────
 // Verified walkable tiles on the 45x32 gentle map (objmap layer 0, value -1).
@@ -147,7 +148,7 @@ export const syncAgentPosition = internalMutation({
     if (!worldDoc) return;
 
     const token = tokenFor(agentName);
-    const players = worldDoc.players as Array<{ id: string; human?: string }>;
+    const players = worldDoc.players as SerializedPlayer[];
     const player = players.find((p) => p.human === token);
     if (!player) return;
 
@@ -186,7 +187,7 @@ export const setAgentActivity = internalMutation({
     if (!worldDoc) return;
 
     const token = tokenFor(agentName);
-    const players = worldDoc.players as Array<{ id: string; human?: string; activity?: unknown }>;
+    const players = worldDoc.players as SerializedPlayer[];
     const playerIdx = players.findIndex((p) => p.human === token);
     if (playerIdx === -1) return;
 
@@ -195,7 +196,7 @@ export const setAgentActivity = internalMutation({
 
     // Patch the player's activity + refresh lastInput to prevent idle-kick
     const now = Date.now();
-    const updatedPlayers = [...players];
+    const updatedPlayers: SerializedPlayer[] = [...players];
     updatedPlayers[playerIdx] = {
       ...updatedPlayers[playerIdx],
       lastInput: now,
@@ -225,7 +226,7 @@ export const keepAliveVisualAgents = internalMutation({
     const worldDoc = await ctx.db.get(worldStatus.worldId);
     if (!worldDoc) return;
 
-    const players = worldDoc.players as Array<{ human?: string; lastInput: number; [k: string]: unknown }>;
+    const players = worldDoc.players as SerializedPlayer[];
     const rocklawPlayers = players.filter((p) => p.human?.startsWith('rocklaw:'));
     if (rocklawPlayers.length === 0) return;
 

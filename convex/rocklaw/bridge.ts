@@ -127,7 +127,7 @@ export const tickAgent = internalAction({
     }
 
     // 2. Refresh world/ files on disk before the tick fires
-    await ctx.runAction(internal.rocklaw.worldRefresh.refreshWorldFiles, {
+    await ctx.runAction(internal.rocklaw.worldRefreshNode.refreshWorldFiles, {
       agentName,
       tick,
       day,
@@ -192,7 +192,7 @@ export const tickAgent = internalAction({
     });
 
     // 9. Append to HEARTBEAT.md (world engine only -- agent never writes this)
-    await ctx.runAction(internal.rocklaw.worldRefresh.appendHeartbeat, {
+    await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
       agentName,
       line: summariseAction(action, day, timeOfDay, result?.outcome, result?.note),
     });

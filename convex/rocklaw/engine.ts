@@ -80,7 +80,7 @@ export const runRocklawTick = internalAction({
     // Run compaction every COMPACT_EVERY_N_TICKS
     if (tick % COMPACT_EVERY_N_TICKS === 0) {
       console.log(`[engine] tick ${tick}: triggering compaction`);
-      await ctx.runAction(internal.rocklaw.compact.runCompaction, {});
+      await ctx.runAction(internal.rocklaw.compactNode.runCompaction, {});
     }
 
     // Reschedule the clock
@@ -161,12 +161,19 @@ export const manualTick = action({
   args: {
     agentName: v.optional(v.string()),
   },
-  handler: async (ctx, { agentName }) => {
+  handler: async (ctx, { agentName }): Promise<{
+    tick: number;
+    day: number;
+    timeOfDay: 'morning' | 'afternoon' | 'evening';
+    agents: string[];
+  }> => {
     const state = await ctx.runQuery(internal.rocklaw.engine.getWorldState);
     if (!state) throw new Error('[engine] Run initRocklaw first');
 
     // Advance time
-    const next = await ctx.runMutation(internal.rocklaw.init.advanceTick, {});
+    const next:
+      | { tick: number; day: number; timeOfDay: 'morning' | 'afternoon' | 'evening' }
+      | null = await ctx.runMutation(internal.rocklaw.init.advanceTick, {});
     if (!next) throw new Error('[engine] advanceTick failed');
 
     const { tick, day, timeOfDay } = next;
