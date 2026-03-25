@@ -32,7 +32,9 @@ export const refreshWorldFiles = internalAction({
       return;
     }
 
-    await syncZeroClawBootstrapFiles(resolveWorkspacePath(data.workspacePath));
+    const workspaceRoot = resolveWorkspacePath(data.workspacePath);
+    await ensureWorkspaceScaffold(workspaceRoot);
+    await syncZeroClawBootstrapFiles(workspaceRoot);
 
     const letters = await ctx.runMutation(internal.rocklaw.worldRefresh.deliverLetters, {
       agentName,
@@ -40,7 +42,7 @@ export const refreshWorldFiles = internalAction({
       day,
     });
 
-    const workspacePath = path.join(resolveWorkspacePath(data.workspacePath), 'world');
+    const workspacePath = path.join(workspaceRoot, 'world');
 
     await Promise.all([
       writeFile(workspacePath, 'inventory.md', buildInventoryMd(agentName, day, data)),
@@ -234,6 +236,34 @@ function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: 
 async function writeFile(dir: string, filename: string, content: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, filename), content, 'utf8');
+}
+
+async function ensureWorkspaceScaffold(workspaceDir: string): Promise<void> {
+  const messagesDir = path.join(workspaceDir, 'self', 'messages');
+  const inboxDir = path.join(messagesDir, 'inbox');
+  const outboxDir = path.join(messagesDir, 'outbox');
+  const sentLogPath = path.join(messagesDir, 'sent_log.md');
+  const inboxReadmePath = path.join(inboxDir, 'README.md');
+
+  await fs.mkdir(inboxDir, { recursive: true });
+  await fs.mkdir(outboxDir, { recursive: true });
+
+  await ensureFile(
+    sentLogPath,
+    '# Sent Messages Log\n\nNo sent messages yet.\n',
+  );
+  await ensureFile(
+    inboxReadmePath,
+    '# Inbox\n\nIncoming letters are reflected in world/location.md under "Letters waiting for you here".\nUse this folder only as your personal correspondence archive when needed.\n',
+  );
+}
+
+async function ensureFile(filePath: string, content: string): Promise<void> {
+  try {
+    await fs.access(filePath);
+  } catch {
+    await fs.writeFile(filePath, content, 'utf8');
+  }
 }
 
 async function syncZeroClawBootstrapFiles(workspaceDir: string): Promise<void> {

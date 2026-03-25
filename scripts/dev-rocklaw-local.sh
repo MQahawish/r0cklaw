@@ -80,6 +80,9 @@ wait_for_url "http://127.0.0.1:42617/health"
 if [[ "$RESET_MODE" == "fresh" ]]; then
   echo "[3/6] Reinitialising Rocklaw world from scratch..."
   npx convex run rocklaw/init:initRocklaw '{"force":true}' >/dev/null
+  for config_path in "$ROOT_DIR"/agents/*/config.toml; do
+    "$SCRIPT_DIR/reset-agent-session.sh" "$(basename "$(dirname "$config_path")")"
+  done
 else
   echo "[3/6] Ensuring Rocklaw world exists (continuing current state)..."
   npx convex run rocklaw/init:initRocklaw >/dev/null

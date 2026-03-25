@@ -54,5 +54,9 @@ agents/*/workspace/MEMORY.md
 agents/*/workspace/memory/
 agents/*/workspace/sessions/
 agents/*/workspace/state/
+agents/*/workspace/self/messages/inbox/
+agents/*/workspace/self/messages/outbox/
+agents/*/workspace/self/messages/inbox.stale.*/
+agents/*/workspace/self/messages/outbox.stale.*/
 /tmp/zeroclaw-*.log
 /tmp/zeroclaw-*.pid

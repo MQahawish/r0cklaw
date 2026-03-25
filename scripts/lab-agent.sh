@@ -79,6 +79,7 @@ stop_agent_process "$AGENT" >/dev/null 2>&1 || true
 if [[ "$MODE" == "--fresh" ]]; then
   echo "[3/5] Reinitialising Rocklaw world..."
   npx convex run rocklaw/init:initRocklaw '{"force":true}' >/dev/null
+  "$SCRIPT_DIR/reset-agent-session.sh" "$AGENT"
 else
   echo "[3/5] Keeping current Rocklaw world state..."
   npx convex run rocklaw/init:initRocklaw >/dev/null

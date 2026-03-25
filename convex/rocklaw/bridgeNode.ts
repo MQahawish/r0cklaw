@@ -205,8 +205,12 @@ function buildTickMessage(day: number, timeOfDay: string, tick: number, letterWa
   const sections = [
     `It is ${timeOfDay}, Day ${day}, tick ${tick} in Rocklaw.`,
     'Use your files and tools as needed to understand your situation before deciding.',
+    'Think silently. Use tools for reading, recall, and note updates only.',
+    'Do not ask clarifying questions. Do not emit tool_code. Do not execute shell commands for world actions.',
     'Your FINAL response must be exactly one JSON object for the world engine and nothing else.',
-    'Do not ask clarifying questions. Do not emit tool_code in the final response.',
+    'The first character of your final response must be { and the last character must be }.',
+    'Do not include prose, markdown fences, commentary, repetition, or explanation outside the JSON object.',
+    'If you want to explain intent, put it inside "message" or "memory_note" fields in the JSON.',
     '',
     'Final response schema:',
     '{"action":"...","target":"agent_name|location_name|item_name|null","duration_ticks":1,"message":"optional","consumes":[],"produces":[],"memory_note":"optional"}',

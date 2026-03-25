@@ -1,5 +1,13 @@
 # How to Interact with Rocklaw
 
+## Runtime rule
+
+These notes describe the kinds of actions that exist in Rocklaw.
+In ZeroClaw session mode, do NOT run shell commands like move.sh, craft.sh, talk.sh, leave_message.sh, or pray.sh to perform them.
+Use your available tools only to inspect files, recall memory, and update your private notes.
+When you are ready to act in the world, return the final Rocklaw JSON action instead.
+
+
 All interaction with the world happens through these commands.
 You cannot do anything not on this list.
 
@@ -8,11 +16,8 @@ You do not need to refresh them -- they were updated before your tick.
 
 ## Search your deep memory
 
-recall.sh "<query>"
-  Searches your full memory for relevant past events.
-  Use when something feels familiar but is not in your current files.
-  Example: recall.sh "marcus coal trade"
-  Example: recall.sh "last time grain was scarce"
+Use your available memory recall tool when something feels familiar but is not in your current files.
+Use it to search your full memory for relevant past events.
 
 ## Economic actions
 
@@ -59,9 +64,7 @@ sleep.sh
 
 ## Speaking into the world
 
-pray.sh "<message>"
-  Sometimes there are things you want to say with nowhere to go.
-  Example: pray.sh "I don't know if the harvest will come."
+If you want to pray, decide on a final JSON action with "action": "pray" and put the prayer text in "message".
 
 ## Messages
 

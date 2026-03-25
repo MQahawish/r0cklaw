@@ -90,6 +90,12 @@ Peek current state, trace tail, and gateway logs:
 npm run peek:agent -- elena
 ```
 
+Structured live view of the latest tick context, streamed tool events, parsed action, and current world files:
+
+```bash
+npm run watch:agent -- elena
+```
+
 Live-tail gateway log + runtime trace:
 
 ```bash
@@ -116,6 +122,12 @@ npm run tick:agent -- elena
 
 ```bash
 npm run peek:agent -- elena
+```
+
+Or use the structured live watcher:
+
+```bash
+npm run watch:agent -- elena
 ```
 
 Foreground deep-debug flow:
@@ -155,6 +167,7 @@ Notes:
 - this isolates one villager and stops the background multi-agent sim
 - it enables ZeroClaw runtime traces for that one agent
 - Rocklaw ticks now use ZeroClaw `ws/chat` sessions, persist tool-stream events to `tick-debug.jsonl`, and parse only the final `done.full_response` as the world action
+- `--fresh` now resets both the Rocklaw world state and the local ZeroClaw session history for the selected agent(s)
 - startup helpers now sync the self-hosted Convex admin key and deploy local Convex functions automatically
 - startup helpers also loosen local `agents/` workspace permissions so the self-hosted Convex container can write shared world/debug files
 - startup helpers also patch absolute `workspacePath` values into Convex so local Node actions write to the host-visible workspace tree

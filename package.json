@@ -11,6 +11,7 @@
     "tick:agent": "./scripts/tick-agent.sh",
     "peek:agent": "./scripts/peek-agent.sh",
     "tail:agent": "./scripts/tail-agent.sh",
+    "watch:agent": "node ./scripts/watch-agent.mjs",
     "agent:set-provider": "./scripts/set-agent-provider.sh",
     "sync:convex": "./scripts/sync-convex-env.sh",
     "stop:rocklaw": "./scripts/stop-rocklaw-local.sh",
