@@ -66,6 +66,12 @@ Prepare one agent only in the background from a fresh world:
 npm run lab:agent -- elena --fresh
 ```
 
+Prepare one agent and step through ticks interactively in one terminal:
+
+```bash
+npm run step:agent -- elena --fresh
+```
+
 Start one agent only, keep current world:
 
 ```bash
@@ -128,6 +134,18 @@ Or use the structured live watcher:
 
 ```bash
 npm run watch:agent -- elena
+```
+
+Interactive one-terminal step loop:
+
+```bash
+npm run step:agent -- elena --fresh
+```
+
+After each tick it prints the watcher snapshot and prompts:
+
+```text
+Continue to next tick? [Y/n]
 ```
 
 Foreground deep-debug flow:

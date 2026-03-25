@@ -67,6 +67,35 @@ export const rocklawTables = {
     .index('toAgent', ['toAgent', 'status'])
     .index('fromAgent', ['fromAgent', 'daySent']),
 
+  // In-person commerce offers. Created by buy/sell/trade and settled later on explicit acceptance.
+  rl_transactions: defineTable({
+    txnId: v.string(),
+    fromAgent: v.string(),
+    toAgent: v.string(),
+    kind: v.union(v.literal('buy'), v.literal('sell'), v.literal('trade')),
+    offerJson: v.string(),
+    requestJson: v.string(),
+    message: v.optional(v.string()),
+    status: v.union(
+      v.literal('pending'),
+      v.literal('accepted'),
+      v.literal('rejected'),
+      v.literal('expired'),
+      v.literal('completed'),
+      v.literal('failed'),
+    ),
+    createdTick: v.number(),
+    createdDay: v.number(),
+    expiresTick: v.number(),
+    resolvedTick: v.optional(v.number()),
+    resolvedDay: v.optional(v.number()),
+    outcomeNote: v.optional(v.string()),
+  })
+    .index('txnId', ['txnId'])
+    .index('recipient_status', ['toAgent', 'status'])
+    .index('sender_status', ['fromAgent', 'status'])
+    .index('status_expiry', ['status', 'expiresTick']),
+
   // Village locations with message boards.
   rl_locations: defineTable({
     name: v.string(),

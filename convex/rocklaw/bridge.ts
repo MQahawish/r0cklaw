@@ -33,6 +33,8 @@ export type RocklawAction = {
   memory_note?: string;
 };
 
+type TransactionItem = { item: string; quantity: number };
+
 // Effort costs per action (deducted from energy after completion)
 const EFFORT_COSTS: Record<string, number> = {
   // Physical labour
@@ -48,7 +50,7 @@ const EFFORT_COSTS: Record<string, number> = {
   run_errand: 8, recall_war: 2,
   // Universal
   move: 5, talk: 2, buy: 2, sell: 2, pay: 1, give: 1,
-  trade: 2, observe: 1, write: 2, pray: 0,
+  trade: 2, accept_transaction: 1, reject_transaction: 1, observe: 1, write: 2, pray: 0,
   leave_message: 2, recall: 0,
   eat: 0, rest: -40, sleep: -100,
 };
@@ -284,6 +286,454 @@ function applyInventoryChanges(
   return { newInventory: JSON.stringify(inv), newCoin };
 }
 
+function inventoryHasAtLeast(inventoryJson: string, item: string, required: number): boolean {
+  const inv = JSON.parse(inventoryJson) as Record<string, number>;
+  return (inv[item] ?? 0) >= required;
+}
+
+function formatInventoryShortfall(inventoryJson: string, consumes: unknown[]): string | null {
+  const inv = JSON.parse(inventoryJson) as Record<string, number>;
+  const needed = parseItemList(consumes);
+
+  for (const [item, qty] of Object.entries(needed)) {
+    if (item === 'coin') continue;
+    const have = inv[item] ?? 0;
+    if (have < qty) {
+      return `Not enough ${item}: need ${qty}, have ${have}.`;
+    }
+  }
+
+  return null;
+}
+
+async function targetAgentAtSameLocation(ctx: any, actorLocation: string, targetName: string) {
+  const targetAgent = await ctx.db
+    .query('rl_agents')
+    .withIndex('name', (q: any) => q.eq('name', targetName))
+    .unique();
+  if (!targetAgent) return { ok: false, note: `Target agent not found: ${targetName}.` };
+  if (targetAgent.location !== actorLocation) {
+    return { ok: false, note: `${targetName} is not at your location (${actorLocation}).` };
+  }
+  return { ok: true, targetAgent };
+}
+
+async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAction) {
+  const destination = parsed.location ?? parsed.target ?? null;
+
+  if (Array.isArray(parsed.consumes) && parsed.consumes.length > 0) {
+    const missingInventory = formatInventoryShortfall(agentDoc.inventory, parsed.consumes);
+    if (missingInventory) return { ok: false, note: missingInventory };
+
+    const needed = parseItemList(parsed.consumes);
+    if (typeof needed.coin === 'number' && agentDoc.coin < needed.coin) {
+      return { ok: false, note: `Not enough coin: need ${needed.coin}c, have ${agentDoc.coin}c.` };
+    }
+  }
+
+  switch (parsed.action) {
+    case 'move': {
+      if (!destination) return { ok: false, note: 'Move requires a destination location.' };
+      const locationDoc = await ctx.db
+        .query('rl_locations')
+        .withIndex('name', (q: any) => q.eq('name', destination))
+        .unique();
+      if (!locationDoc) return { ok: false, note: `Unknown location: ${destination}.` };
+      if (destination === agentDoc.location) return { ok: false, note: `You are already at ${destination}.` };
+      return { ok: true };
+    }
+    case 'talk':
+    case 'pay':
+    case 'buy':
+    case 'sell':
+    case 'give':
+    case 'trade': {
+      if (!parsed.target) return { ok: false, note: `${parsed.action} requires a target agent.` };
+      const targetCheck = await targetAgentAtSameLocation(ctx, agentDoc.location, parsed.target);
+      if (!targetCheck.ok) return targetCheck;
+
+      if ((parsed.action === 'buy' || parsed.action === 'sell' || parsed.action === 'give') && !parsed.item) {
+        return { ok: false, note: `${parsed.action} requires an item.` };
+      }
+      if ((parsed.action === 'buy' || parsed.action === 'sell' || parsed.action === 'give') && (!parsed.quantity || parsed.quantity < 1)) {
+        return { ok: false, note: `${parsed.action} requires a positive quantity.` };
+      }
+      if (parsed.action === 'pay' && (!parsed.amount || parsed.amount <= 0)) {
+        return { ok: false, note: 'Pay requires a positive amount.' };
+      }
+      if (parsed.action === 'buy') {
+        if (typeof parsed.amount !== 'number' || parsed.amount <= 0) {
+          return { ok: false, note: 'Buy requires a positive amount.' };
+        }
+        if (agentDoc.coin < parsed.amount) {
+          return { ok: false, note: `Not enough coin: need ${parsed.amount}c, have ${agentDoc.coin}c.` };
+        }
+      }
+      if (parsed.action === 'sell') {
+        if (typeof parsed.amount !== 'number' || parsed.amount <= 0) {
+          return { ok: false, note: 'Sell requires a positive amount.' };
+        }
+        if (!inventoryHasAtLeast(agentDoc.inventory, parsed.item!, parsed.quantity!)) {
+          const sellerInv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+          return {
+            ok: false,
+            note: `Not enough ${parsed.item}: need ${parsed.quantity}, have ${sellerInv[parsed.item!] ?? 0}.`,
+          };
+        }
+      }
+      if (parsed.action === 'trade') {
+        if (!Array.isArray(parsed.offer) || parsed.offer.length === 0) {
+          return { ok: false, note: 'Trade requires a non-empty offer.' };
+        }
+        if (!Array.isArray(parsed.request) || parsed.request.length === 0) {
+          return { ok: false, note: 'Trade requires a non-empty request.' };
+        }
+        const proposerOffer = parseItemList(parsed.offer);
+        for (const [item, qty] of Object.entries(proposerOffer)) {
+          if (item === 'coin') {
+            if (agentDoc.coin < qty) {
+              return { ok: false, note: `Not enough coin: need ${qty}c, have ${agentDoc.coin}c.` };
+            }
+          } else if (!inventoryHasAtLeast(agentDoc.inventory, item, qty)) {
+            const proposerInv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+            return { ok: false, note: `Not enough ${item}: need ${qty}, have ${proposerInv[item] ?? 0}.` };
+          }
+        }
+      }
+      return { ok: true };
+    }
+    case 'accept_transaction':
+    case 'reject_transaction':
+      if (!parsed.target) return { ok: false, note: `${parsed.action} requires a transaction id target.` };
+      return { ok: true };
+    case 'leave_message': {
+      if (!parsed.target) return { ok: false, note: 'leave_message requires a target agent.' };
+      if (!(parsed.text ?? parsed.message)) return { ok: false, note: 'leave_message requires text.' };
+      const targetAgent = await ctx.db
+        .query('rl_agents')
+        .withIndex('name', (q: any) => q.eq('name', parsed.target))
+        .unique();
+      if (!targetAgent) return { ok: false, note: `Target agent not found: ${parsed.target}.` };
+      return { ok: true };
+    }
+    case 'write':
+    case 'pray':
+    case 'eavesdrop':
+      if (!(parsed.text ?? parsed.message)) {
+        return { ok: false, note: `${parsed.action} requires text.` };
+      }
+      return { ok: true };
+    case 'eat':
+      if (!parsed.item) return { ok: false, note: 'Eat requires an item.' };
+      if (!inventoryHasAtLeast(agentDoc.inventory, parsed.item, parsed.quantity ?? 1)) {
+        const inv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+        return { ok: false, note: `Not enough ${parsed.item}: need ${parsed.quantity ?? 1}, have ${inv[parsed.item] ?? 0}.` };
+      }
+      return { ok: true };
+    default:
+      return { ok: true };
+  }
+}
+
+async function recordFailedAction(
+  ctx: any,
+  agentDoc: any,
+  agentName: string,
+  parsed: RocklawAction,
+  tick: number,
+  day: number,
+  failNote: string,
+) {
+  await ctx.db.insert('rl_actions_log', {
+    agentName,
+    action: parsed.action,
+    target: parsed.target ?? parsed.location ?? parsed.item ?? undefined,
+    message: parsed.text ?? parsed.message,
+    tick,
+    day,
+    outcome: 'failed',
+    outcomeNote: failNote,
+  });
+  await ctx.db.patch(agentDoc._id, { busy: false });
+  return { outcome: 'failed', note: failNote };
+}
+
+async function appendAgentHeartbeat(ctx: any, agentName: string, line: string) {
+  await ctx.scheduler.runAfter(0, internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+    agentName,
+    line,
+  });
+}
+
+async function appendPendingNote(ctx: any, agentName: string, note: string) {
+  await ctx.scheduler.runAfter(0, internal.rocklaw.bridge.setAgentPendingNote, {
+    agentName,
+    note,
+  });
+}
+
+async function createPendingTransaction(
+  ctx: any,
+  agentDoc: any,
+  parsed: RocklawAction,
+  tick: number,
+  day: number,
+  newEnergy: number,
+  newHealth: number,
+  finalHunger: number,
+) {
+  const terms = buildTransactionTerms(parsed);
+  const txnId = createTransactionId(parsed.action, agentDoc.name, tick, day);
+  await ctx.db.insert('rl_transactions', {
+    txnId,
+    fromAgent: agentDoc.name,
+    toAgent: parsed.target!,
+    kind: parsed.action,
+    offerJson: serialiseTransactionItems(terms.offer),
+    requestJson: serialiseTransactionItems(terms.request),
+    message: parsed.text ?? parsed.message,
+    status: 'pending',
+    createdTick: tick,
+    createdDay: day,
+    expiresTick: tick + OFFER_EXPIRY_TICKS,
+  });
+
+  await ctx.db.insert('rl_actions_log', {
+    agentName: agentDoc.name,
+    action: parsed.action,
+    target: parsed.target ?? undefined,
+    message: parsed.text ?? parsed.message,
+    tick,
+    day,
+    outcome: 'success',
+    outcomeNote: `Offer ${txnId} created.`,
+  });
+
+  await ctx.db.patch(agentDoc._id, {
+    energy: newEnergy,
+    health: newHealth,
+    hunger: finalHunger,
+    busy: false,
+    busyUntilTick: undefined,
+  });
+
+  return {
+    outcome: 'success',
+    note: `Offer ${txnId} created for ${parsed.target}.`,
+    transactionId: txnId,
+  };
+}
+
+async function resolveTransactionResponse(
+  ctx: any,
+  agentDoc: any,
+  parsed: RocklawAction,
+  tick: number,
+  day: number,
+  newEnergy: number,
+  newHealth: number,
+  finalHunger: number,
+) {
+  const txn = await ctx.db
+    .query('rl_transactions')
+    .withIndex('txnId', (q: any) => q.eq('txnId', parsed.target!))
+    .unique();
+
+  if (!txn) {
+    return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, `Unknown transaction id: ${parsed.target}.`);
+  }
+  if (txn.toAgent !== agentDoc.name) {
+    return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, 'This transaction is not addressed to you.');
+  }
+  if (txn.status !== 'pending') {
+    return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, `Transaction is no longer pending (${txn.status}).`);
+  }
+  if (txn.expiresTick < tick) {
+    await ctx.db.patch(txn._id, {
+      status: 'expired',
+      resolvedTick: tick,
+      resolvedDay: day,
+      outcomeNote: 'Offer expired before acceptance.',
+    });
+    return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, 'Transaction has expired.');
+  }
+
+  const proposer = await ctx.db
+    .query('rl_agents')
+    .withIndex('name', (q: any) => q.eq('name', txn.fromAgent))
+    .unique();
+  if (!proposer) {
+    await ctx.db.patch(txn._id, {
+      status: 'failed',
+      resolvedTick: tick,
+      resolvedDay: day,
+      outcomeNote: 'The other party no longer exists.',
+    });
+    return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, 'The other party no longer exists.');
+  }
+
+  if (parsed.action === 'reject_transaction') {
+    const note = parsed.message
+      ? `Offer rejected: ${parsed.message}`
+      : 'Offer rejected.';
+    await ctx.db.patch(txn._id, {
+      status: 'rejected',
+      resolvedTick: tick,
+      resolvedDay: day,
+      outcomeNote: note,
+    });
+    await ctx.db.insert('rl_actions_log', {
+      agentName: agentDoc.name,
+      action: parsed.action,
+      target: txn.txnId,
+      message: parsed.message,
+      tick,
+      day,
+      outcome: 'success',
+      outcomeNote: note,
+    });
+    await ctx.db.patch(agentDoc._id, {
+      energy: newEnergy,
+      health: newHealth,
+      hunger: finalHunger,
+      busy: false,
+      busyUntilTick: undefined,
+    });
+    await appendAgentHeartbeat(
+      ctx,
+      proposer.name,
+      `- Day ${day} ${timeOfDayForTick(tick)}: ${agentDoc.name} rejected your ${txn.kind} offer [FAILED]${parsed.message ? ` ⚠ ${parsed.message}` : ''}`,
+    );
+    await appendPendingNote(ctx, proposer.name, `${agentDoc.name} rejected your ${txn.kind} offer (${txn.txnId}).`);
+    return { outcome: 'success', note: note };
+  }
+
+  if (proposer.location !== agentDoc.location) {
+    const note = `${proposer.name} is no longer at ${agentDoc.location}.`;
+    await ctx.db.patch(txn._id, {
+      status: 'failed',
+      resolvedTick: tick,
+      resolvedDay: day,
+      outcomeNote: note,
+    });
+    await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
+    await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
+    return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
+  }
+
+  const offer = parseTransactionItems(txn.offerJson);
+  const request = parseTransactionItems(txn.requestJson);
+  const proposerInv = JSON.parse(proposer.inventory) as Record<string, number>;
+  const recipientInv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+
+  for (const item of offer) {
+    if (item.item === 'coin') {
+      if (proposer.coin < item.quantity) {
+        const note = `${proposer.name} no longer has enough coin: need ${item.quantity}c, have ${proposer.coin}c.`;
+        await ctx.db.patch(txn._id, { status: 'failed', resolvedTick: tick, resolvedDay: day, outcomeNote: note });
+        await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
+        await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
+        return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
+      }
+    } else if ((proposerInv[item.item] ?? 0) < item.quantity) {
+      const note = `${proposer.name} no longer has enough ${item.item}: need ${item.quantity}, have ${proposerInv[item.item] ?? 0}.`;
+      await ctx.db.patch(txn._id, { status: 'failed', resolvedTick: tick, resolvedDay: day, outcomeNote: note });
+      await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
+      await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
+      return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
+    }
+  }
+  for (const item of request) {
+    if (item.item === 'coin') {
+      if (agentDoc.coin < item.quantity) {
+        const note = `Not enough coin to accept: need ${item.quantity}c, have ${agentDoc.coin}c.`;
+        await ctx.db.patch(txn._id, { status: 'failed', resolvedTick: tick, resolvedDay: day, outcomeNote: note });
+        await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
+        await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
+        return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
+      }
+    } else if ((recipientInv[item.item] ?? 0) < item.quantity) {
+      const note = `Not enough ${item.item} to accept: need ${item.quantity}, have ${recipientInv[item.item] ?? 0}.`;
+      await ctx.db.patch(txn._id, { status: 'failed', resolvedTick: tick, resolvedDay: day, outcomeNote: note });
+      await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
+      await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
+      return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
+    }
+  }
+
+  const proposerApplied = applyInventoryChanges(
+    proposer.inventory,
+    proposer.coin,
+    offer,
+    request,
+    txn.kind,
+  );
+  const recipientApplied = applyInventoryChanges(
+    agentDoc.inventory,
+    agentDoc.coin,
+    request,
+    offer,
+    txn.kind,
+  );
+
+  await ctx.db.patch(proposer._id, {
+    inventory: proposerApplied.newInventory,
+    coin: proposerApplied.newCoin,
+  });
+  await ctx.db.patch(agentDoc._id, {
+    inventory: recipientApplied.newInventory,
+    coin: recipientApplied.newCoin,
+    energy: newEnergy,
+    health: newHealth,
+    hunger: finalHunger,
+    busy: false,
+    busyUntilTick: undefined,
+  });
+  await ctx.db.patch(txn._id, {
+    status: 'completed',
+    resolvedTick: tick,
+    resolvedDay: day,
+    outcomeNote: `Completed: ${formatTransactionItems(offer)} for ${formatTransactionItems(request)}.`,
+  });
+
+  await ctx.db.insert('rl_actions_log', {
+    agentName: proposer.name,
+    action: txn.kind,
+    target: agentDoc.name,
+    message: txn.message,
+    tick,
+    day,
+    outcome: 'success',
+    outcomeNote: `Completed transaction ${txn.txnId}.`,
+  });
+  await ctx.db.insert('rl_actions_log', {
+    agentName: agentDoc.name,
+    action: parsed.action,
+    target: txn.txnId,
+    message: parsed.message,
+    tick,
+    day,
+    outcome: 'success',
+    outcomeNote: `Accepted ${txn.kind} offer ${txn.txnId}.`,
+  });
+
+  await ctx.scheduler.runAfter(0, internal.rocklaw.priceEngine.recalculate, {});
+  await ctx.scheduler.runAfter(0, internal.rocklaw.reputation.updateReputation, {
+    agentName: proposer.name, delta: 1, note: txn.kind, tick,
+  });
+  await ctx.scheduler.runAfter(0, internal.rocklaw.reputation.updateReputation, {
+    agentName: agentDoc.name, delta: 1, note: txn.kind, tick,
+  });
+  await appendAgentHeartbeat(
+    ctx,
+    proposer.name,
+    `- Day ${day} ${timeOfDayForTick(tick)}: ${txn.kind} offer completed with ${agentDoc.name} (${formatTransactionItems(offer)} for ${formatTransactionItems(request)})`,
+  );
+  await appendPendingNote(ctx, proposer.name, `${agentDoc.name} accepted your ${txn.kind} offer (${txn.txnId}).`);
+
+  return { outcome: 'success', note: `Accepted ${txn.kind} offer ${txn.txnId}.` };
+}
+
 // ── Convex queries / mutations ───────────────────────────────────────────────
 
 export const getAgent = internalQuery({
@@ -328,6 +778,61 @@ const HIGH_EFFORT_ACTIONS = new Set([
 // These fall back to the hardcoded defaults below if rl_systems_state has no override.
 const DEFAULT_MIN_ENERGY_FOR_HARD_WORK = 15;
 const DEFAULT_HEALTH_DRAIN_PER_ZERO_ENERGY_TICK = 10;
+const OFFER_EXPIRY_TICKS = 3;
+
+function entityListToItems(entries: unknown[] | undefined): TransactionItem[] {
+  return normaliseEntityList(entries) ?? [];
+}
+
+function buildTransactionTerms(parsed: RocklawAction): { offer: TransactionItem[]; request: TransactionItem[] } {
+  switch (parsed.action) {
+    case 'buy':
+      return {
+        offer: typeof parsed.amount === 'number' && parsed.amount > 0 ? [{ item: 'coin', quantity: parsed.amount }] : [],
+        request: parsed.item && typeof parsed.quantity === 'number' && parsed.quantity > 0 ? [{ item: parsed.item, quantity: parsed.quantity }] : [],
+      };
+    case 'sell':
+      return {
+        offer: parsed.item && typeof parsed.quantity === 'number' && parsed.quantity > 0 ? [{ item: parsed.item, quantity: parsed.quantity }] : [],
+        request: typeof parsed.amount === 'number' && parsed.amount > 0 ? [{ item: 'coin', quantity: parsed.amount }] : [],
+      };
+    case 'trade':
+      return {
+        offer: entityListToItems(parsed.offer),
+        request: entityListToItems(parsed.request),
+      };
+    default:
+      return { offer: [], request: [] };
+  }
+}
+
+function serialiseTransactionItems(items: TransactionItem[]): string {
+  return JSON.stringify(items);
+}
+
+function parseTransactionItems(itemsJson: string): TransactionItem[] {
+  try {
+    const parsed = JSON.parse(itemsJson) as TransactionItem[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function formatTransactionItems(items: TransactionItem[]): string {
+  if (items.length === 0) return 'nothing';
+  return items.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
+}
+
+function createTransactionId(kind: string, fromAgent: string, tick: number, day: number): string {
+  const slug = fromAgent.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  return `txn-${day}-${tick}-${kind}-${slug}-${Date.now()}`;
+}
+
+function timeOfDayForTick(tick: number): 'morning' | 'afternoon' | 'evening' {
+  const order: Array<'morning' | 'afternoon' | 'evening'> = ['morning', 'afternoon', 'evening'];
+  return order[((tick % 3) + 3) % 3];
+}
 
 async function readSystemFloat(ctx: any, systemName: string, key: string, defaultVal: number) {
   const row = await ctx.db
@@ -365,6 +870,14 @@ export const commitAction = internalMutation({
       .unique();
     if (!agentDoc) return { outcome: 'failed', note: 'Agent not found' };
 
+    const worldValidation = await validateWorldExecution(ctx, agentDoc, parsed);
+    if (!worldValidation.ok) {
+      const failNote = ('note' in worldValidation && typeof worldValidation.note === 'string')
+        ? worldValidation.note
+        : 'Action could not be executed.';
+      return recordFailedAction(ctx, agentDoc, agentName, parsed, tick, day, failNote);
+    }
+
     const energyCost = EFFORT_COSTS[parsed.action] ?? 5;
 
     // ── Reputation gating ───────────────────────────────────────────────────
@@ -378,12 +891,7 @@ export const commitAction = internalMutation({
         .unique();
       if ((rep?.score ?? 50) < 20) {
         const failNote = `Refused service — your reputation (${rep?.score ?? 50}/100) is too low here.`;
-        await ctx.db.insert('rl_actions_log', {
-          agentName, action: parsed.action, target: parsed.target ?? parsed.location ?? undefined,
-          message: parsed.message, tick, day, outcome: 'failed', outcomeNote: failNote,
-        });
-        await ctx.db.patch(agentDoc._id, { busy: false });
-        return { outcome: 'failed', note: failNote };
+        return recordFailedAction(ctx, agentDoc, agentName, parsed, tick, day, failNote);
       }
     }
 
@@ -405,8 +913,8 @@ export const commitAction = internalMutation({
       await ctx.db.insert('rl_actions_log', {
         agentName,
         action: parsed.action,
-        target: parsed.target ?? parsed.location ?? undefined,
-        message: parsed.message,
+        target: parsed.target ?? parsed.location ?? parsed.item ?? undefined,
+        message: parsed.text ?? parsed.message,
         tick,
         day,
         outcome: 'failed',
@@ -509,6 +1017,37 @@ export const commitAction = internalMutation({
       ? 'Acting on zero energy -- health is degrading. Sleep urgently.'
       : undefined;
 
+    // Eating reduces hunger
+    const eatingHungerReduction = parsed.action === 'eat' ? 40 : 0;
+    const finalHunger = Math.max(0, newHunger - eatingHungerReduction);
+
+    // In-person commerce is two-phase: create an offer now, settle only on explicit acceptance.
+    if (parsed.action === 'buy' || parsed.action === 'sell' || parsed.action === 'trade') {
+      return createPendingTransaction(
+        ctx,
+        agentDoc,
+        parsed,
+        tick,
+        day,
+        newEnergy,
+        newHealth,
+        finalHunger,
+      );
+    }
+
+    if (parsed.action === 'accept_transaction' || parsed.action === 'reject_transaction') {
+      return resolveTransactionResponse(
+        ctx,
+        agentDoc,
+        parsed,
+        tick,
+        day,
+        newEnergy,
+        newHealth,
+        finalHunger,
+      );
+    }
+
     // Log the action
     await ctx.db.insert('rl_actions_log', {
       agentName,
@@ -520,10 +1059,6 @@ export const commitAction = internalMutation({
       outcome: 'success',
       outcomeNote,
     });
-
-    // Eating reduces hunger
-    const eatingHungerReduction = parsed.action === 'eat' ? 40 : 0;
-    const finalHunger = Math.max(0, newHunger - eatingHungerReduction);
 
     // Update agent state
     await ctx.db.patch(agentDoc._id, {

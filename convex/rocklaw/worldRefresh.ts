@@ -52,6 +52,32 @@ export const clearPendingNote = internalMutation({
   },
 });
 
+export const expireTransactionsForAgent = internalMutation({
+  args: { agentName: v.string(), tick: v.number(), day: v.number() },
+  handler: async (ctx, { agentName, tick, day }) => {
+    const pending = await ctx.db
+      .query('rl_transactions')
+      .withIndex('recipient_status', (q) => q.eq('toAgent', agentName).eq('status', 'pending'))
+      .collect();
+
+    const expired = pending.filter((txn) => txn.expiresTick < tick);
+    for (const txn of expired) {
+      await ctx.db.patch(txn._id, {
+        status: 'expired',
+        resolvedTick: tick,
+        resolvedDay: day,
+        outcomeNote: 'Offer expired before a response was made.',
+      });
+    }
+
+    return expired.map((txn) => ({
+      txnId: txn.txnId,
+      fromAgent: txn.fromAgent,
+      kind: txn.kind,
+    }));
+  },
+});
+
 // ── Convex query -- snapshot of everything an agent needs ────────────────────
 
 export const getWorldSnapshot = internalQuery({
@@ -113,6 +139,21 @@ export const getWorldSnapshot = internalQuery({
       .withIndex('agentName', (q) => q.eq('agentName', agentName))
       .unique();
 
+    const pendingTransactions = await ctx.db
+      .query('rl_transactions')
+      .withIndex('recipient_status', (q) => q.eq('toAgent', agentName).eq('status', 'pending'))
+      .collect();
+
+    const proposerNames = Array.from(new Set(pendingTransactions.map((txn) => txn.fromAgent)));
+    const proposers = await Promise.all(
+      proposerNames.map((name) =>
+        ctx.db.query('rl_agents').withIndex('name', (q) => q.eq('name', name)).unique(),
+      ),
+    );
+    const proposerByName = new Map(
+      proposers.filter(Boolean).map((agent) => [agent!.name, agent!]),
+    );
+
     return {
       agent,
       nearby: nearby.filter((a) => a.name !== agentName),
@@ -122,6 +163,10 @@ export const getWorldSnapshot = internalQuery({
       recentTrades,
       mentions,
       reputation,
+      pendingTransactions: pendingTransactions.map((txn) => ({
+        ...txn,
+        proposerLocation: proposerByName.get(txn.fromAgent)?.location ?? null,
+      })),
       workspacePath: agent.workspacePath,
     };
   },
@@ -178,6 +223,25 @@ function buildLocationMd(
     letterLines,
     '',
   ];
+
+  const pendingOffers = Array.isArray(data.pendingTransactions) ? data.pendingTransactions : [];
+  const pendingOfferLines = pendingOffers.length === 0
+    ? '  (none)'
+    : pendingOffers.map((txn: any) => {
+        const offer = JSON.parse(txn.offerJson) as Array<{ item: string; quantity: number }>;
+        const request = JSON.parse(txn.requestJson) as Array<{ item: string; quantity: number }>;
+        const offerText = offer.length === 0 ? 'nothing' : offer.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
+        const requestText = request.length === 0 ? 'nothing' : request.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
+        const locationNote = txn.proposerLocation === data.agent.location
+          ? ''
+          : ` [${txn.fromAgent} is no longer here]`;
+        const messageNote = txn.message ? ` -- "${txn.message}"` : '';
+        return `  - ${txn.txnId}: ${txn.fromAgent} offers ${offerText} for ${requestText}; expires tick ${txn.expiresTick}${locationNote}${messageNote}`;
+      }).join('\n');
+
+  sections.push('Pending offers here:');
+  sections.push(pendingOfferLines);
+  sections.push('');
 
   if (data.agent.pendingNote) {
     sections.push('From last tick:');

@@ -48,14 +48,18 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 
 - `pay`: use `target` and `amount`
   Example JSON: `{"action":"pay","target":"Marcus Hale","amount":10,"duration_ticks":1}`
-- `buy`: use `target`, `item`, `quantity`, optional `amount`
-  Example JSON: `{"action":"buy","target":"Marcus Hale","item":"coal","quantity":3,"amount":12,"duration_ticks":1}`
-- `sell`: use `target`, `item`, `quantity`, optional `amount`
-  Example JSON: `{"action":"sell","target":"Finn","item":"horseshoe","quantity":2,"amount":62,"duration_ticks":1}`
+- `buy`: use `target`, `item`, `quantity`, and `amount` to create an in-person offer
+  Example JSON: `{"action":"buy","target":"Marcus Hale","item":"coal","quantity":3,"amount":12,"duration_ticks":1,"thought":"Make Marcus an offer while we are both here."}`
+- `sell`: use `target`, `item`, `quantity`, and `amount` to create an in-person offer
+  Example JSON: `{"action":"sell","target":"Finn","item":"horseshoe","quantity":2,"amount":62,"duration_ticks":1,"thought":"Offer finished goods while Finn is here."}`
 - `give`: use `target`, `item`, `quantity`
   Example JSON: `{"action":"give","target":"Cora","item":"bread","quantity":1,"duration_ticks":1}`
-- `trade`: use `target`, `offer`, `request`
-  Example JSON: `{"action":"trade","target":"Marcus Hale","offer":[{"item":"horseshoe","quantity":1}],"request":[{"item":"coal","quantity":2}],"duration_ticks":1}`
+- `trade`: use `target`, `offer`, and `request` to create an in-person offer
+  Example JSON: `{"action":"trade","target":"Marcus Hale","offer":[{"item":"horseshoe","quantity":1}],"request":[{"item":"coal","quantity":2}],"duration_ticks":1,"thought":"Propose a direct swap while Marcus is here."}`
+- `accept_transaction`: use `target` as the transaction id to accept a pending local offer
+  Example JSON: `{"action":"accept_transaction","target":"txn-2-4-trade-marcus-hale-123","duration_ticks":1,"thought":"The offer is fair and we are still together here."}`
+- `reject_transaction`: use `target` as the transaction id to reject a pending local offer
+  Example JSON: `{"action":"reject_transaction","target":"txn-2-4-trade-marcus-hale-123","duration_ticks":1,"thought":"The offer is poor or no longer works.","message":"No deal."}`
 
 ## Act in the world
 

@@ -22,6 +22,26 @@ export const refreshWorldFiles = internalAction({
     timeOfDay: v.string(),
   },
   handler: async (ctx, { agentName, tick, day, timeOfDay }) => {
+    const expiredTransactions = await ctx.runMutation(internal.rocklaw.worldRefresh.expireTransactionsForAgent, {
+      agentName,
+      tick,
+      day,
+    });
+    for (const txn of expiredTransactions) {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        agentName,
+        line: `- Day ${day} ${timeOfDay}: ${txn.kind} offer from ${txn.fromAgent} expired [FAILED] ⚠ No response before tick ${tick}.`,
+      });
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        agentName: txn.fromAgent,
+        line: `- Day ${day} ${timeOfDay}: your ${txn.kind} offer to ${agentName} expired [FAILED] ⚠ No response before tick ${tick}.`,
+      });
+      await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
+        agentName: txn.fromAgent,
+        note: `Your ${txn.kind} offer to ${agentName} expired before a response.`,
+      });
+    }
+
     const data = await ctx.runQuery(internal.rocklaw.worldRefresh.getWorldSnapshot, {
       agentName,
       tick,
@@ -90,6 +110,27 @@ export const appendHeartbeat = internalAction({
   },
 });
 
+export const getLatestHeartbeatLine = internalAction({
+  args: { agentName: v.string() },
+  handler: async (ctx, { agentName }) => {
+    const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
+    if (!agent) return null;
+
+    const heartbeatPath = path.join(resolveWorkspacePath(agent.workspacePath), '06_HEARTBEAT.md');
+
+    try {
+      const existing = await fs.readFile(heartbeatPath, 'utf8');
+      const entries = existing
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => line.startsWith('- Day'));
+      return entries.length > 0 ? entries[entries.length - 1] : null;
+    } catch {
+      return null;
+    }
+  },
+});
+
 function buildInventoryMd(agentName: string, day: number, data: any): string {
   const inv = JSON.parse(data.agent.inventory) as Record<string, number>;
   const lines = Object.entries(inv)
@@ -136,6 +177,25 @@ function buildLocationMd(
     letterLines,
     '',
   ];
+
+  const pendingOffers = Array.isArray(data.pendingTransactions) ? data.pendingTransactions : [];
+  const pendingOfferLines = pendingOffers.length === 0
+    ? '  (none)'
+    : pendingOffers.map((txn: any) => {
+        const offer = JSON.parse(txn.offerJson) as Array<{ item: string; quantity: number }>;
+        const request = JSON.parse(txn.requestJson) as Array<{ item: string; quantity: number }>;
+        const offerText = offer.length === 0 ? 'nothing' : offer.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
+        const requestText = request.length === 0 ? 'nothing' : request.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
+        const locationNote = txn.proposerLocation === data.agent.location
+          ? ''
+          : ` [${txn.fromAgent} is no longer here]`;
+        const messageNote = txn.message ? ` -- "${txn.message}"` : '';
+        return `  - ${txn.txnId}: ${txn.fromAgent} offers ${offerText} for ${requestText}; expires tick ${txn.expiresTick}${locationNote}${messageNote}`;
+      }).join('\n');
+
+  sections.push('Pending offers here:');
+  sections.push(pendingOfferLines);
+  sections.push('');
 
   if (data.agent.pendingNote) {
     sections.push('From last tick:');

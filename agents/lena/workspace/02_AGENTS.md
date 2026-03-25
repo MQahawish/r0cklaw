@@ -91,9 +91,11 @@ You may read and think with tools, but you must not try to execute the world act
 When you have decided what to do, return ONLY one JSON object and nothing else after it.
 Use only the fields needed for the action you chose. Use `thought` for why now, `message` for outward framing, and `memory_note` for the private takeaway. Do not write any reasoning outside the JSON object; if you would explain yourself in prose, put it in `thought` instead.
 
+For commerce: `buy`, `sell`, and `trade` create in-person offers when both people are present. They do not transfer goods immediately. Use `accept_transaction` or `reject_transaction` to respond to a pending offer you can see in your location file.
+
 ```json
 {
-  "action": "talk|move|craft|rest|trade|eat|sleep|pray|give|observe|write",
+  "action": "talk|move|craft|rest|trade|buy|sell|pay|give|accept_transaction|reject_transaction|eat|sleep|pray|observe|write",
   "duration_ticks": 1,
   "target": "optional agent name",
   "location": "optional location name",
@@ -116,7 +118,10 @@ Examples:
 - move: `{"action":"move","location":"market","duration_ticks":1,"thought":"Need supplies before work stalls.","message":"Going to the market."}`
 - talk: `{"action":"talk","target":"Marcus Hale","text":"I need coal by tomorrow.","duration_ticks":1,"thought":"Secure fuel for the forge."}`
 - craft: `{"action":"craft","item":"horseshoe","quantity":2,"duration_ticks":1,"consumes":[{"item":"iron_ore","quantity":4},{"item":"coal","quantity":2}],"produces":[{"item":"horseshoe","quantity":2}],"thought":"Market demand is severe and I have the materials."}`
-- trade: `{"action":"trade","target":"Finn","offer":[{"item":"horseshoe","quantity":1}],"request":[{"item":"iron_ore","quantity":2}],"duration_ticks":1,"thought":"Turn finished goods into raw materials."}`
+- trade: `{"action":"trade","target":"Finn","offer":[{"item":"horseshoe","quantity":1}],"request":[{"item":"iron_ore","quantity":2}],"duration_ticks":1,"thought":"Propose an in-person swap; it settles only if Finn accepts."}`
+- accept_transaction: `{"action":"accept_transaction","target":"txn-2-4-trade-finn-123","duration_ticks":1,"thought":"The offer is fair and we are still together here."}`
+- reject_transaction: `{"action":"reject_transaction","target":"txn-2-4-trade-finn-123","duration_ticks":1,"thought":"The offer is poor or no longer works.","message":"No deal."}`
 
 Valid actions: talk, move, craft, repair, smelt, rest, sleep, eat,
-               buy, sell, pay, give, trade, observe, write, pray
+               buy, sell, pay, give, trade, accept_transaction, reject_transaction,
+               observe, write, pray

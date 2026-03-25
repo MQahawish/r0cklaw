@@ -22,8 +22,8 @@ type RocklawAction = {
   duration_ticks: number;
   thought?: string;
   message?: string;
-  consumes: unknown[];
-  produces: unknown[];
+  consumes?: unknown[];
+  produces?: unknown[];
   memory_note?: string;
 };
 
@@ -50,6 +50,7 @@ class ZeroClawTurnError extends Error {
 
 const VALID_ACTIONS = new Set([
   'talk', 'move', 'rest', 'sleep', 'eat', 'buy', 'sell', 'pay', 'give', 'trade',
+  'accept_transaction', 'reject_transaction',
   'observe', 'write', 'pray', 'leave_message', 'recall',
   'craft', 'repair', 'smelt', 'appraise',
   'negotiate', 'post_price', 'bulk_buy',
@@ -111,7 +112,17 @@ export const tickAgent = internalAction({
       currentTick: tick,
     });
 
-    const tickMessage = buildTickMessage(day, timeOfDay, tick, letterWarning ?? undefined);
+    const lastHeartbeatLine = await ctx.runAction(internal.rocklaw.worldRefreshNode.getLatestHeartbeatLine, {
+      agentName,
+    });
+
+    const tickMessage = buildTickMessage(
+      day,
+      timeOfDay,
+      tick,
+      lastHeartbeatLine ?? undefined,
+      letterWarning ?? undefined,
+    );
     const sessionId = buildSessionId(agentName);
     const debugRecord: Record<string, unknown> = {
       timestamp: new Date().toISOString(),
@@ -134,14 +145,19 @@ export const tickAgent = internalAction({
       debugRecord.gatewayHost = result.host;
       debugRecord.events = result.events;
     } catch (err) {
+      const failureMessage = err instanceof Error ? err.message : String(err);
       debugRecord.phase = 'transport_failed';
       debugRecord.timestamp = new Date().toISOString();
-      debugRecord.error = err instanceof Error ? err.message : String(err);
+      debugRecord.error = failureMessage;
       if (err instanceof ZeroClawTurnError) {
         debugRecord.gatewayHost = err.host;
         debugRecord.events = err.events;
       }
       console.error(`[bridge] Gateway call failed for ${agentName}:`, err);
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        agentName,
+        line: summariseFailure(day, timeOfDay, 'agent turn failed before a final action', failureMessage),
+      });
       await appendTickDebug(agent.workspacePath, debugRecord);
       if (!_manual) {
         await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridgeNode.tickAgent, { agentName });
@@ -153,13 +169,24 @@ export const tickAgent = internalAction({
 
     const trimmedResponse = rawResponse.trimStart();
     if (!trimmedResponse.startsWith('{')) {
+      const note = 'Final response must start with { and contain only one JSON object.';
+      const rejectedCandidate = extractAction(rawResponse);
       debugRecord.phase = 'parse_failed';
       debugRecord.timestamp = new Date().toISOString();
+      if (rejectedCandidate) {
+        debugRecord.rejectedCandidateAction = rejectedCandidate;
+      }
       debugRecord.validation = {
         outcome: 'parse_failed',
-        note: 'Final response must start with { and contain only one JSON object.',
+        note,
       };
       console.error(`[bridge] Non-JSON-prefixed response from ${agentName}:\n${rawResponse}`);
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        agentName,
+        line: rejectedCandidate
+          ? summariseRejectedAttempt(rejectedCandidate, day, timeOfDay, note)
+          : summariseFailure(day, timeOfDay, 'response rejected: prose before JSON', note),
+      });
       await appendTickDebug(agent.workspacePath, debugRecord);
       await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
         agentName,
@@ -173,13 +200,18 @@ export const tickAgent = internalAction({
 
     const action = extractAction(rawResponse);
     if (!action) {
+      const note = 'Could not parse final response as Rocklaw action JSON.';
       debugRecord.phase = 'parse_failed';
       debugRecord.timestamp = new Date().toISOString();
       debugRecord.validation = {
         outcome: 'parse_failed',
-        note: 'Could not parse final response as Rocklaw action JSON.',
+        note,
       };
       console.error(`[bridge] Could not parse action from ${agentName}'s response:\n${rawResponse}`);
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        agentName,
+        line: summariseFailure(day, timeOfDay, 'response rejected: JSON parse failed', note),
+      });
       await appendTickDebug(agent.workspacePath, debugRecord);
       await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
         agentName,
@@ -194,13 +226,18 @@ export const tickAgent = internalAction({
     debugRecord.parsedAction = action;
 
     if (!validateAction(action)) {
+      const note = 'Parsed JSON was structurally invalid for Rocklaw.';
       debugRecord.phase = 'invalid_action';
       debugRecord.timestamp = new Date().toISOString();
       debugRecord.validation = {
         outcome: 'invalid_action',
-        note: 'Parsed JSON was structurally invalid for Rocklaw.',
+        note,
       };
       console.error(`[bridge] Invalid action from ${agentName}:`, action);
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        agentName,
+        line: summariseRejectedAttempt(action, day, timeOfDay, note),
+      });
       await appendTickDebug(agent.workspacePath, debugRecord);
       await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
         agentName,
@@ -246,16 +283,25 @@ export const tickAgent = internalAction({
   },
 });
 
-function buildTickMessage(day: number, timeOfDay: string, tick: number, letterWarning?: string): string {
+function buildTickMessage(
+  day: number,
+  timeOfDay: string,
+  tick: number,
+  lastHeartbeatLine?: string,
+  letterWarning?: string,
+): string {
   const sections = [
     `It is ${timeOfDay}, Day ${day}, tick ${tick} in Rocklaw.`,
+    `Last tick: ${lastHeartbeatLine ?? 'none yet'}`,
     'Use your files and tools only to understand the situation and decide.',
+    'Anchor yourself in 06_HEARTBEAT.md first so your next action follows from what you already did.',
     'Think silently. Read only the minimum files needed. In most ticks, 3-5 reads are enough.',
     'When you know what to do, stop using tools and return the final answer immediately.',
     'Return exactly one JSON object and nothing else.',
     'The first character must be { and the last character must be }.',
     'No prose before or after the JSON object.',
     'Do not ask clarifying questions. Do not emit tool_code. Do not execute shell commands for world actions.',
+    'buy, sell, and trade create in-person offers when both people are present; they do not transfer goods immediately.',
     'If you want to explain why, put it in "thought".',
     'Use "message" for outward wording. Use "memory_note" for the private takeaway.',
     '',
@@ -265,6 +311,8 @@ function buildTickMessage(day: number, timeOfDay: string, tick: number, letterWa
     'Examples:',
     '{"action":"rest","duration_ticks":1,"thought":"Energy is too low for demanding work.","message":"Resting for a bit."}',
     '{"action":"move","location":"market","duration_ticks":1,"thought":"Need supplies before work stalls.","message":"Going to the market."}',
+    '{"action":"buy","target":"Marcus Hale","item":"coal","quantity":3,"amount":12,"duration_ticks":1,"thought":"I need fuel and he is here with me. This creates an in-person offer, not an immediate transfer.","message":"Offering 12 coin for three coal."}',
+    '{"action":"accept_transaction","target":"txn-2-4-buy-marcus-hale-123","duration_ticks":1,"thought":"The offer is fair and we are still together here.","message":"Accepted."}',
     '{"action":"craft","item":"horseshoe","quantity":2,"duration_ticks":1,"consumes":[{"item":"iron_ore","quantity":4},{"item":"coal","quantity":2}],"produces":[{"item":"horseshoe","quantity":2}],"thought":"Market demand is severe and I have the materials.","message":"Crafting two horseshoes."}',
   ];
 
@@ -468,7 +516,8 @@ function extractJsonObjects(text: string): string[] {
 function validateAction(action: RocklawAction): boolean {
   if (typeof action.action !== 'string' || !VALID_ACTIONS.has(action.action)) return false;
   if (typeof action.duration_ticks !== 'number' || action.duration_ticks < 1) return false;
-  if (!Array.isArray(action.consumes) || !Array.isArray(action.produces)) return false;
+  if (action.consumes !== undefined && !Array.isArray(action.consumes)) return false;
+  if (action.produces !== undefined && !Array.isArray(action.produces)) return false;
 
   const isStringish = (value: unknown) => value === undefined || value === null || typeof value === 'string';
   const isNumberish = (value: unknown) => value === undefined || value === null || typeof value === 'number';
@@ -498,6 +547,9 @@ function validateAction(action: RocklawAction): boolean {
       return typeof (action.text ?? action.message) === 'string';
     case 'pay':
       return typeof action.target === 'string' && typeof action.amount === 'number';
+    case 'accept_transaction':
+    case 'reject_transaction':
+      return typeof action.target === 'string';
     case 'buy':
     case 'sell':
     case 'give':
@@ -527,6 +579,30 @@ function summariseAction(
   const failed = outcome === 'failed' ? ' [FAILED]' : '';
   const warning = outcomeNote ? ` ⚠ ${outcomeNote.slice(0, 80)}` : '';
   return `- Day ${day} ${timeOfDay}: ${action.action}${target}${note}${failed}${warning}`;
+}
+
+function summariseFailure(
+  day: number,
+  timeOfDay: string,
+  summary: string,
+  detail?: string | null,
+): string {
+  const warning = detail ? ` ⚠ ${detail.slice(0, 80)}` : '';
+  return `- Day ${day} ${timeOfDay}: ${summary} [FAILED]${warning}`;
+}
+
+function summariseRejectedAttempt(
+  action: RocklawAction,
+  day: number,
+  timeOfDay: string,
+  detail?: string | null,
+): string {
+  const destination = action.location ?? action.target ?? action.item ?? null;
+  const target = destination ? ` → ${destination}` : '';
+  const quantity = typeof action.quantity === 'number' && action.quantity > 1 ? ` x${action.quantity}` : '';
+  const note = (action.message ?? action.text) ? ` (${(action.message ?? action.text ?? '').slice(0, 60)})` : '';
+  const warning = detail ? ` ⚠ ${detail.slice(0, 80)}` : '';
+  return `- Day ${day} ${timeOfDay}: attempted ${action.action}${target}${quantity}${note} [FAILED]${warning}`;
 }
 
 async function appendTickDebug(workspacePath: string, record: Record<string, unknown>) {
