@@ -195,7 +195,7 @@ export const startSim = mutation({
     // Start each agent's individual loop
     const agents = await ctx.db.query('rl_agents').collect();
     for (const agent of agents) {
-      await ctx.scheduler.runAfter(0, internal.rocklaw.bridge.tickAgent, { agentName: agent.name });
+      await ctx.scheduler.runAfter(0, internal.rocklaw.bridgeNode.tickAgent, { agentName: agent.name });
     }
 
     return { status: 'started', agentCount: agents.length };
@@ -360,7 +360,7 @@ export const resumeAgent = mutation({
     if (!agent) return;
     await ctx.db.patch(agent._id, { paused: false });
     // Re-kick the agent's tick loop
-    await ctx.scheduler.runAfter(0, internal.rocklaw.bridge.tickAgent, { agentName });
+    await ctx.scheduler.runAfter(0, internal.rocklaw.bridgeNode.tickAgent, { agentName });
   },
 });
 

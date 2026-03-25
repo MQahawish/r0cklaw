@@ -34,7 +34,7 @@ export const compactAgent = internalAction({
     workspacePath: v.string(),
   },
   handler: async (_ctx, { agentName, workspacePath }) => {
-    const absPath = path.resolve(workspacePath);
+    const absPath = resolveWorkspacePath(workspacePath);
     const results: string[] = [];
 
     const memoryPath = path.join(absPath, '05_MEMORY.md');
@@ -223,3 +223,9 @@ Write a brief paragraph (3-5 lines) capturing:
 - The general tone and purpose of the correspondence
 - Any significant letters that had consequences
 Be concise. This is an archive summary, not a full record.`;
+
+function resolveWorkspacePath(workspacePath: string): string {
+  if (path.isAbsolute(workspacePath)) return workspacePath;
+  const root = process.env.ROCKLAW_PROJECT_ROOT || process.cwd();
+  return path.resolve(root, workspacePath);
+}

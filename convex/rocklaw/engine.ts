@@ -7,7 +7,7 @@
  *   3. Runs compaction every 10 ticks
  *
  * Agents are NO LONGER fired by the global loop.
- * Each agent self-schedules its own next tick from bridge.tickAgent,
+ * Each agent self-schedules its own next tick from bridgeNode.tickAgent,
  * waiting duration_ticks * TICK_INTERVAL_MS before waking again.
  *
  * startRocklaw() starts the world clock AND fires the first tick for every agent.
@@ -46,7 +46,7 @@ export const setRunning = internalMutation({
 /**
  * The world clock.  Runs every TICK_INTERVAL_MS.
  * Only advances time and handles housekeeping.
- * Does NOT fire agents — they self-schedule from bridge.tickAgent.
+ * Does NOT fire agents — they self-schedule from bridgeNode.tickAgent.
  */
 export const runRocklawTick = internalAction({
   args: {},
@@ -131,7 +131,7 @@ export const startRocklaw = mutation({
     // Kick off each agent's individual tick loop
     const agents = await ctx.db.query('rl_agents').collect();
     for (const agent of agents) {
-      await ctx.scheduler.runAfter(0, internal.rocklaw.bridge.tickAgent, { agentName: agent.name });
+      await ctx.scheduler.runAfter(0, internal.rocklaw.bridgeNode.tickAgent, { agentName: agent.name });
     }
 
     console.log(`[engine] Rocklaw started — world clock + ${agents.length} agent loops`);
@@ -180,7 +180,7 @@ export const manualTick = action({
     console.log(`[engine] manualTick — tick ${tick}, Day ${day}, ${timeOfDay}`);
 
     if (agentName) {
-      await ctx.runAction(internal.rocklaw.bridge.tickAgent, { agentName, _manual: true });
+      await ctx.runAction(internal.rocklaw.bridgeNode.tickAgent, { agentName, _manual: true });
       return { tick, day, timeOfDay, agents: [agentName] };
     }
 
@@ -188,7 +188,7 @@ export const manualTick = action({
     const agents = await ctx.runQuery(internal.rocklaw.engine.getNonBusyAgents, { tick });
     await Promise.all(
       agents.map((name: string) =>
-        ctx.runAction(internal.rocklaw.bridge.tickAgent, { agentName: name, _manual: true }),
+        ctx.runAction(internal.rocklaw.bridgeNode.tickAgent, { agentName: name, _manual: true }),
       ),
     );
     return { tick, day, timeOfDay, agents };

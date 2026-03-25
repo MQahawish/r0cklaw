@@ -19,6 +19,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/load-local-env.sh"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/provider-env.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/agent-process.sh"
 
 echo "Starting all Rocklaw agents..."
 echo ""
@@ -26,8 +28,8 @@ echo ""
 for agent in "${AGENTS[@]}"; do
   AGENT_DIR="$SCRIPT_DIR/../agents/$agent"
   CONFIG_PATH="$AGENT_DIR/config.toml"
-  LOG="/tmp/zeroclaw-$agent.log"
-  PID="/tmp/zeroclaw-$agent.pid"
+  LOG="$(agent_log_file "$agent")"
+  PID="$(agent_pid_file "$agent")"
 
   if ! provider_credentials_ok "$CONFIG_PATH"; then
     echo "  $agent -- skipped (missing credentials)"
@@ -35,8 +37,8 @@ for agent in "${AGENTS[@]}"; do
     continue
   fi
 
-  if [[ -f "$PID" ]] && kill -0 "$(cat "$PID")" 2>/dev/null; then
-    echo "  $agent -- already running (pid $(cat "$PID"))"
+  if pid="$(agent_running_pid "$agent" 2>/dev/null)"; then
+    echo "  $agent -- already running (pid $pid)"
     continue
   fi
 

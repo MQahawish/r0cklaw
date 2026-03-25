@@ -1,25 +1,14 @@
 /**
- * HTTP Bridge -- connects the action-driven agent loop to ZeroClaw gateways.
+ * Rocklaw bridge queries and mutations.
  *
- * Phase 6 change: tickAgent is now self-scheduling.
- *   - Arguments: just { agentName } (tick/day/timeOfDay read from world state at call time)
- *   - After committing the action, schedules the next tick at duration_ticks * TICK_INTERVAL_MS
- *   - Exits silently if isRunning = false (allows graceful shutdown)
- *   - _manual: true skips self-scheduling (used by manualTick in engine.ts)
- *
- * For each villager tick:
- *   1. Read current tick/day/timeOfDay from world state
- *   2. Refresh world/ files in the agent's workspace from Convex
- *   3. Check for unanswered letters and inject warnings if threshold exceeded
- *   4. POST minimal tick message to ZeroClaw gateway
- *   5. Parse the returned JSON action
- *   6. Validate and commit the action to Convex world state
- *   7. Append one line to agent's HEARTBEAT.md
- *   8. Self-schedule next tick in duration_ticks * TICK_INTERVAL_MS
+ * The live ZeroClaw transport now lives in bridgeNode.ts because Convex only
+ * allows Node.js runtime modules to export actions. This file remains the
+ * stateful half of the bridge: queries, mutations, validation-adjacent helpers,
+ * and world-state commits.
  */
 
 import { v } from 'convex/values';
-import { internalAction, internalMutation, internalQuery } from '../_generated/server';
+import { internalMutation, internalQuery } from '../_generated/server';
 import { internal } from '../_generated/api';
 import { TICK_INTERVAL_MS } from './engine';
 
@@ -34,28 +23,6 @@ export type RocklawAction = {
   produces: string[];
   memory_note?: string;
 };
-
-const VALID_ACTIONS = new Set([
-  // Universal
-  'talk', 'move', 'rest', 'sleep', 'eat', 'buy', 'sell', 'pay', 'give', 'trade',
-  'observe', 'write', 'pray', 'leave_message', 'recall',
-  // Blacksmith (Elena)
-  'craft', 'repair', 'smelt', 'appraise',
-  // Merchant (Marcus)
-  'negotiate', 'post_price', 'bulk_buy',
-  // Farmer (Finn)
-  'harvest', 'plant', 'water', 'check_field',
-  // Herbalist (Lena)
-  'gather', 'brew', 'treat', 'identify',
-  // Innkeeper (Sera)
-  'serve', 'rent_room', 'eavesdrop', 'post_notice',
-  // Priest (Aldric)
-  'bless', 'counsel', 'preach', 'officiate',
-  // Child (Cora)
-  'play', 'run_errand',
-  // Retired Soldier (Rook)
-  'patrol', 'train', 'recall_war',
-]);
 
 // Effort costs per action (deducted from energy after completion)
 const EFFORT_COSTS: Record<string, number> = {
@@ -77,249 +44,54 @@ const EFFORT_COSTS: Record<string, number> = {
   eat: 0, rest: -40, sleep: -100,
 };
 
-// ── Main tick action ─────────────────────────────────────────────────────────
-
-/**
- * Runs a single tick for one agent (action-driven, self-scheduling).
- *
- * Args:
- *   agentName  -- which agent to tick
- *   _manual    -- if true, skip self-scheduling (used by manualTick)
- */
-export const tickAgent = internalAction({
-  args: {
-    agentName: v.string(),
-    _manual: v.optional(v.boolean()),
-  },
-  handler: async (ctx, { agentName, _manual }) => {
-    // 0. Check if the sim is still running (allows graceful stop without cancelling scheduled jobs)
-    const worldState = await ctx.runQuery(internal.rocklaw.engine.getWorldState);
-    if (!worldState) {
-      console.error(`[bridge] No world state — ${agentName} tick aborted`);
-      return;
-    }
-    if (!worldState.isRunning && !_manual) {
-      console.log(`[bridge] ${agentName}: sim stopped, agent loop exiting`);
-      return;
-    }
-
-    const { tick, day, timeOfDay } = worldState;
-
-    // 1. Load agent state from Convex
-    const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
-    if (!agent) {
-      console.error(`[bridge] Agent not found: ${agentName}`);
-      return;
-    }
-    // Pause check -- god-mode can suspend individual agents
-    if (agent.paused && !_manual) {
-      console.log(`[bridge] ${agentName} is paused — tick skipped`);
-      return;
-    }
-    if (agent.busy) {
-      // Agent was already re-scheduled but wasn't fully cleared yet — check again soon
-      const waitMs = TICK_INTERVAL_MS / 2;
-      if (!_manual) {
-        await ctx.scheduler.runAfter(waitMs, internal.rocklaw.bridge.tickAgent, { agentName });
-      }
-      console.log(`[bridge] ${agentName} still busy, retrying in ${waitMs}ms`);
-      return;
-    }
-
-    // 2. Refresh world/ files on disk before the tick fires
-    await ctx.runAction(internal.rocklaw.worldRefreshNode.refreshWorldFiles, {
-      agentName,
-      tick,
-      day,
-      timeOfDay,
-    });
-
-    // 3. Check for unanswered letters, inject warning if > 3 ticks old
-    const letterWarning = await ctx.runQuery(internal.rocklaw.bridge.checkUnreadLetters, {
-      agentName,
-      currentTick: tick,
-    });
-
-    // 4. Build tick message
-    const tickMessage = buildTickMessage(day, timeOfDay, letterWarning ?? undefined);
-
-    // 5. Call ZeroClaw gateway (with optional per-agent model override)
-    let rawResponse: string;
-    try {
-      rawResponse = await callZeroClawGateway(agent.gatewayPort, tickMessage);
-    } catch (err) {
-      console.error(`[bridge] Gateway call failed for ${agentName}:`, err);
-      // Retry after one tick interval — don't drop the agent loop
-      if (!_manual) {
-        await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridge.tickAgent, { agentName });
-      }
-      return;
-    }
-
-    // 6. Parse JSON action from response (ZeroClaw may include prose before the JSON block)
-    const action = extractAction(rawResponse);
-    if (!action) {
-      console.error(`[bridge] Could not parse action from ${agentName}'s response:\n${rawResponse}`);
-      await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
-        agentName,
-        note: 'SYSTEM: Your last response could not be parsed as valid JSON. You MUST respond with a valid JSON action block. No prose outside the JSON.',
-      });
-      if (!_manual) {
-        await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridge.tickAgent, { agentName });
-      }
-      return;
-    }
-
-    // 7. Validate
-    if (!validateAction(action)) {
-      console.error(`[bridge] Invalid action from ${agentName}:`, action);
-      await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
-        agentName,
-        note: `SYSTEM: Your last action JSON was structurally invalid (missing required fields or unknown action type). Valid action types: move, work, buy, sell, trade, sleep, rest, eat, talk, give, steal, pray, eavesdrop, leave_message, idle.`,
-      });
-      if (!_manual) {
-        await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridge.tickAgent, { agentName });
-      }
-      return;
-    }
-
-    // 8. Commit action to Convex world state
-    const result = await ctx.runMutation(internal.rocklaw.bridge.commitAction, {
-      agentName,
-      action: JSON.stringify(action),
-      tick,
-      day,
-    });
-
-    // 9. Append to HEARTBEAT.md (world engine only -- agent never writes this)
-    await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
-      agentName,
-      line: summariseAction(action, day, timeOfDay, result?.outcome, result?.note),
-    });
-
-    const durationTicks = Math.max(1, action.duration_ticks ?? 1);
-    const nextMs = durationTicks * TICK_INTERVAL_MS;
-
-    console.log(`[bridge] ${agentName} tick ${tick}: ${action.action} → ${action.target ?? 'null'} [${result?.outcome ?? 'success'}] next in ${nextMs}ms`);
-
-    // 10. Self-schedule next tick based on how long this action takes
-    if (!_manual) {
-      await ctx.scheduler.runAfter(nextMs, internal.rocklaw.bridge.tickAgent, { agentName });
-    }
-  },
-});
-
-// ── ZeroClaw gateway call ────────────────────────────────────────────────────
-
-async function callZeroClawGateway(port: number, message: string): Promise<string> {
-  const hosts = [
-    '127.0.0.1',
-    'host.docker.internal',
-  ];
-
-  let lastError: unknown;
-
-  for (const host of hosts) {
-    const url = `http://${host}:${port}/webhook`;
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message }),
-      });
-      if (!response.ok) {
-        throw new Error(`ZeroClaw gateway returned ${response.status}: ${await response.text()}`);
-      }
-      const data = (await response.json()) as { response: string; model?: string };
-      return data.response;
-    } catch (error) {
-      lastError = new Error(`${url}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  throw lastError instanceof Error ? lastError : new Error(`ZeroClaw gateway unavailable on port ${port}`);
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function buildTickMessage(day: number, timeOfDay: string, letterWarning?: string): string {
-  let msg = `It is ${timeOfDay}, Day ${day}. What do you do?`;
-  if (letterWarning) {
-    msg += `\n\n${letterWarning}`;
-  }
-  return msg;
-}
-
-/**
- * Extracts the JSON action block from ZeroClaw's response.
- * The LLM may include reasoning prose before the final JSON -- we want the last valid JSON object.
- */
-function extractAction(response: string): RocklawAction | null {
-  // Try to find a JSON block (```json ... ``` or bare {...})
-  const jsonBlockMatch = response.match(/```json\s*([\s\S]*?)```/);
-  if (jsonBlockMatch) {
-    try { return JSON.parse(jsonBlockMatch[1].trim()); } catch { /* fall through */ }
-  }
-
-  // Try last JSON object in the response
-  const jsonMatches = [...response.matchAll(/\{[\s\S]*?\}/g)];
-  for (let i = jsonMatches.length - 1; i >= 0; i--) {
-    try {
-      const parsed = JSON.parse(jsonMatches[i][0]);
-      if (parsed.action) return parsed;
-    } catch { /* keep looking */ }
-  }
-  return null;
-}
-
-function validateAction(action: RocklawAction): boolean {
-  return (
-    typeof action.action === 'string' &&
-    VALID_ACTIONS.has(action.action) &&
-    typeof action.duration_ticks === 'number' &&
-    action.duration_ticks >= 1 &&
-    Array.isArray(action.consumes) &&
-    Array.isArray(action.produces)
-  );
-}
-
-function summariseAction(
-  action: RocklawAction,
-  day: number,
-  timeOfDay: string,
-  outcome?: string,
-  outcomeNote?: string | null,
-): string {
-  const target = action.target ? ` → ${action.target}` : '';
-  const note = action.message ? ` (${action.message.slice(0, 60)})` : '';
-  const failed = outcome === 'failed' ? ' [FAILED]' : '';
-  const warning = outcomeNote ? ` ⚠ ${outcomeNote.slice(0, 80)}` : '';
-  return `- Day ${day} ${timeOfDay}: ${action.action}${target}${note}${failed}${warning}`;
-}
-
 // ── Inventory helpers ─────────────────────────────────────────────────────────
 
 /**
  * Parses a list of item strings (e.g. ["coal:3", "iron_ore", "coin:10"])
  * into a Record<itemName, quantity>.
  */
-function parseItemList(items: string[]): Record<string, number> {
+function parseItemList(items: unknown[]): Record<string, number> {
   const result: Record<string, number> = {};
   for (const entry of items) {
-    const colonIdx = entry.lastIndexOf(':');
+    const normalised = normaliseItemEntry(entry);
+    if (!normalised) continue;
     let name: string;
     let qty: number;
-    if (colonIdx > 0) {
-      name = entry.slice(0, colonIdx).trim();
-      qty = parseInt(entry.slice(colonIdx + 1), 10);
+    if (normalised.colonIdx > 0) {
+      name = normalised.value.slice(0, normalised.colonIdx).trim();
+      qty = parseInt(normalised.value.slice(normalised.colonIdx + 1), 10);
       if (isNaN(qty) || qty <= 0) qty = 1;
     } else {
-      name = entry.trim();
-      qty = 1;
+      name = normalised.value.trim();
+      qty = normalised.qty;
     }
     result[name] = (result[name] ?? 0) + qty;
   }
   return result;
+}
+
+function normaliseItemEntry(entry: unknown): { value: string; qty: number; colonIdx: number } | null {
+  if (typeof entry === 'string') {
+    return { value: entry, qty: 1, colonIdx: entry.lastIndexOf(':') };
+  }
+  if (typeof entry === 'object' && entry !== null) {
+    const record = entry as Record<string, unknown>;
+    const itemName = record.item ?? record.name ?? record.target;
+    if (typeof itemName === 'string' && itemName.trim() !== '') {
+      const qtyValue = record.qty ?? record.quantity ?? record.amount;
+      const qty = typeof qtyValue === 'number'
+        ? qtyValue
+        : typeof qtyValue === 'string'
+        ? parseInt(qtyValue, 10)
+        : 1;
+      return {
+        value: itemName,
+        qty: Number.isFinite(qty) && qty > 0 ? qty : 1,
+        colonIdx: -1,
+      };
+    }
+  }
+  return null;
 }
 
 /**

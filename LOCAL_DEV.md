@@ -144,11 +144,19 @@ zeroclaw --config-dir /home/mahmoudqahawish/Github/r0cklaw/agents/elena doctor t
 tail -f /home/mahmoudqahawish/Github/r0cklaw/agents/elena/workspace/state/runtime-trace.jsonl
 ```
 
+5. Tail persisted Rocklaw tick debug:
+
+```bash
+tail -f /home/mahmoudqahawish/Github/r0cklaw/agents/elena/workspace/state/tick-debug.jsonl
+```
+
 Notes:
 
 - this isolates one villager and stops the background multi-agent sim
 - it enables ZeroClaw runtime traces for that one agent
-- current Rocklaw integration still uses ZeroClaw gateway `/webhook` simple chat mode for ticks, not the full tool-loop runtime
+- Rocklaw ticks now use ZeroClaw `ws/chat` sessions, persist tool-stream events to `tick-debug.jsonl`, and parse only the final `done.full_response` as the world action
+- startup helpers now sync the self-hosted Convex admin key and deploy local Convex functions automatically
+- startup helpers also loosen local `agents/` workspace permissions so the self-hosted Convex container can write shared world/debug files
 
 ## Agent Provider / Model Overrides
 
@@ -199,14 +207,8 @@ Rocklaw currently starts each villager as:
 zeroclaw --config-dir agents/<name> gateway start
 ```
 
-and the world engine sends tick prompts to:
+and the world engine sends each tick through:
 
-- `POST /webhook`
+- `GET /ws/chat?session_id=rocklaw-<agent>`
 
-In current ZeroClaw, that path uses the simple gateway chat flow:
-
-- workspace-aware system prompt injection
-- one LLM call
-- no real tool loop for the tick itself
-
-That is why invalid prose / malformed JSON / tool-like output can still appear during Rocklaw ticks. This is a behavior-contract issue, not a local environment startup issue.
+Rocklaw waits for streamed ZeroClaw events, persists them to `state/tick-debug.jsonl`, and only parses the final `done.full_response` into a Rocklaw action.

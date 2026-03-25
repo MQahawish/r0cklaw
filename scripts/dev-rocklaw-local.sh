@@ -37,6 +37,7 @@ require_cmd docker
 require_cmd curl
 require_cmd zeroclaw
 require_cmd npx
+"$SCRIPT_DIR/ensure-agent-workspace-perms.sh"
 
 cd "$ROOT_DIR"
 
@@ -67,6 +68,9 @@ echo "[1/6] Starting self-hosted Convex backend..."
 docker compose up -d backend dashboard
 wait_for_url "http://127.0.0.1:3210/version"
 "$SCRIPT_DIR/sync-convex-env.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/load-local-env.sh"
+"$SCRIPT_DIR/ensure-convex-functions.sh"
 
 echo "[2/6] Starting ZeroClaw agent gateways..."
 "$SCRIPT_DIR/stop-all-agents.sh" >/dev/null 2>&1 || true

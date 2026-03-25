@@ -11,6 +11,8 @@ source "$SCRIPT_DIR/load-local-env.sh"
 source "$SCRIPT_DIR/provider-env.sh"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/agent-lib.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/agent-process.sh"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -24,6 +26,7 @@ require_cmd curl
 require_cmd zeroclaw
 require_cmd npx
 require_cmd perl
+"$SCRIPT_DIR/ensure-agent-workspace-perms.sh"
 
 AGENT=${1:-}
 MODE=${2:---continue}
@@ -41,7 +44,9 @@ fi
 AGENT_DIR="$ROOT_DIR/agents/$AGENT"
 CONFIG_PATH="$AGENT_DIR/config.toml"
 TRACE_PATH="$AGENT_DIR/workspace/state/runtime-trace.jsonl"
+TICK_DEBUG_PATH="$AGENT_DIR/workspace/state/tick-debug.jsonl"
 LOG_PATH="/tmp/zeroclaw-$AGENT.log"
+PID_PATH="$(agent_pid_file "$AGENT")"
 AGENT_NAME="$(agent_slug_to_name "$AGENT")"
 GATEWAY_PORT="$(sed -n 's/^port[[:space:]]*=[[:space:]]*\([0-9][0-9]*\)$/\1/p' "$CONFIG_PATH" | head -n1)"
 
@@ -62,10 +67,14 @@ echo "[1/5] Starting self-hosted Convex backend..."
 docker compose up -d backend dashboard
 wait_for_url "http://127.0.0.1:3210/version"
 "$SCRIPT_DIR/sync-convex-env.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/load-local-env.sh"
+"$SCRIPT_DIR/ensure-convex-functions.sh"
 
 echo "[2/5] Stopping background sim and all gateways..."
 npx convex run rocklaw/god:stopSim >/dev/null 2>&1 || true
 "$SCRIPT_DIR/stop-all-agents.sh" >/dev/null 2>&1 || true
+stop_agent_process "$AGENT" >/dev/null 2>&1 || true
 
 if [[ "$MODE" == "--fresh" ]]; then
   echo "[3/5] Reinitialising Rocklaw world..."
@@ -78,10 +87,13 @@ fi
 echo "[4/5] Enabling full runtime traces for $AGENT..."
 mkdir -p "$(dirname "$TRACE_PATH")"
 : > "$TRACE_PATH"
+: > "$TICK_DEBUG_PATH"
 configure_debug_observability "$CONFIG_PATH"
 
 echo "[5/5] Starting $AGENT in background..."
-"$SCRIPT_DIR/start-agent.sh" "$AGENT" >/tmp/rocklaw-lab-"$AGENT".bootstrap.log 2>&1 &
+cd "$AGENT_DIR"
+nohup zeroclaw --config-dir "$AGENT_DIR" gateway start > "$LOG_PATH" 2>&1 < /dev/null &
+echo $! > "$PID_PATH"
 wait_for_url "http://127.0.0.1:${GATEWAY_PORT}/health" 30 1
 
 echo ""
@@ -92,6 +104,7 @@ echo "Model:     $(model_from_config "$CONFIG_PATH")"
 echo "Gateway:   http://127.0.0.1:${GATEWAY_PORT}"
 echo "Log file:  $LOG_PATH"
 echo "Trace:     $TRACE_PATH"
+echo "Tick log:  $TICK_DEBUG_PATH"
 echo ""
 echo "Next commands:"
 echo "  Tick once:      npm run tick:agent -- $AGENT"

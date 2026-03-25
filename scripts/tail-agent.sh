@@ -13,13 +13,16 @@ if [[ -z "$AGENT" ]]; then
 fi
 
 TRACE="$ROOT_DIR/agents/$AGENT/workspace/state/runtime-trace.jsonl"
+TICK_DEBUG="$ROOT_DIR/agents/$AGENT/workspace/state/tick-debug.jsonl"
 LOG="/tmp/zeroclaw-$AGENT.log"
 
 echo "Tailing $LOG"
+echo "Tick debug: $TICK_DEBUG"
 echo "Trace file: $TRACE"
 echo "Ctrl+C to stop."
 echo ""
 
 touch "$LOG"
 touch "$TRACE"
-tail -f "$LOG" "$TRACE"
+touch "$TICK_DEBUG"
+tail -f "$LOG" "$TICK_DEBUG" "$TRACE"

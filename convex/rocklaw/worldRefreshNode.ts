@@ -32,7 +32,7 @@ export const refreshWorldFiles = internalAction({
       return;
     }
 
-    await syncZeroClawBootstrapFiles(path.resolve(data.workspacePath));
+    await syncZeroClawBootstrapFiles(resolveWorkspacePath(data.workspacePath));
 
     const letters = await ctx.runMutation(internal.rocklaw.worldRefresh.deliverLetters, {
       agentName,
@@ -40,7 +40,7 @@ export const refreshWorldFiles = internalAction({
       day,
     });
 
-    const workspacePath = path.resolve(data.workspacePath, 'world');
+    const workspacePath = path.join(resolveWorkspacePath(data.workspacePath), 'world');
 
     await Promise.all([
       writeFile(workspacePath, 'inventory.md', buildInventoryMd(agentName, day, data)),
@@ -62,7 +62,7 @@ export const appendHeartbeat = internalAction({
     const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
     if (!agent) return;
 
-    const heartbeatPath = path.resolve(agent.workspacePath, '06_HEARTBEAT.md');
+    const heartbeatPath = path.join(resolveWorkspacePath(agent.workspacePath), '06_HEARTBEAT.md');
 
     let existing = '';
     try {
@@ -252,4 +252,10 @@ async function syncZeroClawBootstrapFiles(workspaceDir: string): Promise<void> {
       }
     }),
   );
+}
+
+function resolveWorkspacePath(workspacePath: string): string {
+  if (path.isAbsolute(workspacePath)) return workspacePath;
+  const root = process.env.ROCKLAW_PROJECT_ROOT || process.cwd();
+  return path.resolve(root, workspacePath);
 }

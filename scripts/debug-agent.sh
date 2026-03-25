@@ -24,6 +24,7 @@ require_cmd curl
 require_cmd zeroclaw
 require_cmd npx
 require_cmd perl
+"$SCRIPT_DIR/ensure-agent-workspace-perms.sh"
 
 AGENT=${1:-}
 MODE=${2:---continue}
@@ -41,6 +42,7 @@ fi
 AGENT_DIR="$ROOT_DIR/agents/$AGENT"
 CONFIG_PATH="$AGENT_DIR/config.toml"
 TRACE_PATH="$AGENT_DIR/workspace/state/runtime-trace.jsonl"
+TICK_DEBUG_PATH="$AGENT_DIR/workspace/state/tick-debug.jsonl"
 AGENT_NAME="$(agent_slug_to_name "$AGENT")"
 
 if [[ ! -d "$AGENT_DIR" ]]; then
@@ -60,6 +62,9 @@ echo "[1/5] Starting self-hosted Convex backend..."
 docker compose up -d backend dashboard
 wait_for_url "http://127.0.0.1:3210/version"
 "$SCRIPT_DIR/sync-convex-env.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/load-local-env.sh"
+"$SCRIPT_DIR/ensure-convex-functions.sh"
 
 echo "[2/5] Stopping background sim and gateways..."
 npx convex run rocklaw/god:stopSim >/dev/null 2>&1 || true
@@ -76,6 +81,7 @@ fi
 echo "[4/5] Enabling full runtime traces for $AGENT..."
 mkdir -p "$(dirname "$TRACE_PATH")"
 : > "$TRACE_PATH"
+: > "$TICK_DEBUG_PATH"
 configure_debug_observability "$CONFIG_PATH"
 
 echo "[5/5] Starting $AGENT in foreground."
@@ -87,6 +93,8 @@ echo "  Latest runtime traces:"
 echo "    zeroclaw --config-dir \"$AGENT_DIR\" doctor traces --limit 20"
 echo "  Tail raw runtime trace file:"
 echo "    tail -f \"$TRACE_PATH\""
+echo "  Tail Rocklaw tick debug file:"
+echo "    tail -f \"$TICK_DEBUG_PATH\""
 echo "  Live workspace view:"
 echo "    open http://127.0.0.1:5173/ai-town"
 echo ""

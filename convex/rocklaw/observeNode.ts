@@ -40,7 +40,7 @@ export const getAgentFiles = action({
     const agent = agents.find((entry) => entry.name === agentName);
     if (!agent) return { files: [], social: [] };
 
-    const absPath = path.resolve(agent.workspacePath);
+    const absPath = resolveWorkspacePath(agent.workspacePath);
 
     const files: AgentFileEntry[] = await Promise.all(
       INSPECTOR_FILES.map(async ({ label, file }) => {
@@ -72,3 +72,9 @@ export const getAgentFiles = action({
     return { files, social };
   },
 });
+
+function resolveWorkspacePath(workspacePath: string): string {
+  if (path.isAbsolute(workspacePath)) return workspacePath;
+  const root = process.env.ROCKLAW_PROJECT_ROOT || process.cwd();
+  return path.resolve(root, workspacePath);
+}
