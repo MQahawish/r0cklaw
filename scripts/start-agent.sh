@@ -15,6 +15,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Load ignored local env files so OPENROUTER_API_KEY does not need manual export.
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/load-local-env.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/provider-env.sh"
 
 AGENT=${1:-elena}
 AGENTS_DIR="$(cd "$(dirname "$0")/.." && pwd)/agents"
@@ -26,16 +28,22 @@ if [[ ! -d "$AGENT_DIR" ]]; then
   exit 1
 fi
 
-if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
-  echo "Error: OPENROUTER_API_KEY is not set."
-  echo "Export it before running: export OPENROUTER_API_KEY='your-key'"
+CONFIG_PATH="$AGENT_DIR/config.toml"
+
+if ! provider_credentials_ok "$CONFIG_PATH"; then
+  echo "Error: provider credentials are not configured for $AGENT."
+  provider_credentials_message "$CONFIG_PATH"
   exit 1
 fi
 
 LOG_FILE="/tmp/zeroclaw-$AGENT.log"
+PROVIDER="$(provider_from_config "$CONFIG_PATH")"
+MODEL="$(model_from_config "$CONFIG_PATH")"
 
 echo "Starting ZeroClaw gateway for: $AGENT"
 echo "Config dir: $AGENT_DIR"
+echo "Provider:   ${PROVIDER:-unknown}"
+echo "Model:      ${MODEL:-unknown}"
 echo "Log:        $LOG_FILE"
 echo ""
 

@@ -7,6 +7,8 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/load-local-env.sh"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/provider-env.sh"
 
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -48,15 +50,23 @@ else
   exit 1
 fi
 
-if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
-  echo "Error: OPENROUTER_API_KEY is not set."
-  echo "Put it in .env.local or .env.rocklaw.local, or export it before running."
+missing_credentials=0
+for config_path in "$ROOT_DIR"/agents/*/config.toml; do
+  if ! provider_credentials_ok "$config_path"; then
+    echo "Error: missing credentials for $(basename "$(dirname "$config_path")")."
+    provider_credentials_message "$config_path"
+    missing_credentials=1
+  fi
+done
+if [[ "$missing_credentials" -ne 0 ]]; then
+  echo "Set the required provider keys in .env.local or .env.rocklaw.local."
   exit 1
 fi
 
 echo "[1/6] Starting self-hosted Convex backend..."
 docker compose up -d backend dashboard
 wait_for_url "http://127.0.0.1:3210/version"
+"$SCRIPT_DIR/sync-convex-env.sh"
 
 echo "[2/6] Starting ZeroClaw agent gateways..."
 "$SCRIPT_DIR/stop-all-agents.sh" >/dev/null 2>&1 || true
