@@ -60,8 +60,9 @@ for (const { agent, record } of records) {
     console.log(`${agent.padEnd(8)} no tick record yet`);
     continue;
   }
-  const message = typeof record?.parsedAction?.message === "string" && record.parsedAction.message.trim() !== ""
-    ? ` | ${record.parsedAction.message}`
+  const outward = record?.parsedAction?.message ?? record?.parsedAction?.text;
+  const message = typeof outward === "string" && outward.trim() !== ""
+    ? ` | ${outward}`
     : "";
   console.log(
     `${agent.padEnd(8)} ${formatAction(record).padEnd(28)} ${formatOutcome(record)}${message}`,

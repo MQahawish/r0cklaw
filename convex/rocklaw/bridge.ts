@@ -199,7 +199,7 @@ function normaliseAction(parsed: RocklawAction): RocklawAction {
   if (action === 'move' && !normalized.location && target) {
     normalized.location = target;
   }
-  if ((action === 'talk' || action === 'leave_message' || action === 'write' || action === 'pray') && !normalized.text && parsed.message) {
+  if ((action === 'talk' || action === 'leave_message' || action === 'write' || action === 'pray' || action === 'eavesdrop') && !normalized.text && parsed.message) {
     normalized.text = parsed.message;
   }
   if ((action === 'craft' || action === 'repair' || action === 'smelt' || action === 'eat' || action === 'buy' || action === 'sell' || action === 'give') && !normalized.item && target) {
