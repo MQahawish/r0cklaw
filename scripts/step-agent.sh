@@ -5,45 +5,53 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-AGENT=${1:-}
+AGENT=""
 MODE="--continue"
+PROFILE="--seeded"
 AUTO_TICKS=0
-
-if [[ -z "$AGENT" || "$AGENT" == "--help" || "$AGENT" == "-h" ]]; then
-  echo "Usage: $0 <agent-slug> [--continue|--fresh] [--auto <ticks>]"
-  exit 1
-fi
-
-shift
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h)
-      echo "Usage: $0 <agent-slug> [--continue|--fresh] [--auto <ticks>]"
+      echo "Usage: $0 <agent-slug> [--continue|--fresh] [--seeded|--blank-self] [--auto <ticks>]"
       exit 0
       ;;
     --continue|--fresh)
       MODE="$1"
       shift
       ;;
+    --seeded|--blank-self)
+      PROFILE="$1"
+      shift
+      ;;
     --auto)
       if [[ $# -lt 2 || ! "$2" =~ ^[0-9]+$ ]]; then
-        echo "Usage: $0 <agent-slug> [--continue|--fresh] [--auto <ticks>]"
+        echo "Usage: $0 <agent-slug> [--continue|--fresh] [--seeded|--blank-self] [--auto <ticks>]"
         exit 1
       fi
       AUTO_TICKS="$2"
       shift 2
       ;;
     *)
-      echo "Usage: $0 <agent-slug> [--continue|--fresh] [--auto <ticks>]"
-      exit 1
+      if [[ -z "$AGENT" ]]; then
+        AGENT="$1"
+        shift
+      else
+        echo "Usage: $0 <agent-slug> [--continue|--fresh] [--seeded|--blank-self] [--auto <ticks>]"
+        exit 1
+      fi
       ;;
   esac
 done
 
+if [[ -z "$AGENT" ]]; then
+  echo "Usage: $0 <agent-slug> [--continue|--fresh] [--seeded|--blank-self] [--auto <ticks>]"
+  exit 1
+fi
+
 cd "$ROOT_DIR"
 
-"$SCRIPT_DIR/lab-agent.sh" "$AGENT" "$MODE"
+"$SCRIPT_DIR/lab-agent.sh" "$AGENT" "$MODE" "$PROFILE"
 
 tick_count=0
 

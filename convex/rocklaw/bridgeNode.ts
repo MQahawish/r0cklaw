@@ -50,16 +50,14 @@ class ZeroClawTurnError extends Error {
 
 const VALID_ACTIONS = new Set([
   'talk', 'move', 'rest', 'sleep', 'eat', 'buy', 'sell', 'pay', 'give', 'trade',
-  'accept_transaction', 'reject_transaction',
-  'observe', 'write', 'pray', 'leave_message', 'recall',
+  'accept_transaction', 'reject_transaction', 'wait',
+  'pray', 'leave_message',
   'craft', 'repair', 'smelt', 'appraise',
-  'negotiate', 'post_price', 'bulk_buy',
   'harvest', 'plant', 'water', 'check_field',
   'gather', 'brew', 'treat', 'identify',
-  'serve', 'rent_room', 'eavesdrop', 'post_notice',
-  'bless', 'counsel', 'preach', 'officiate',
+  'eavesdrop',
   'play', 'run_errand',
-  'patrol', 'train', 'recall_war',
+  'patrol', 'train',
 ]);
 
 const GATEWAY_HOSTS = ['127.0.0.1', 'host.docker.internal'] as const;
@@ -294,13 +292,18 @@ function buildTickMessage(
     `It is ${timeOfDay}, Day ${day}, tick ${tick} in Rocklaw.`,
     `Last tick: ${lastHeartbeatLine ?? 'none yet'}`,
     'Use your files and tools only to understand the situation and decide.',
-    'Anchor yourself in 06_HEARTBEAT.md first so your next action follows from what you already did.',
+    'Anchor yourself in HEARTBEAT.md first so your next action follows from what you already did.',
     'Think silently. Read only the minimum files needed. In most ticks, 3-5 reads are enough.',
+    'Do observation, inspection, memory recall, and private note-writing inside your tool use, not as the final world action.',
+    'Use only actions currently listed in TOOLS.md. Temporary actions like wait, rest, and sleep appear there only when they are currently available.',
+    'For move, choose only from Reachable places now in world/location.md.',
     'When you know what to do, stop using tools and return the final answer immediately.',
     'Return exactly one JSON object and nothing else.',
     'The first character must be { and the last character must be }.',
     'No prose before or after the JSON object.',
     'Do not ask clarifying questions. Do not emit tool_code. Do not execute shell commands for world actions.',
+    'Active interactions in world/location.md are current local social moments that may need your response.',
+    'If an active interaction directly addresses you, respond to it before starting unrelated work unless you have a clear reason not to.',
     'buy, sell, and trade create in-person offers when both people are present; they do not transfer goods immediately.',
     'If you want to explain why, put it in "thought".',
     'Use "message" for outward wording. Use "memory_note" for the private takeaway.',
@@ -309,10 +312,9 @@ function buildTickMessage(
     '{"action":"...","duration_ticks":1,"target":"optional","location":"optional","text":"optional","topic":"optional","item":"optional","quantity":1,"amount":0,"consumes":[],"produces":[],"offer":[],"request":[],"thought":"optional","message":"optional","memory_note":"optional"}',
     '',
     'Examples:',
-    '{"action":"rest","duration_ticks":1,"thought":"Energy is too low for demanding work.","message":"Resting for a bit."}',
     '{"action":"move","location":"market","duration_ticks":1,"thought":"Need supplies before work stalls.","message":"Going to the market."}',
     '{"action":"buy","target":"Marcus Hale","item":"coal","quantity":3,"amount":12,"duration_ticks":1,"thought":"I need fuel and he is here with me. This creates an in-person offer, not an immediate transfer.","message":"Offering 12 coin for three coal."}',
-    '{"action":"accept_transaction","target":"txn-2-4-buy-marcus-hale-123","duration_ticks":1,"thought":"The offer is fair and we are still together here.","message":"Accepted."}',
+    '{"action":"accept_transaction","target":"offer-1","duration_ticks":1,"thought":"The offer is fair and we are still together here.","message":"Accepted."}',
     '{"action":"craft","item":"horseshoe","quantity":2,"duration_ticks":1,"consumes":[{"item":"iron_ore","quantity":4},{"item":"coal","quantity":2}],"produces":[{"item":"horseshoe","quantity":2}],"thought":"Market demand is severe and I have the materials.","message":"Crafting two horseshoes."}',
   ];
 
@@ -542,7 +544,6 @@ function validateAction(action: RocklawAction): boolean {
       return typeof (action.location ?? action.target) === 'string';
     case 'talk':
     case 'leave_message':
-    case 'write':
     case 'pray':
       return typeof (action.text ?? action.message) === 'string';
     case 'pay':

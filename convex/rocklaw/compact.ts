@@ -5,8 +5,8 @@
  * and compacts them: either by trimming (no LLM) or by LLM summarisation.
  *
  * Thresholds (from spec):
- *   05_MEMORY.md             > 150 lines  → LLM summary (preserve incidents + emotional arc)
- *   06_HEARTBEAT.md          managed inline in appendHeartbeat -- not touched here
+ *   MEMORY.md                > 150 lines  → LLM summary (preserve incidents + emotional arc)
+ *   HEARTBEAT.md          managed inline in appendHeartbeat -- not touched here
  *   self/beliefs.md          > 60 lines   → LLM summary (preserve core worldview)
  *   self/messages/sent_log.md > 20 entries → keep last 5 verbatim, summarise older
  *   self/social/<x>/private.md > 80 lines → LLM summary (preserve emotional trajectory)

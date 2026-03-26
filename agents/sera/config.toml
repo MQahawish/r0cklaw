@@ -12,3 +12,9 @@ allow_public_bind = true
 
 [cost]
 enabled = false
+
+[observability]
+backend = "log"
+runtime_trace_mode = "full"
+runtime_trace_path = "state/runtime-trace.jsonl"
+runtime_trace_max_entries = 500

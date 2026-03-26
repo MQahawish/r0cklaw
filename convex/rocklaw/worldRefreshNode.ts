@@ -6,14 +6,6 @@ import { internal } from '../_generated/api';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-const ZEROCLAW_BOOTSTRAP_FILES = [
-  ['00_IDENTITY.md', 'IDENTITY.md'],
-  ['01_SOUL.md', 'SOUL.md'],
-  ['02_AGENTS.md', 'AGENTS.md'],
-  ['03_TOOLS.md', 'TOOLS.md'],
-  ['05_MEMORY.md', 'MEMORY.md'],
-] as const;
-
 export const refreshWorldFiles = internalAction({
   args: {
     agentName: v.string(),
@@ -22,6 +14,18 @@ export const refreshWorldFiles = internalAction({
     timeOfDay: v.string(),
   },
   handler: async (ctx, { agentName, tick, day, timeOfDay }) => {
+    const firstSeenContacts = await ctx.runMutation(internal.rocklaw.worldRefresh.recordFirstSightingsForAgent, {
+      agentName,
+      tick,
+      day,
+    });
+    for (const contact of firstSeenContacts) {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        agentName,
+        line: `- Day ${day} ${timeOfDay}: first saw ${contact.name} (${contact.role}) at ${contact.location}.`,
+      });
+    }
+
     const expiredTransactions = await ctx.runMutation(internal.rocklaw.worldRefresh.expireTransactionsForAgent, {
       agentName,
       tick,
@@ -41,6 +45,27 @@ export const refreshWorldFiles = internalAction({
         note: `Your ${txn.kind} offer to ${agentName} expired before a response.`,
       });
     }
+    const expiredInteractions = await ctx.runMutation(internal.rocklaw.worldRefresh.expireInteractionsForAgent, {
+      agentName,
+      tick,
+      day,
+    });
+    for (const interaction of expiredInteractions) {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        agentName: interaction.fromAgent,
+        line: interaction.fromHeartbeatLine,
+      });
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        agentName: interaction.toAgent,
+        line: interaction.toHeartbeatLine,
+      });
+      if (interaction.pendingNoteAgent && interaction.pendingNote) {
+        await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
+          agentName: interaction.pendingNoteAgent,
+          note: interaction.pendingNote,
+        });
+      }
+    }
 
     const data = await ctx.runQuery(internal.rocklaw.worldRefresh.getWorldSnapshot, {
       agentName,
@@ -54,7 +79,8 @@ export const refreshWorldFiles = internalAction({
 
     const workspaceRoot = resolveWorkspacePath(data.workspacePath);
     await ensureWorkspaceScaffold(workspaceRoot);
-    await syncZeroClawBootstrapFiles(workspaceRoot);
+    await refreshRuntimeAgentsMd(workspaceRoot, data);
+    await refreshRuntimeSkillMds(workspaceRoot, data);
 
     const letters = await ctx.runMutation(internal.rocklaw.worldRefresh.deliverLetters, {
       agentName,
@@ -63,10 +89,11 @@ export const refreshWorldFiles = internalAction({
     });
 
     const workspacePath = path.join(workspaceRoot, 'world');
+    await refreshRuntimeToolsMd(workspaceRoot, timeOfDay, data);
 
     await Promise.all([
       writeFile(workspacePath, 'inventory.md', buildInventoryMd(agentName, day, data)),
-      writeFile(workspacePath, 'location.md', buildLocationMd(agentName, day, timeOfDay, data, letters)),
+      writeFile(workspacePath, 'location.md', buildLocationMd(agentName, day, timeOfDay, data, letters, firstSeenContacts)),
       writeFile(workspacePath, 'village_news.md', buildVillageNewsMd(day, data)),
       writeFile(workspacePath, 'market_prices.md', buildMarketPricesMd(day, data)),
       writeFile(workspacePath, 'status.md', buildStatusMd(agentName, day, timeOfDay, data)),
@@ -84,7 +111,7 @@ export const appendHeartbeat = internalAction({
     const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
     if (!agent) return;
 
-    const heartbeatPath = path.join(resolveWorkspacePath(agent.workspacePath), '06_HEARTBEAT.md');
+    const heartbeatPath = path.join(resolveWorkspacePath(agent.workspacePath), 'HEARTBEAT.md');
 
     let existing = '';
     try {
@@ -116,7 +143,7 @@ export const getLatestHeartbeatLine = internalAction({
     const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
     if (!agent) return null;
 
-    const heartbeatPath = path.join(resolveWorkspacePath(agent.workspacePath), '06_HEARTBEAT.md');
+    const heartbeatPath = path.join(resolveWorkspacePath(agent.workspacePath), 'HEARTBEAT.md');
 
     try {
       const existing = await fs.readFile(heartbeatPath, 'utf8');
@@ -145,6 +172,7 @@ function buildLocationMd(
   timeOfDay: string,
   data: any,
   letters: any[] = [],
+  firstSeenContacts: Array<{ name: string; role: string; location: string }> = [],
 ): string {
   const nearbyLines = data.nearby.length === 0
     ? '  (nobody nearby)'
@@ -167,6 +195,11 @@ function buildLocationMd(
     `# Location -- ${agentName} -- Day ${day}, ${timeOfDay}`,
     '',
     `Current: ${data.agent.location}`,
+    'Reachable places now:',
+    Array.isArray(data.reachableLocations) && data.reachableLocations.length > 0
+      ? data.reachableLocations.map((name: string) => `  - ${name}`).join('\n')
+      : '  (none)',
+    '',
     'Nearby:',
     nearbyLines,
     '',
@@ -190,11 +223,54 @@ function buildLocationMd(
           ? ''
           : ` [${txn.fromAgent} is no longer here]`;
         const messageNote = txn.message ? ` -- "${txn.message}"` : '';
-        return `  - ${txn.txnId}: ${txn.fromAgent} offers ${offerText} for ${requestText}; expires tick ${txn.expiresTick}${locationNote}${messageNote}`;
+        return `  - ${txn.responseRef}: ${txn.fromAgent} ${txn.kind}s with you: offers ${offerText} for ${requestText}${locationNote}${messageNote}`;
       }).join('\n');
-
   sections.push('Pending offers here:');
   sections.push(pendingOfferLines);
+  sections.push('');
+
+  const activeInteractions = Array.isArray(data.activeInteractions) ? data.activeInteractions : [];
+  const interactionLines = activeInteractions.length === 0
+    ? '  (none)'
+    : activeInteractions.map((interaction: any) => {
+        const payload = interaction.payloadJson
+          ? JSON.parse(interaction.payloadJson) as {
+              text?: string;
+              message?: string;
+              offer?: Array<{ item: string; quantity: number }>;
+              request?: Array<{ item: string; quantity: number }>;
+              deferredReplyText?: string;
+              deferredReplyFrom?: string;
+            }
+          : {};
+        const locationNote = interaction.counterpartLocation === data.agent.location
+          ? ''
+          : ` [${interaction.counterpart} is no longer here]`;
+        if (interaction.kind === 'talk') {
+          const text = payload.text ?? payload.message ?? '(no text)';
+          const deferredNote =
+            interaction.toAgent === data.agent.name && payload.deferredReplyText && payload.deferredReplyFrom === data.agent.name
+              ? ` | Your deferred opener: "${payload.deferredReplyText}"`
+              : '';
+          return `  - ${interaction.fromAgent} is addressing ${interaction.toAgent}: "${text}"${locationNote}${deferredNote}`;
+        }
+        const offer = Array.isArray(payload.offer) ? payload.offer : [];
+        const request = Array.isArray(payload.request) ? payload.request : [];
+        const offerText = offer.length === 0 ? 'nothing' : offer.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
+        const requestText = request.length === 0 ? 'nothing' : request.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
+        const messageNote = payload.message ? ` -- "${payload.message}"` : '';
+        return `  - ${interaction.fromAgent} ${interaction.kind}s ${interaction.toAgent}: offers ${offerText} for ${requestText}${locationNote}${messageNote}`;
+      }).join('\n');
+
+  sections.push('Active interactions here:');
+  sections.push(interactionLines);
+  sections.push('');
+
+  const firstSeenLines = firstSeenContacts.length === 0
+    ? '  (none)'
+    : firstSeenContacts.map((contact) => `  - You notice someone here for the first time: ${contact.name} (${contact.role}).`).join('\n');
+  sections.push('First seen here:');
+  sections.push(firstSeenLines);
   sections.push('');
 
   if (data.agent.pendingNote) {
@@ -280,6 +356,24 @@ function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: 
     ? '\n  ! Low reputation: you pay 10% more at market. Help others to improve your standing.'
     : '';
 
+  const activeTalks = Array.isArray(data.activeInteractions)
+    ? data.activeInteractions.filter((interaction: any) => interaction.kind === 'talk')
+    : [];
+  const affordances: string[] = [];
+  if (activeTalks.length > 0) {
+    const counterparts = Array.from(new Set(activeTalks.map((interaction: any) => interaction.counterpart)));
+    affordances.push(`  - wait: available now because you are in a live conversation with ${counterparts.join(', ')}.`);
+  }
+  if (energy < 60) {
+    affordances.push(`  - rest: available now because your energy is ${energy}/100.`);
+  }
+  if (timeOfDay === 'evening') {
+    affordances.push('  - sleep: available now because it is evening.');
+  } else if (energy < 20) {
+    affordances.push(`  - sleep: available now because your energy is critically low (${energy}/100).`);
+  }
+  const affordanceLines = affordances.length === 0 ? '  (none)' : affordances.join('\n');
+
   return [
     `# Status -- ${agentName} -- Day ${day}, ${timeOfDay}`,
     '',
@@ -290,7 +384,141 @@ function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: 
     '',
     `Conditions: ${conditionLine}`,
     '',
+    'Action affordances:',
+    affordanceLines,
+    '',
   ].join('\n');
+}
+
+function buildTemporaryActionsSection(timeOfDay: string, data: any): string {
+  const activeTalks = Array.isArray(data.activeInteractions)
+    ? data.activeInteractions.filter((interaction: any) => interaction.kind === 'talk')
+    : [];
+  const sections: string[] = [];
+
+  if (activeTalks.length > 0) {
+    sections.push(
+      '- `wait`: remain where you are and keep the current live conversation open.',
+      '  Example JSON: `{"action":"wait","duration_ticks":1,"thought":"Stay here and keep the conversation open for a reply."}`',
+    );
+  }
+
+  if (data.agent.energy < 60) {
+    sections.push(
+      '- `rest`: take a short break to recover.',
+      '  Example JSON: `{"action":"rest","duration_ticks":1,"thought":"A short break will help me recover before harder work."}`',
+    );
+  }
+
+  if (timeOfDay === 'evening' || data.agent.energy < 20) {
+    sections.push(
+      '- `sleep`: stop for proper sleep and recover more deeply.',
+      '  Example JSON: `{"action":"sleep","duration_ticks":1,"thought":"It is time to sleep and recover fully."}`',
+    );
+  }
+
+  if (sections.length === 0) return '';
+
+  return [
+    '## Temporary actions available now',
+    '',
+    ...sections,
+    '',
+  ].join('\n');
+}
+
+async function refreshRuntimeToolsMd(workspaceDir: string, timeOfDay: string, data: any): Promise<void> {
+  const backupPath = path.join(workspaceDir, 'state', 'seeded_docs', 'TOOLS.md');
+  const runtimePath = path.join(workspaceDir, 'TOOLS.md');
+
+  let template = '';
+  try {
+    template = await fs.readFile(backupPath, 'utf8');
+  } catch {
+    template = await fs.readFile(runtimePath, 'utf8');
+  }
+
+  const temporarySection = buildTemporaryActionsSection(timeOfDay, data);
+  const canTalkNow = Array.isArray(data.nearby) && data.nearby.length > 0;
+  const talkBlock = canTalkNow
+    ? [
+        '- `talk`: use `target` and `text`; this creates an active local interaction if the other person is here',
+        '  Example JSON: `{"action":"talk","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1}`',
+      ].join('\n')
+    : '';
+  const moveBlock = [
+    '- `move`: use `location` and choose only from `Reachable places now` in `world/location.md`',
+    '  Example JSON: `{"action":"move","location":"market","duration_ticks":1}`',
+  ].join('\n');
+  const content = template
+    .replace('- `talk`: use `target` and `text`; this creates an active local interaction if the other person is here\n  Example JSON: `{"action":"talk","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1}`', talkBlock)
+    .replace('- `move`: use `location`\n  Example JSON: `{"action":"move","location":"market","duration_ticks":1}`', moveBlock)
+    .replace('{{TEMPORARY_ACTIONS}}\n', temporarySection);
+  await fs.writeFile(runtimePath, content, 'utf8');
+}
+
+async function refreshRuntimeAgentsMd(workspaceDir: string, data: any): Promise<void> {
+  const backupPath = path.join(workspaceDir, 'state', 'seeded_docs', 'AGENTS.md');
+  const runtimePath = path.join(workspaceDir, 'AGENTS.md');
+  const canTalkNow = Array.isArray(data.nearby) && data.nearby.length > 0;
+
+  let template = '';
+  try {
+    template = await fs.readFile(backupPath, 'utf8');
+  } catch {
+    template = await fs.readFile(runtimePath, 'utf8');
+  }
+
+  let content = template;
+  if (!canTalkNow) {
+    content = content
+      .replace(
+        'For local scenes: when someone is present and `talk` appears in TOOLS.md, it creates an active local interaction. `buy`, `sell`, and `trade` create in-person offers when both people are present. These do not transfer goods immediately. Use `accept_transaction` or `reject_transaction` with the short pending offer reference shown in your location file, such as `offer-1`.',
+        'For local scenes: `buy`, `sell`, and `trade` create in-person offers when both people are present. These do not transfer goods immediately. Use `accept_transaction` or `reject_transaction` with the short pending offer reference shown in your location file, such as `offer-1`.',
+      )
+      .replace(
+        'Valid actions: talk, move, craft, repair, smelt, eat,\n',
+        'Valid actions: move, craft, repair, smelt, eat,\n',
+      );
+  }
+
+  await fs.writeFile(runtimePath, content, 'utf8');
+}
+
+async function refreshRuntimeSkillMds(workspaceDir: string, data: any): Promise<void> {
+  const skillsRoot = path.join(workspaceDir, 'skills');
+  const backupRoot = path.join(workspaceDir, 'state', 'seeded_skills');
+  const canTalkNow = Array.isArray(data.nearby) && data.nearby.length > 0;
+
+  let skillPaths: string[] = [];
+  try {
+    skillPaths = await collectFiles(backupRoot, 'SKILL.md');
+  } catch {
+    return;
+  }
+
+  await Promise.all(skillPaths.map(async (backupPath) => {
+    const rel = path.relative(backupRoot, backupPath);
+    const runtimePath = path.join(skillsRoot, rel);
+    let content = await fs.readFile(backupPath, 'utf8');
+
+    if (!canTalkNow) {
+      content = content.replace(/^-\sWhen someone is present and `talk` is available in TOOLS\.md,.*\n/gm, '');
+    }
+
+    await fs.mkdir(path.dirname(runtimePath), { recursive: true });
+    await fs.writeFile(runtimePath, content, 'utf8');
+  }));
+}
+
+async function collectFiles(rootDir: string, filename: string): Promise<string[]> {
+  const entries = await fs.readdir(rootDir, { withFileTypes: true });
+  const results = await Promise.all(entries.map(async (entry) => {
+    const fullPath = path.join(rootDir, entry.name);
+    if (entry.isDirectory()) return collectFiles(fullPath, filename);
+    return entry.isFile() && entry.name === filename ? [fullPath] : [];
+  }));
+  return results.flat();
 }
 
 async function writeFile(dir: string, filename: string, content: string): Promise<void> {
@@ -324,24 +552,6 @@ async function ensureFile(filePath: string, content: string): Promise<void> {
   } catch {
     await fs.writeFile(filePath, content, 'utf8');
   }
-}
-
-async function syncZeroClawBootstrapFiles(workspaceDir: string): Promise<void> {
-  await Promise.all(
-    ZEROCLAW_BOOTSTRAP_FILES.map(async ([sourceName, targetName]) => {
-      const sourcePath = path.join(workspaceDir, sourceName);
-      const targetPath = path.join(workspaceDir, targetName);
-
-      try {
-        const content = await fs.readFile(sourcePath, 'utf8');
-        await fs.writeFile(targetPath, content, 'utf8');
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-          throw error;
-        }
-      }
-    }),
-  );
 }
 
 function resolveWorkspacePath(workspacePath: string): string {

@@ -37,7 +37,7 @@ export const compactAgent = internalAction({
     const absPath = resolveWorkspacePath(workspacePath);
     const results: string[] = [];
 
-    const memoryPath = path.join(absPath, '05_MEMORY.md');
+    const memoryPath = path.join(absPath, 'MEMORY.md');
     const memResult = await compactIfOver(
       memoryPath,
       MEMORY_LINE_THRESHOLD,

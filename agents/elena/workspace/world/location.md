@@ -1,9 +1,28 @@
-# Location -- Elena Voss -- Day 1, Morning
+# Location -- Elena Voss -- Day 1, afternoon
 
-Current: Forge
+Current: forge
+Reachable places now:
+  - farm
+  - gate
+  - inn
+  - market
+  - shrine
+  - square
 
 Nearby:
   (nobody nearby)
 
-Message board at this location:
-  - No messages waiting for you
+Message board:
+  (none)
+
+Letters waiting for you here:
+  (none)
+
+Pending offers here:
+  (none)
+
+Active interactions here:
+  (none)
+
+First seen here:
+  (none)

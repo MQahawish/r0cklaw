@@ -103,9 +103,14 @@ export const initRocklaw = mutation({
       return { status: 'already_initialised' };
     }
 
+    if (force) {
+      await clearRocklawTables(ctx);
+    }
+
     // World state
-    if (existing) {
-      await ctx.db.patch(existing._id, { tick: 0, day: 1, timeOfDay: 'morning', isRunning: false });
+    const worldState = await ctx.db.query('rl_world_state').first();
+    if (worldState) {
+      await ctx.db.patch(worldState._id, { tick: 0, day: 1, timeOfDay: 'morning', isRunning: false });
     } else {
       await ctx.db.insert('rl_world_state', { tick: 0, day: 1, timeOfDay: 'morning', isRunning: false });
     }
@@ -137,6 +142,7 @@ export const initRocklaw = mutation({
         hunger: 0,
         currentDay: 1,
         busy: false,
+        blankSelf: false,
       };
 
       if (existingAgent) {
@@ -174,6 +180,30 @@ export const initRocklaw = mutation({
   },
 });
 
+async function clearRocklawTables(ctx: any) {
+  await deleteAll(ctx, 'rl_social_knowledge');
+  await deleteAll(ctx, 'rl_interactions');
+  await deleteAll(ctx, 'rl_transactions');
+  await deleteAll(ctx, 'rl_messages');
+  await deleteAll(ctx, 'rl_actions_log');
+  await deleteAll(ctx, 'rl_prayers');
+  await deleteAll(ctx, 'rl_world_events');
+  await deleteAll(ctx, 'rl_price_history');
+  await deleteAll(ctx, 'rl_market_prices');
+  await deleteAll(ctx, 'rl_reputation');
+  await deleteAll(ctx, 'rl_locations');
+  await deleteAll(ctx, 'rl_agents');
+  await deleteAll(ctx, 'rl_systems_state');
+  await deleteAll(ctx, 'rl_world_state');
+}
+
+async function deleteAll(ctx: any, table: string) {
+  const rows = await ctx.db.query(table).collect();
+  for (const row of rows) {
+    await ctx.db.delete(row._id);
+  }
+}
+
 export const setWorkspaceRoot = mutation({
   args: { rootPath: v.string() },
   handler: async (ctx, { rootPath }) => {
@@ -191,6 +221,30 @@ export const setWorkspaceRoot = mutation({
     }
 
     return { updated };
+  },
+});
+
+export const setAllAgentsBlankProfile = mutation({
+  args: { blankSelf: v.boolean() },
+  handler: async (ctx, { blankSelf }) => {
+    const agents = await ctx.db.query('rl_agents').collect();
+    for (const agent of agents) {
+      await ctx.db.patch(agent._id, { blankSelf });
+    }
+    return { updated: agents.length, blankSelf };
+  },
+});
+
+export const setAgentBlankProfile = mutation({
+  args: { agentName: v.string(), blankSelf: v.boolean() },
+  handler: async (ctx, { agentName, blankSelf }) => {
+    const agent = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q) => q.eq('name', agentName))
+      .unique();
+    if (!agent) return { updated: 0, blankSelf };
+    await ctx.db.patch(agent._id, { blankSelf });
+    return { updated: 1, blankSelf };
   },
 });
 

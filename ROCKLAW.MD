@@ -1200,13 +1200,13 @@ Order matters. Earlier content has more weight with the model.
 Control order by prefixing filenames numerically:
 
 ```
-00_IDENTITY.md        # loads first -- who she is
-01_SOUL.md            # personality and values
-02_AGENTS.md          # how to operate in Rocklaw
-03_TOOLS.md           # what actions are available
+IDENTITY.md        # loads first -- who she is
+SOUL.md            # personality and values
+AGENTS.md          # how to operate in Rocklaw
+TOOLS.md           # what actions are available
 04_SKILLS.md          # role-specific behaviour (blacksmith etc.)
-05_MEMORY.md          # curated long-term memory
-06_HEARTBEAT.md       # recent activity log
+MEMORY.md          # curated long-term memory
+HEARTBEAT.md       # recent activity log
 world/...             # current world state (pre-refreshed)
 self/...              # personal files (goals, social, messages)
 ```

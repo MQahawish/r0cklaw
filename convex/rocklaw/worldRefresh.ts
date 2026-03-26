@@ -8,6 +8,13 @@
 import { v } from 'convex/values';
 import { internalMutation, internalQuery } from '../_generated/server';
 
+function timeOfDayForTick(tick: number): 'morning' | 'afternoon' | 'evening' {
+  const mod = tick % 3;
+  if (mod === 1) return 'afternoon';
+  if (mod === 2) return 'evening';
+  return 'morning';
+}
+
 // ── Letter delivery ───────────────────────────────────────────────────────────
 
 /**
@@ -52,6 +59,58 @@ export const clearPendingNote = internalMutation({
   },
 });
 
+export const recordFirstSightingsForAgent = internalMutation({
+  args: { agentName: v.string(), tick: v.number(), day: v.number() },
+  handler: async (ctx, { agentName, tick, day }) => {
+    const agent = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q) => q.eq('name', agentName))
+      .unique();
+    if (!agent || !agent.blankSelf) return [];
+
+    const nearby = await ctx.db
+      .query('rl_agents')
+      .withIndex('location', (q) => q.eq('location', agent.location))
+      .collect();
+
+    const firstSeen: Array<{ name: string; role: string; location: string }> = [];
+
+    for (const other of nearby) {
+      if (other.name === agentName) continue;
+
+      const existing = await ctx.db
+        .query('rl_social_knowledge')
+        .withIndex('observer_subject', (q) => q.eq('observerAgent', agentName).eq('subjectAgent', other.name))
+        .unique();
+
+      if (existing) {
+        await ctx.db.patch(existing._id, {
+          lastSeenDay: day,
+          lastSeenTick: tick,
+          lastSeenLocation: agent.location,
+        });
+        continue;
+      }
+
+      await ctx.db.insert('rl_social_knowledge', {
+        observerAgent: agentName,
+        subjectAgent: other.name,
+        knownName: other.name,
+        knownRole: other.role,
+        firstSeenDay: day,
+        firstSeenTick: tick,
+        firstSeenLocation: agent.location,
+        lastSeenDay: day,
+        lastSeenTick: tick,
+        lastSeenLocation: agent.location,
+      });
+      firstSeen.push({ name: other.name, role: other.role, location: agent.location });
+    }
+
+    return firstSeen;
+  },
+});
+
 export const expireTransactionsForAgent = internalMutation({
   args: { agentName: v.string(), tick: v.number(), day: v.number() },
   handler: async (ctx, { agentName, tick, day }) => {
@@ -68,6 +127,18 @@ export const expireTransactionsForAgent = internalMutation({
         resolvedDay: day,
         outcomeNote: 'Offer expired before a response was made.',
       });
+      const interaction = await ctx.db
+        .query('rl_interactions')
+        .withIndex('transactionId', (q) => q.eq('transactionId', txn.txnId))
+        .unique();
+      if (interaction) {
+        await ctx.db.patch(interaction._id, {
+          status: 'expired',
+          resolvedTick: tick,
+          resolvedDay: day,
+          outcomeNote: 'Offer expired before a response was made.',
+        });
+      }
     }
 
     return expired.map((txn) => ({
@@ -75,6 +146,73 @@ export const expireTransactionsForAgent = internalMutation({
       fromAgent: txn.fromAgent,
       kind: txn.kind,
     }));
+  },
+});
+
+export const expireInteractionsForAgent = internalMutation({
+  args: { agentName: v.string(), tick: v.number(), day: v.number() },
+  handler: async (ctx, { agentName, tick, day }) => {
+    const received = await ctx.db
+      .query('rl_interactions')
+      .withIndex('recipient_status', (q) => q.eq('toAgent', agentName).eq('status', 'active'))
+      .collect();
+    const sent = await ctx.db
+      .query('rl_interactions')
+      .withIndex('sender_status', (q) => q.eq('fromAgent', agentName).eq('status', 'active'))
+      .collect();
+
+    const expired: Array<{
+      interactionId: string;
+      kind: string;
+      fromAgent: string;
+      toAgent: string;
+      fromHeartbeatLine: string;
+      toHeartbeatLine: string;
+      pendingNoteAgent?: string;
+      pendingNote?: string;
+    }> = [];
+    const seen = new Set<string>();
+    for (const interaction of [...received, ...sent]) {
+      if (seen.has(interaction._id) || interaction.transactionId || interaction.expiresTick >= tick) continue;
+      seen.add(interaction._id);
+      const payload = interaction.payloadJson
+        ? JSON.parse(interaction.payloadJson) as {
+            lastNonResponseAction?: string;
+          }
+        : {};
+      const genericLineForSender = `- Day ${day} ${timeOfDayForTick(tick)}: ${interaction.kind} with ${interaction.toAgent} expired [FAILED] ⚠ No response before tick ${tick}.`;
+      const genericLineForRecipient = `- Day ${day} ${timeOfDayForTick(tick)}: ${interaction.kind} with ${interaction.fromAgent} expired [FAILED] ⚠ No response before tick ${tick}.`;
+      const senderLine =
+        interaction.kind === 'talk' && payload.lastNonResponseAction
+          ? `- Day ${day} ${timeOfDayForTick(tick)}: ${interaction.toAgent} turned to other matters before answering.`
+          : genericLineForSender;
+      const recipientLine =
+        interaction.kind === 'talk' && payload.lastNonResponseAction
+          ? `- Day ${day} ${timeOfDayForTick(tick)}: You turned to other matters before answering ${interaction.fromAgent}.`
+          : genericLineForRecipient;
+      const outcomeNote =
+        interaction.kind === 'talk' && payload.lastNonResponseAction
+          ? `${interaction.toAgent} turned to other matters before answering.`
+          : 'Interaction expired without a response.';
+      await ctx.db.patch(interaction._id, {
+        status: 'expired',
+        resolvedTick: tick,
+        resolvedDay: day,
+        outcomeNote,
+      });
+      expired.push({
+        interactionId: interaction.interactionId,
+        kind: interaction.kind,
+        fromAgent: interaction.fromAgent,
+        toAgent: interaction.toAgent,
+        fromHeartbeatLine: senderLine,
+        toHeartbeatLine: recipientLine,
+        pendingNoteAgent: interaction.fromAgent,
+        pendingNote: outcomeNote,
+      });
+    }
+
+    return expired;
   },
 });
 
@@ -110,6 +248,7 @@ export const getWorldSnapshot = internalQuery({
       .query('rl_locations')
       .withIndex('name', (q) => q.eq('name', agent.location))
       .unique();
+    const allLocations = await ctx.db.query('rl_locations').collect();
 
     // Recent trade activity (last 5 actions involving trades)
     const recentTrades = await ctx.db
@@ -144,9 +283,22 @@ export const getWorldSnapshot = internalQuery({
       .withIndex('recipient_status', (q) => q.eq('toAgent', agentName).eq('status', 'pending'))
       .collect();
 
-    const proposerNames = Array.from(new Set(pendingTransactions.map((txn) => txn.fromAgent)));
+    const receivedInteractions = await ctx.db
+      .query('rl_interactions')
+      .withIndex('recipient_status', (q) => q.eq('toAgent', agentName).eq('status', 'active'))
+      .collect();
+    const sentInteractions = await ctx.db
+      .query('rl_interactions')
+      .withIndex('sender_status', (q) => q.eq('fromAgent', agentName).eq('status', 'active'))
+      .collect();
+
+    const counterpartNames = Array.from(new Set([
+      ...pendingTransactions.map((txn) => txn.fromAgent),
+      ...receivedInteractions.map((interaction) => interaction.fromAgent),
+      ...sentInteractions.map((interaction) => interaction.toAgent),
+    ]));
     const proposers = await Promise.all(
-      proposerNames.map((name) =>
+      counterpartNames.map((name) =>
         ctx.db.query('rl_agents').withIndex('name', (q) => q.eq('name', name)).unique(),
       ),
     );
@@ -154,19 +306,43 @@ export const getWorldSnapshot = internalQuery({
       proposers.filter(Boolean).map((agent) => [agent!.name, agent!]),
     );
 
+    const orderedPendingTransactions = pendingTransactions
+      .slice()
+      .sort((a, b) =>
+        a.createdDay - b.createdDay
+        || a.createdTick - b.createdTick
+        || a.fromAgent.localeCompare(b.fromAgent),
+      );
+
     return {
       agent,
       nearby: nearby.filter((a) => a.name !== agentName),
+      reachableLocations: allLocations
+        .map((entry) => entry.name)
+        .filter((name) => name !== agent.location)
+        .sort((a, b) => a.localeCompare(b)),
       prices,
       events,
       locationDoc: location,
       recentTrades,
       mentions,
       reputation,
-      pendingTransactions: pendingTransactions.map((txn) => ({
+      pendingTransactions: orderedPendingTransactions.map((txn, index) => ({
         ...txn,
+        responseRef: `offer-${index + 1}`,
         proposerLocation: proposerByName.get(txn.fromAgent)?.location ?? null,
       })),
+      activeInteractions: [...receivedInteractions, ...sentInteractions].map((interaction) => ({
+        ...interaction,
+        counterpart: interaction.fromAgent === agentName ? interaction.toAgent : interaction.fromAgent,
+        counterpartLocation: proposerByName.get(
+          interaction.fromAgent === agentName ? interaction.toAgent : interaction.fromAgent,
+        )?.location ?? null,
+      })),
+      socialKnowledge: await ctx.db
+        .query('rl_social_knowledge')
+        .withIndex('observer', (q) => q.eq('observerAgent', agentName))
+        .collect(),
       workspacePath: agent.workspacePath,
     };
   },

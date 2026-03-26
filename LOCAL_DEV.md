@@ -52,6 +52,12 @@ Prepare a fresh world and all agent gateways for interactive stepping:
 npm run lab:rocklaw -- --fresh
 ```
 
+Prepare a fresh world with blank self-state files for all agents:
+
+```bash
+npm run lab:rocklaw:blank
+```
+
 Stop local Rocklaw stack:
 
 ```bash
@@ -78,6 +84,12 @@ Prepare one agent only in the background from a fresh world:
 npm run lab:agent -- elena --fresh
 ```
 
+Prepare one agent from a fresh world with blank `MEMORY.md`, `self/goals.md`, and `self/plans.md`:
+
+```bash
+npm run lab:agent:blank -- elena
+```
+
 Prepare one agent and step through ticks interactively in one terminal:
 
 ```bash
@@ -96,10 +108,22 @@ Step the whole Rocklaw world interactively in one terminal:
 npm run step:rocklaw -- --fresh
 ```
 
+Step the whole world from a fresh run with blank self-state files:
+
+```bash
+npm run step:rocklaw:blank
+```
+
 Warm up the first 5 world ticks automatically, then switch to manual approval:
 
 ```bash
 npm run step:rocklaw -- --fresh --auto 5
+```
+
+Blank-self profile with warmup ticks:
+
+```bash
+npm run step:rocklaw -- --fresh --blank-self --auto 5
 ```
 
 Start one agent only, keep current world:
@@ -172,6 +196,12 @@ Interactive one-terminal step loop:
 npm run step:agent -- elena --fresh
 ```
 
+Blank-self single-agent step loop:
+
+```bash
+npm run step:agent:blank -- elena
+```
+
 After each tick it prints the watcher snapshot and prompts:
 
 ```text
@@ -179,6 +209,10 @@ Continue to next tick? [Y/n]
 ```
 
 If you pass `--auto N`, the first `N` ticks run automatically before prompting.
+
+If you also pass `--blank-self`, the reset path clears mutable per-agent self-state under `workspace/self/`, then recreates minimal placeholders for `MEMORY.md`, `self/goals.md`, `self/plans.md`, and message-log files. It also strips named-agent references from the runtime `IDENTITY.md` and `SOUL.md` view for that run, while preserving the underlying seeded versions for later restoration.
+
+Fresh reset already clears `world/*.md` for every profile. Those files are regenerated from Convex state before ticks run, so they do not need a separate blanking mode.
 
 Interactive full-world step loop:
 
@@ -193,6 +227,8 @@ Continue to next world tick? [Y/n]
 ```
 
 If you pass `--auto N`, the first `N` world ticks run automatically before prompting.
+
+The same loops also accept `--blank-self` when you want agents to begin from near-empty self-state and let memory, goals, plans, and other mutable private notes evolve in play.
 
 Foreground deep-debug flow:
 

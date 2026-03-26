@@ -47,12 +47,12 @@
 
 - `agents/marcus/`, `agents/finn/`, `agents/lena/`, `agents/sera/`, `agents/aldric/`, `agents/cora/`, `agents/rook/` -- complete agent directories with:
   - `config.toml` (ports 42618-42624)
-  - `workspace/00_IDENTITY.md` -- unique character biography per agent
-  - `workspace/01_SOUL.md` -- inner world, personality, speech style
-  - `workspace/02_AGENTS.md` -- how to operate in Rocklaw (name-adapted from Elena)
-  - `workspace/03_TOOLS.md` -- universal tools + occupation-specific skills
-  - `workspace/05_MEMORY.md` -- starting memories and relationship notes
-  - `workspace/06_HEARTBEAT.md` -- empty activity log (Day 1 start)
+  - `workspace/IDENTITY.md` -- unique character biography per agent
+  - `workspace/SOUL.md` -- inner world, personality, speech style
+  - `workspace/AGENTS.md` -- how to operate in Rocklaw (name-adapted from Elena)
+  - `workspace/TOOLS.md` -- universal tools + occupation-specific skills
+  - `workspace/MEMORY.md` -- starting memories and relationship notes
+  - `workspace/HEARTBEAT.md` -- empty activity log (Day 1 start)
   - `workspace/self/{goals,plans,beliefs,desires,secrets}.md` -- unique starting inner state
   - `workspace/skills/<occupation>/SKILL.md` -- occupation rules and economic context
   - Seed social/ stubs for key relationships
@@ -73,9 +73,9 @@
 | Old Rook | Retired Soldier | 42624 | square |
 
 **Decisions made:**
-- `02_AGENTS.md` is structurally identical for all agents; only the name is substituted. The return JSON format is universal.
-- `03_TOOLS.md` uses a shared core (recall, economic, world, message tools) + a per-occupation skills section appended at the end.
-- `05_MEMORY.md` is seeded with starting knowledge including relationship opinions, to give agents a non-blank social foundation from Day 1.
+- `AGENTS.md` is structurally identical for all agents; only the name is substituted. The return JSON format is universal.
+- `TOOLS.md` uses a shared core (recall, economic, world, message tools) + a per-occupation skills section appended at the end.
+- `MEMORY.md` is seeded with starting knowledge including relationship opinions, to give agents a non-blank social foundation from Day 1.
 - Social/ files seeded only for the most narratively interesting starting relationships (Elena↔Marcus, Finn↔Marcus, Rook↔Lena).
 
 ---
@@ -169,8 +169,8 @@
 - `compactIfOver` helper -- reads file, counts lines, calls compact fn if threshold exceeded, writes result
 - `compactSentLog` helper -- keeps last 5 sent_log entries verbatim, LLM-summarises older ones
 - `summariseWithLLM` helper -- calls OpenRouter (gemini-flash-1.5, temp 0.3) for summarisation; falls back to line truncation if no API key
-- File thresholds: `05_MEMORY.md` > 150 lines, `self/beliefs.md` > 60 lines, `self/messages/sent_log.md` > 20 entries, `self/social/*/private.md` > 80 lines
-- `06_HEARTBEAT.md` -- already managed inline in `appendHeartbeat` (max 7 entries), not touched by compact
+- File thresholds: `MEMORY.md` > 150 lines, `self/beliefs.md` > 60 lines, `self/messages/sent_log.md` > 20 entries, `self/social/*/private.md` > 80 lines
+- `HEARTBEAT.md` -- already managed inline in `appendHeartbeat` (max 7 entries), not touched by compact
 - Social private files: gracefully skipped if `self/social/` doesn't exist yet (requires agents to have formed relationships first)
 
 `convex/rocklaw/engine.ts` (refactored -- action-driven ticks):

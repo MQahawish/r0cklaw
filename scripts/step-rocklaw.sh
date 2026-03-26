@@ -5,6 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MODE="--continue"
+PROFILE="--seeded"
 AUTO_TICKS=0
 
 while [[ $# -gt 0 ]]; do
@@ -13,20 +14,24 @@ while [[ $# -gt 0 ]]; do
       MODE="$1"
       shift
       ;;
+    --seeded|--blank-self)
+      PROFILE="$1"
+      shift
+      ;;
     --auto)
       if [[ $# -lt 2 || ! "$2" =~ ^[0-9]+$ ]]; then
-        echo "Usage: $0 [--continue|--fresh] [--auto <ticks>]"
+        echo "Usage: $0 [--continue|--fresh] [--seeded|--blank-self] [--auto <ticks>]"
         exit 1
       fi
       AUTO_TICKS="$2"
       shift 2
       ;;
     --help|-h)
-      echo "Usage: $0 [--continue|--fresh] [--auto <ticks>]"
+      echo "Usage: $0 [--continue|--fresh] [--seeded|--blank-self] [--auto <ticks>]"
       exit 0
       ;;
     *)
-      echo "Usage: $0 [--continue|--fresh] [--auto <ticks>]"
+      echo "Usage: $0 [--continue|--fresh] [--seeded|--blank-self] [--auto <ticks>]"
       exit 1
       ;;
   esac
@@ -34,7 +39,7 @@ done
 
 cd "$ROOT_DIR"
 
-"$SCRIPT_DIR/lab-rocklaw.sh" "$MODE"
+"$SCRIPT_DIR/lab-rocklaw.sh" "$MODE" "$PROFILE"
 
 tick_count=0
 

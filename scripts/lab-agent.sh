@@ -28,16 +28,38 @@ require_cmd npx
 require_cmd perl
 "$SCRIPT_DIR/ensure-agent-workspace-perms.sh"
 
-AGENT=${1:-}
-MODE=${2:---continue}
+AGENT=""
+MODE="--continue"
+PROFILE="--seeded"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --continue|--fresh)
+      MODE="$1"
+      shift
+      ;;
+    --seeded|--blank-self)
+      PROFILE="$1"
+      shift
+      ;;
+    --help|-h)
+      echo "Usage: $0 <agent-slug> [--continue|--fresh] [--seeded|--blank-self]"
+      exit 0
+      ;;
+    *)
+      if [[ -z "$AGENT" ]]; then
+        AGENT="$1"
+        shift
+      else
+        echo "Usage: $0 <agent-slug> [--continue|--fresh] [--seeded|--blank-self]"
+        exit 1
+      fi
+      ;;
+  esac
+done
 
 if [[ -z "$AGENT" ]]; then
-  echo "Usage: $0 <agent-slug> [--continue|--fresh]"
-  exit 1
-fi
-
-if [[ "$MODE" != "--continue" && "$MODE" != "--fresh" ]]; then
-  echo "Usage: $0 <agent-slug> [--continue|--fresh]"
+  echo "Usage: $0 <agent-slug> [--continue|--fresh] [--seeded|--blank-self]"
   exit 1
 fi
 
@@ -79,11 +101,13 @@ stop_agent_process "$AGENT" >/dev/null 2>&1 || true
 if [[ "$MODE" == "--fresh" ]]; then
   echo "[3/5] Reinitialising Rocklaw world..."
   npx convex run rocklaw/init:initRocklaw '{"force":true}' >/dev/null
-  "$SCRIPT_DIR/reset-agent-session.sh" "$AGENT"
+  "$SCRIPT_DIR/reset-agent-session.sh" "$AGENT" "$PROFILE"
 else
   echo "[3/5] Keeping current Rocklaw world state..."
   npx convex run rocklaw/init:initRocklaw >/dev/null
 fi
+npx convex run rocklaw/init:setAllAgentsBlankProfile '{"blankSelf":false}' >/dev/null
+npx convex run rocklaw/init:setAgentBlankProfile "{\"agentName\":\"$AGENT_NAME\",\"blankSelf\":$([[ \"$PROFILE\" == \"--blank-self\" ]] && echo true || echo false)}" >/dev/null
 npx convex run rocklaw/init:setWorkspaceRoot "{\"rootPath\":\"$ROOT_DIR\"}" >/dev/null
 
 echo "[4/5] Enabling full runtime traces for $AGENT..."

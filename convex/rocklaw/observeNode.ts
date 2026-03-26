@@ -7,9 +7,9 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 
 const INSPECTOR_FILES = [
-  { label: 'Soul', file: '01_SOUL.md' },
-  { label: 'Memory', file: '05_MEMORY.md' },
-  { label: 'Heartbeat', file: '06_HEARTBEAT.md' },
+  { label: 'Soul', file: 'SOUL.md' },
+  { label: 'Memory', file: 'MEMORY.md' },
+  { label: 'Heartbeat', file: 'HEARTBEAT.md' },
   { label: 'Beliefs', file: 'self/beliefs.md' },
   { label: 'Goals', file: 'self/goals.md' },
   { label: 'Plans', file: 'self/plans.md' },

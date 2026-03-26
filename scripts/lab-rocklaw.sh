@@ -26,12 +26,29 @@ require_cmd npx
 require_cmd perl
 "$SCRIPT_DIR/ensure-agent-workspace-perms.sh"
 
-MODE=${1:---continue}
+MODE="--continue"
+PROFILE="--seeded"
 
-if [[ "$MODE" != "--continue" && "$MODE" != "--fresh" ]]; then
-  echo "Usage: $0 [--continue|--fresh]"
-  exit 1
-fi
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --continue|--fresh)
+      MODE="$1"
+      shift
+      ;;
+    --seeded|--blank-self)
+      PROFILE="$1"
+      shift
+      ;;
+    --help|-h)
+      echo "Usage: $0 [--continue|--fresh] [--seeded|--blank-self]"
+      exit 0
+      ;;
+    *)
+      echo "Usage: $0 [--continue|--fresh] [--seeded|--blank-self]"
+      exit 1
+      ;;
+  esac
+done
 
 cd "$ROOT_DIR"
 
@@ -64,12 +81,13 @@ if [[ "$MODE" == "--fresh" ]]; then
   echo "[3/5] Reinitialising Rocklaw world..."
   npx convex run rocklaw/init:initRocklaw '{"force":true}' >/dev/null
   for config_path in "$ROOT_DIR"/agents/*/config.toml; do
-    "$SCRIPT_DIR/reset-agent-session.sh" "$(basename "$(dirname "$config_path")")"
+    "$SCRIPT_DIR/reset-agent-session.sh" "$(basename "$(dirname "$config_path")")" "$PROFILE"
   done
 else
   echo "[3/5] Keeping current Rocklaw world state..."
   npx convex run rocklaw/init:initRocklaw >/dev/null
 fi
+npx convex run rocklaw/init:setAllAgentsBlankProfile "{\"blankSelf\":$([[ \"$PROFILE\" == \"--blank-self\" ]] && echo true || echo false)}" >/dev/null
 npx convex run rocklaw/init:setWorkspaceRoot "{\"rootPath\":\"$ROOT_DIR\"}" >/dev/null
 
 echo "[4/5] Preparing all agent runtime traces..."
@@ -91,6 +109,7 @@ wait_for_url "http://127.0.0.1:42617/health" 30 1
 echo ""
 echo "Rocklaw world lab ready."
 echo "Mode:      ${MODE#--}"
+echo "Profile:   ${PROFILE#--}"
 echo "Agents:    elena marcus finn lena sera aldric cora rook"
 echo "Backend:   http://127.0.0.1:3210"
 echo "Frontend:  http://127.0.0.1:5173/ai-town"

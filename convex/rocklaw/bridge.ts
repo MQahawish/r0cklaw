@@ -34,6 +34,19 @@ export type RocklawAction = {
 };
 
 type TransactionItem = { item: string; quantity: number };
+type InteractionPayload = {
+  text?: string;
+  message?: string;
+  offer?: TransactionItem[];
+  request?: TransactionItem[];
+  deferredReplyText?: string;
+  deferredReplyFrom?: string;
+  deferredReplyTick?: number;
+  deferredReplyDay?: number;
+  lastNonResponseAction?: string;
+  lastNonResponseTick?: number;
+  lastNonResponseDay?: number;
+};
 
 // Effort costs per action (deducted from energy after completion)
 const EFFORT_COSTS: Record<string, number> = {
@@ -50,7 +63,7 @@ const EFFORT_COSTS: Record<string, number> = {
   run_errand: 8, recall_war: 2,
   // Universal
   move: 5, talk: 2, buy: 2, sell: 2, pay: 1, give: 1,
-  trade: 2, accept_transaction: 1, reject_transaction: 1, observe: 1, write: 2, pray: 0,
+  trade: 2, accept_transaction: 1, reject_transaction: 1, wait: 0, observe: 1, write: 2, pray: 0,
   leave_message: 2, recall: 0,
   eat: 0, rest: -40, sleep: -100,
 };
@@ -318,7 +331,64 @@ async function targetAgentAtSameLocation(ctx: any, actorLocation: string, target
   return { ok: true, targetAgent };
 }
 
-async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAction) {
+function parseOfferReference(rawTarget: string): number | null {
+  const trimmed = rawTarget.trim().toLowerCase();
+  const match = trimmed.match(/^offer-(\d+)$/) ?? trimmed.match(/^(\d+)$/);
+  if (!match) return null;
+  return Number(match[1]);
+}
+
+async function resolvePendingTransactionReference(ctx: any, recipientName: string, rawTarget: string) {
+  const direct = await ctx.db
+    .query('rl_transactions')
+    .withIndex('txnId', (q: any) => q.eq('txnId', rawTarget))
+    .unique();
+  if (direct && direct.toAgent === recipientName) return direct;
+
+  const offerNumber = parseOfferReference(rawTarget);
+  if (!offerNumber || offerNumber < 1) return null;
+
+  const pending = await ctx.db
+    .query('rl_transactions')
+    .withIndex('recipient_status', (q: any) => q.eq('toAgent', recipientName).eq('status', 'pending'))
+    .collect();
+
+  const ordered = pending
+    .slice()
+    .sort((a: any, b: any) =>
+      a.createdDay - b.createdDay
+      || a.createdTick - b.createdTick
+      || a.fromAgent.localeCompare(b.fromAgent),
+    );
+
+  return ordered[offerNumber - 1] ?? null;
+}
+
+async function resolveLocationName(ctx: any, rawLocation: string | null | undefined) {
+  if (!rawLocation) return null;
+  const trimmed = rawLocation.trim();
+  if (!trimmed) return null;
+
+  const exact = await ctx.db
+    .query('rl_locations')
+    .withIndex('name', (q: any) => q.eq('name', trimmed))
+    .unique();
+  if (exact) return exact;
+
+  const normaliseLocationToken = (value: string) =>
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/^the\s+/, '')
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ');
+
+  const normalised = normaliseLocationToken(trimmed);
+  const locations = await ctx.db.query('rl_locations').collect();
+  return locations.find((location: any) => normaliseLocationToken(location.name) === normalised) ?? null;
+}
+
+async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAction, tick?: number) {
   const destination = parsed.location ?? parsed.target ?? null;
 
   if (Array.isArray(parsed.consumes) && parsed.consumes.length > 0) {
@@ -334,13 +404,10 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
   switch (parsed.action) {
     case 'move': {
       if (!destination) return { ok: false, note: 'Move requires a destination location.' };
-      const locationDoc = await ctx.db
-        .query('rl_locations')
-        .withIndex('name', (q: any) => q.eq('name', destination))
-        .unique();
+      const locationDoc = await resolveLocationName(ctx, destination);
       if (!locationDoc) return { ok: false, note: `Unknown location: ${destination}.` };
-      if (destination === agentDoc.location) return { ok: false, note: `You are already at ${destination}.` };
-      return { ok: true };
+      if (locationDoc.name === agentDoc.location) return { ok: false, note: `You are already at ${locationDoc.name}.` };
+      return { ok: true, resolvedLocation: locationDoc.name };
     }
     case 'talk':
     case 'pay':
@@ -404,8 +471,22 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
     }
     case 'accept_transaction':
     case 'reject_transaction':
-      if (!parsed.target) return { ok: false, note: `${parsed.action} requires a transaction id target.` };
+      if (!parsed.target) return { ok: false, note: `${parsed.action} requires a pending offer reference.` };
       return { ok: true };
+    case 'wait':
+      return await agentHasActiveTalk(ctx, agentDoc.name)
+        ? { ok: true }
+        : { ok: false, note: 'wait is only valid when you are holding a live conversation open.' };
+    case 'rest':
+      return agentDoc.energy < 60
+        ? { ok: true }
+        : { ok: false, note: 'rest is only useful when you are meaningfully tired.' };
+    case 'sleep': {
+      const timeOfDay = typeof tick === 'number' ? timeOfDayForTick(tick) : null;
+      return (timeOfDay === 'evening' || agentDoc.energy < 20)
+        ? { ok: true }
+        : { ok: false, note: 'sleep is only appropriate in the evening or when you are critically exhausted.' };
+    }
     case 'leave_message': {
       if (!parsed.target) return { ok: false, note: 'leave_message requires a target agent.' };
       if (!(parsed.text ?? parsed.message)) return { ok: false, note: 'leave_message requires text.' };
@@ -472,6 +553,292 @@ async function appendPendingNote(ctx: any, agentName: string, note: string) {
   });
 }
 
+async function createActiveInteraction(
+  ctx: any,
+  args: {
+    kind: 'talk' | 'buy' | 'sell' | 'trade';
+    fromAgent: string;
+    toAgent: string;
+    location: string;
+    tick: number;
+    day: number;
+    payload: InteractionPayload;
+    transactionId?: string;
+  },
+) {
+  const interactionId = createInteractionId(args.kind, args.fromAgent, args.toAgent, args.tick, args.day);
+  await ctx.db.insert('rl_interactions', {
+    interactionId,
+    kind: args.kind,
+    fromAgent: args.fromAgent,
+    toAgent: args.toAgent,
+    location: args.location,
+    payloadJson: JSON.stringify(args.payload),
+    transactionId: args.transactionId,
+    status: 'active',
+    createdTick: args.tick,
+    createdDay: args.day,
+    expiresTick: args.tick + INTERACTION_EXPIRY_TICKS,
+  });
+  return interactionId;
+}
+
+async function markTalkInteractionResponded(
+  ctx: any,
+  fromAgent: string,
+  toAgent: string,
+  location: string,
+  tick: number,
+  day: number,
+) {
+  const received = await ctx.db
+    .query('rl_interactions')
+    .withIndex('recipient_status', (q: any) => q.eq('toAgent', fromAgent).eq('status', 'active'))
+    .collect();
+  const match = received.find((interaction: any) =>
+    interaction.kind === 'talk'
+    && interaction.fromAgent === toAgent
+    && interaction.location === location,
+  );
+  if (!match) return;
+  await ctx.db.patch(match._id, {
+    status: 'responded',
+    resolvedTick: tick,
+    resolvedDay: day,
+    outcomeNote: `${fromAgent} responded.`,
+  });
+}
+
+async function findReciprocalSameTickTalk(
+  ctx: any,
+  fromAgent: string,
+  toAgent: string,
+  location: string,
+  tick: number,
+  day: number,
+) {
+  const received = await ctx.db
+    .query('rl_interactions')
+    .withIndex('recipient_status', (q: any) => q.eq('toAgent', fromAgent).eq('status', 'active'))
+    .collect();
+  return received.find((interaction: any) =>
+    interaction.kind === 'talk'
+    && interaction.fromAgent === toAgent
+    && interaction.location === location
+    && interaction.createdTick === tick
+    && interaction.createdDay === day,
+  ) ?? null;
+}
+
+async function agentHasActiveTalk(ctx: any, agentName: string) {
+  const received = await ctx.db
+    .query('rl_interactions')
+    .withIndex('recipient_status', (q: any) => q.eq('toAgent', agentName).eq('status', 'active'))
+    .collect();
+  if (received.some((interaction: any) => interaction.kind === 'talk')) return true;
+
+  const sent = await ctx.db
+    .query('rl_interactions')
+    .withIndex('sender_status', (q: any) => q.eq('fromAgent', agentName).eq('status', 'active'))
+    .collect();
+  return sent.some((interaction: any) => interaction.kind === 'talk');
+}
+
+async function noteTalkNonResponse(
+  ctx: any,
+  agentName: string,
+  actionName: string,
+  tick: number,
+  day: number,
+) {
+  const received = await ctx.db
+    .query('rl_interactions')
+    .withIndex('recipient_status', (q: any) => q.eq('toAgent', agentName).eq('status', 'active'))
+    .collect();
+
+  for (const interaction of received) {
+    if (interaction.kind !== 'talk') continue;
+    const payload = interaction.payloadJson
+      ? JSON.parse(interaction.payloadJson) as InteractionPayload
+      : {};
+    await ctx.db.patch(interaction._id, {
+      payloadJson: JSON.stringify({
+        ...payload,
+        lastNonResponseAction: actionName,
+        lastNonResponseTick: tick,
+        lastNonResponseDay: day,
+      } satisfies InteractionPayload),
+    });
+  }
+}
+
+async function setInteractionOutcomeByTransactionId(
+  ctx: any,
+  transactionId: string,
+  patch: Record<string, unknown>,
+) {
+  const interaction = await ctx.db
+    .query('rl_interactions')
+    .withIndex('transactionId', (q: any) => q.eq('transactionId', transactionId))
+    .unique();
+  if (!interaction) return;
+  await ctx.db.patch(interaction._id, patch);
+}
+
+async function failActiveInteractionsForDeparture(
+  ctx: any,
+  agentName: string,
+  location: string,
+  tick: number,
+  day: number,
+) {
+  const received = await ctx.db
+    .query('rl_interactions')
+    .withIndex('recipient_status', (q: any) => q.eq('toAgent', agentName).eq('status', 'active'))
+    .collect();
+  const sent = await ctx.db
+    .query('rl_interactions')
+    .withIndex('sender_status', (q: any) => q.eq('fromAgent', agentName).eq('status', 'active'))
+    .collect();
+  const seen = new Set<string>();
+  for (const interaction of [...received, ...sent]) {
+    if (seen.has(interaction._id) || interaction.location !== location) continue;
+    seen.add(interaction._id);
+    const otherParty = interaction.fromAgent === agentName ? interaction.toAgent : interaction.fromAgent;
+    const note = `${agentName} left ${location}, so the interaction ended.`;
+    await ctx.db.patch(interaction._id, {
+      status: 'failed',
+      resolvedTick: tick,
+      resolvedDay: day,
+      outcomeNote: note,
+    });
+    if (interaction.transactionId) {
+      const txn = await ctx.db
+        .query('rl_transactions')
+        .withIndex('txnId', (q: any) => q.eq('txnId', interaction.transactionId))
+        .unique();
+      if (txn && txn.status === 'pending') {
+        await ctx.db.patch(txn._id, {
+          status: 'failed',
+          resolvedTick: tick,
+          resolvedDay: day,
+          outcomeNote: note,
+        });
+      }
+    }
+    await appendAgentHeartbeat(
+      ctx,
+      otherParty,
+      `- Day ${day} ${timeOfDayForTick(tick)}: ${interaction.kind} with ${agentName} ended [FAILED] ⚠ ${note}`,
+    );
+    await appendPendingNote(ctx, otherParty, note);
+  }
+}
+
+async function createTalkInteraction(
+  ctx: any,
+  agentDoc: any,
+  parsed: RocklawAction,
+  tick: number,
+  day: number,
+  newEnergy: number,
+  newHealth: number,
+  finalHunger: number,
+) {
+  const text = parsed.text ?? parsed.message ?? '';
+  const reciprocalSameTick = await findReciprocalSameTickTalk(
+    ctx,
+    agentDoc.name,
+    parsed.target!,
+    agentDoc.location,
+    tick,
+    day,
+  );
+
+  if (reciprocalSameTick) {
+    const existingPayload = reciprocalSameTick.payloadJson
+      ? JSON.parse(reciprocalSameTick.payloadJson) as InteractionPayload
+      : {};
+    await ctx.db.patch(reciprocalSameTick._id, {
+      payloadJson: JSON.stringify({
+        ...existingPayload,
+        deferredReplyText: text,
+        deferredReplyFrom: agentDoc.name,
+        deferredReplyTick: tick,
+        deferredReplyDay: day,
+      } satisfies InteractionPayload),
+    });
+
+    await ctx.db.insert('rl_actions_log', {
+      agentName: agentDoc.name,
+      action: parsed.action,
+      target: parsed.target ?? undefined,
+      message: text,
+      tick,
+      day,
+      outcome: 'success',
+      outcomeNote: `Deferred behind ${parsed.target}'s same-tick opener in interaction ${reciprocalSameTick.interactionId}.`,
+    });
+
+    await ctx.db.patch(agentDoc._id, {
+      energy: newEnergy,
+      health: newHealth,
+      hunger: finalHunger,
+      busy: false,
+      busyUntilTick: undefined,
+    });
+
+    return {
+      outcome: 'success',
+      note: `${parsed.target} spoke first in the same tick. Your intended opener was deferred into the live exchange.`,
+      interactionId: reciprocalSameTick.interactionId,
+    };
+  }
+
+  await markTalkInteractionResponded(
+    ctx,
+    agentDoc.name,
+    parsed.target!,
+    agentDoc.location,
+    tick,
+    day,
+  );
+  const interactionId = await createActiveInteraction(ctx, {
+    kind: 'talk',
+    fromAgent: agentDoc.name,
+    toAgent: parsed.target!,
+    location: agentDoc.location,
+    tick,
+    day,
+    payload: { text, message: parsed.message },
+  });
+
+  await ctx.db.insert('rl_actions_log', {
+    agentName: agentDoc.name,
+    action: parsed.action,
+    target: parsed.target ?? undefined,
+    message: text,
+    tick,
+    day,
+    outcome: 'success',
+    outcomeNote: `Interaction ${interactionId} created.`,
+  });
+
+  await ctx.db.patch(agentDoc._id, {
+    energy: newEnergy,
+    health: newHealth,
+    hunger: finalHunger,
+    busy: false,
+    busyUntilTick: undefined,
+  });
+
+  return {
+    outcome: 'success',
+    note: `Interaction ${interactionId} created for ${parsed.target}.`,
+    interactionId,
+  };
+}
+
 async function createPendingTransaction(
   ctx: any,
   agentDoc: any,
@@ -496,6 +863,20 @@ async function createPendingTransaction(
     createdTick: tick,
     createdDay: day,
     expiresTick: tick + OFFER_EXPIRY_TICKS,
+  });
+  await createActiveInteraction(ctx, {
+    kind: parsed.action as 'buy' | 'sell' | 'trade',
+    fromAgent: agentDoc.name,
+    toAgent: parsed.target!,
+    location: agentDoc.location,
+    tick,
+    day,
+    payload: {
+      offer: terms.offer,
+      request: terms.request,
+      message: parsed.text ?? parsed.message,
+    },
+    transactionId: txnId,
   });
 
   await ctx.db.insert('rl_actions_log', {
@@ -534,13 +915,10 @@ async function resolveTransactionResponse(
   newHealth: number,
   finalHunger: number,
 ) {
-  const txn = await ctx.db
-    .query('rl_transactions')
-    .withIndex('txnId', (q: any) => q.eq('txnId', parsed.target!))
-    .unique();
+  const txn = await resolvePendingTransactionReference(ctx, agentDoc.name, parsed.target!);
 
   if (!txn) {
-    return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, `Unknown transaction id: ${parsed.target}.`);
+    return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, `Unknown pending offer: ${parsed.target}.`);
   }
   if (txn.toAgent !== agentDoc.name) {
     return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, 'This transaction is not addressed to you.');
@@ -550,6 +928,12 @@ async function resolveTransactionResponse(
   }
   if (txn.expiresTick < tick) {
     await ctx.db.patch(txn._id, {
+      status: 'expired',
+      resolvedTick: tick,
+      resolvedDay: day,
+      outcomeNote: 'Offer expired before acceptance.',
+    });
+    await setInteractionOutcomeByTransactionId(ctx, txn.txnId, {
       status: 'expired',
       resolvedTick: tick,
       resolvedDay: day,
@@ -569,6 +953,12 @@ async function resolveTransactionResponse(
       resolvedDay: day,
       outcomeNote: 'The other party no longer exists.',
     });
+    await setInteractionOutcomeByTransactionId(ctx, txn.txnId, {
+      status: 'failed',
+      resolvedTick: tick,
+      resolvedDay: day,
+      outcomeNote: 'The other party no longer exists.',
+    });
     return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, 'The other party no longer exists.');
   }
 
@@ -578,6 +968,12 @@ async function resolveTransactionResponse(
       : 'Offer rejected.';
     await ctx.db.patch(txn._id, {
       status: 'rejected',
+      resolvedTick: tick,
+      resolvedDay: day,
+      outcomeNote: note,
+    });
+    await setInteractionOutcomeByTransactionId(ctx, txn.txnId, {
+      status: 'responded',
       resolvedTick: tick,
       resolvedDay: day,
       outcomeNote: note,
@@ -616,6 +1012,12 @@ async function resolveTransactionResponse(
       resolvedDay: day,
       outcomeNote: note,
     });
+    await setInteractionOutcomeByTransactionId(ctx, txn.txnId, {
+      status: 'failed',
+      resolvedTick: tick,
+      resolvedDay: day,
+      outcomeNote: note,
+    });
     await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
     await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
     return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
@@ -631,6 +1033,12 @@ async function resolveTransactionResponse(
       if (proposer.coin < item.quantity) {
         const note = `${proposer.name} no longer has enough coin: need ${item.quantity}c, have ${proposer.coin}c.`;
         await ctx.db.patch(txn._id, { status: 'failed', resolvedTick: tick, resolvedDay: day, outcomeNote: note });
+        await setInteractionOutcomeByTransactionId(ctx, txn.txnId, {
+          status: 'failed',
+          resolvedTick: tick,
+          resolvedDay: day,
+          outcomeNote: note,
+        });
         await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
         await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
         return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
@@ -638,6 +1046,12 @@ async function resolveTransactionResponse(
     } else if ((proposerInv[item.item] ?? 0) < item.quantity) {
       const note = `${proposer.name} no longer has enough ${item.item}: need ${item.quantity}, have ${proposerInv[item.item] ?? 0}.`;
       await ctx.db.patch(txn._id, { status: 'failed', resolvedTick: tick, resolvedDay: day, outcomeNote: note });
+      await setInteractionOutcomeByTransactionId(ctx, txn.txnId, {
+        status: 'failed',
+        resolvedTick: tick,
+        resolvedDay: day,
+        outcomeNote: note,
+      });
       await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
       await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
       return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
@@ -648,6 +1062,12 @@ async function resolveTransactionResponse(
       if (agentDoc.coin < item.quantity) {
         const note = `Not enough coin to accept: need ${item.quantity}c, have ${agentDoc.coin}c.`;
         await ctx.db.patch(txn._id, { status: 'failed', resolvedTick: tick, resolvedDay: day, outcomeNote: note });
+        await setInteractionOutcomeByTransactionId(ctx, txn.txnId, {
+          status: 'failed',
+          resolvedTick: tick,
+          resolvedDay: day,
+          outcomeNote: note,
+        });
         await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
         await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
         return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
@@ -655,6 +1075,12 @@ async function resolveTransactionResponse(
     } else if ((recipientInv[item.item] ?? 0) < item.quantity) {
       const note = `Not enough ${item.item} to accept: need ${item.quantity}, have ${recipientInv[item.item] ?? 0}.`;
       await ctx.db.patch(txn._id, { status: 'failed', resolvedTick: tick, resolvedDay: day, outcomeNote: note });
+      await setInteractionOutcomeByTransactionId(ctx, txn.txnId, {
+        status: 'failed',
+        resolvedTick: tick,
+        resolvedDay: day,
+        outcomeNote: note,
+      });
       await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
       await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
       return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
@@ -690,6 +1116,12 @@ async function resolveTransactionResponse(
     busyUntilTick: undefined,
   });
   await ctx.db.patch(txn._id, {
+    status: 'completed',
+    resolvedTick: tick,
+    resolvedDay: day,
+    outcomeNote: `Completed: ${formatTransactionItems(offer)} for ${formatTransactionItems(request)}.`,
+  });
+  await setInteractionOutcomeByTransactionId(ctx, txn.txnId, {
     status: 'completed',
     resolvedTick: tick,
     resolvedDay: day,
@@ -779,6 +1211,7 @@ const HIGH_EFFORT_ACTIONS = new Set([
 const DEFAULT_MIN_ENERGY_FOR_HARD_WORK = 15;
 const DEFAULT_HEALTH_DRAIN_PER_ZERO_ENERGY_TICK = 10;
 const OFFER_EXPIRY_TICKS = 3;
+const INTERACTION_EXPIRY_TICKS = 2;
 
 function entityListToItems(entries: unknown[] | undefined): TransactionItem[] {
   return normaliseEntityList(entries) ?? [];
@@ -829,6 +1262,12 @@ function createTransactionId(kind: string, fromAgent: string, tick: number, day:
   return `txn-${day}-${tick}-${kind}-${slug}-${Date.now()}`;
 }
 
+function createInteractionId(kind: string, fromAgent: string, toAgent: string, tick: number, day: number): string {
+  const fromSlug = fromAgent.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const toSlug = toAgent.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  return `ix-${day}-${tick}-${kind}-${fromSlug}-${toSlug}-${Date.now()}`;
+}
+
 function timeOfDayForTick(tick: number): 'morning' | 'afternoon' | 'evening' {
   const order: Array<'morning' | 'afternoon' | 'evening'> = ['morning', 'afternoon', 'evening'];
   return order[((tick % 3) + 3) % 3];
@@ -870,7 +1309,7 @@ export const commitAction = internalMutation({
       .unique();
     if (!agentDoc) return { outcome: 'failed', note: 'Agent not found' };
 
-    const worldValidation = await validateWorldExecution(ctx, agentDoc, parsed);
+    const worldValidation = await validateWorldExecution(ctx, agentDoc, parsed, tick);
     if (!worldValidation.ok) {
       const failNote = ('note' in worldValidation && typeof worldValidation.note === 'string')
         ? worldValidation.note
@@ -985,7 +1424,13 @@ export const commitAction = internalMutation({
     // Apply movement
     let newLocation = agentDoc.location;
     if (parsed.action === 'move' && (parsed.location ?? parsed.target)) {
-      newLocation = parsed.location ?? parsed.target ?? agentDoc.location;
+      newLocation = (worldValidation as { resolvedLocation?: string }).resolvedLocation
+        ?? parsed.location
+        ?? parsed.target
+        ?? agentDoc.location;
+      if (newLocation !== agentDoc.location) {
+        await failActiveInteractionsForDeparture(ctx, agentDoc.name, agentDoc.location, tick, day);
+      }
     }
 
     // ── Reputation coin modifier for trade actions ──────────────────────────
@@ -1046,6 +1491,23 @@ export const commitAction = internalMutation({
         newHealth,
         finalHunger,
       );
+    }
+
+    if (parsed.action === 'talk') {
+      return createTalkInteraction(
+        ctx,
+        agentDoc,
+        parsed,
+        tick,
+        day,
+        newEnergy,
+        newHealth,
+        finalHunger,
+      );
+    }
+
+    if (parsed.action !== 'wait') {
+      await noteTalkNonResponse(ctx, agentDoc.name, parsed.action, tick, day);
     }
 
     // Log the action

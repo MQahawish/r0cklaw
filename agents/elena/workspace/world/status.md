@@ -1,10 +1,11 @@
-# Status -- Elena Voss -- Day 1, Morning
+# Status -- Elena Voss -- Day 1, afternoon
 
-Energy:  100/100  [full]
-Health:  100/100  [healthy]
-Hunger:  0/100    [not hungry]
-
-Recent physical load:
-  (none yet)
+Energy:     100/100  [fine]
+Health:     100/100  [fine]
+Hunger:     0/100  [fine]
+Reputation: 50/100  [neutral]
 
 Conditions: none
+
+Action affordances:
+  (none)

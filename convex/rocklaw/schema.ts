@@ -26,6 +26,7 @@ export const rocklawTables = {
     busyUntilTick: v.optional(v.number()),
     // Overheard context from eavesdrop -- injected into next tick's location.md then cleared
     pendingNote: v.optional(v.string()),
+    blankSelf: v.optional(v.boolean()),
     // God-mode agent controls
     paused: v.optional(v.boolean()),
     modelOverride: v.optional(v.string()),
@@ -95,6 +96,57 @@ export const rocklawTables = {
     .index('recipient_status', ['toAgent', 'status'])
     .index('sender_status', ['fromAgent', 'status'])
     .index('status_expiry', ['status', 'expiresTick']),
+
+  // Short-lived colocated social interactions that both sides can see locally.
+  rl_interactions: defineTable({
+    interactionId: v.string(),
+    kind: v.union(
+      v.literal('talk'),
+      v.literal('buy'),
+      v.literal('sell'),
+      v.literal('trade'),
+    ),
+    fromAgent: v.string(),
+    toAgent: v.string(),
+    location: v.string(),
+    payloadJson: v.string(),
+    transactionId: v.optional(v.string()),
+    status: v.union(
+      v.literal('active'),
+      v.literal('responded'),
+      v.literal('expired'),
+      v.literal('failed'),
+      v.literal('completed'),
+    ),
+    createdTick: v.number(),
+    createdDay: v.number(),
+    expiresTick: v.number(),
+    resolvedTick: v.optional(v.number()),
+    resolvedDay: v.optional(v.number()),
+    outcomeNote: v.optional(v.string()),
+  })
+    .index('interactionId', ['interactionId'])
+    .index('recipient_status', ['toAgent', 'status'])
+    .index('sender_status', ['fromAgent', 'status'])
+    .index('status_expiry', ['status', 'expiresTick'])
+    .index('transactionId', ['transactionId']),
+
+  // World-owned minimal first-contact records. Used to establish who has
+  // physically seen whom before without relying on agent-authored memory.
+  rl_social_knowledge: defineTable({
+    observerAgent: v.string(),
+    subjectAgent: v.string(),
+    knownName: v.string(),
+    knownRole: v.string(),
+    firstSeenDay: v.number(),
+    firstSeenTick: v.number(),
+    firstSeenLocation: v.string(),
+    lastSeenDay: v.number(),
+    lastSeenTick: v.number(),
+    lastSeenLocation: v.string(),
+  })
+    .index('observer_subject', ['observerAgent', 'subjectAgent'])
+    .index('observer', ['observerAgent']),
 
   // Village locations with message boards.
   rl_locations: defineTable({
