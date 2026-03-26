@@ -46,6 +46,7 @@ import type * as rocklaw_bridge from "../rocklaw/bridge.js";
 import type * as rocklaw_bridgeNode from "../rocklaw/bridgeNode.js";
 import type * as rocklaw_compact from "../rocklaw/compact.js";
 import type * as rocklaw_compactNode from "../rocklaw/compactNode.js";
+import type * as rocklaw_economy from "../rocklaw/economy.js";
 import type * as rocklaw_engine from "../rocklaw/engine.js";
 import type * as rocklaw_god from "../rocklaw/god.js";
 import type * as rocklaw_godNode from "../rocklaw/godNode.js";
@@ -115,6 +116,7 @@ declare const fullApi: ApiFromModules<{
   "rocklaw/bridgeNode": typeof rocklaw_bridgeNode;
   "rocklaw/compact": typeof rocklaw_compact;
   "rocklaw/compactNode": typeof rocklaw_compactNode;
+  "rocklaw/economy": typeof rocklaw_economy;
   "rocklaw/engine": typeof rocklaw_engine;
   "rocklaw/god": typeof rocklaw_god;
   "rocklaw/godNode": typeof rocklaw_godNode;

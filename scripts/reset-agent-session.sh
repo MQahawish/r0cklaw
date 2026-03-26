@@ -49,7 +49,7 @@ backup_seeded_doc() {
   local file_name=$1
   local src="$WORKSPACE/$file_name"
   local backup="$WORKSPACE/state/seeded_docs/$file_name"
-  if [[ -f "$src" && ! -f "$backup" ]]; then
+  if [[ -f "$src" ]]; then
     cp "$src" "$backup"
   fi
 }
@@ -106,9 +106,7 @@ while IFS= read -r skill_file; do
   rel="${skill_file#$WORKSPACE/skills/}"
   backup="$WORKSPACE/state/seeded_skills/$rel"
   mkdir -p "$(dirname "$backup")"
-  if [[ ! -f "$backup" ]]; then
-    cp "$skill_file" "$backup"
-  fi
+  cp "$skill_file" "$backup"
 done < <(find "$WORKSPACE/skills" -type f -name 'SKILL.md' 2>/dev/null | sort)
 
 if [[ "$PROFILE" == "--seeded" ]]; then

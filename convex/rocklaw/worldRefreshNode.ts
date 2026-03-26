@@ -44,6 +44,10 @@ export const refreshWorldFiles = internalAction({
         agentName: txn.fromAgent,
         note: `Your ${txn.kind} offer to ${agentName} expired before a response.`,
       });
+      await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
+        agentName,
+        note: `${txn.fromAgent}'s ${txn.kind} offer is no longer actionable. Do not accept or reject it now.`,
+      });
     }
     const expiredInteractions = await ctx.runMutation(internal.rocklaw.worldRefresh.expireInteractionsForAgent, {
       agentName,
@@ -82,18 +86,12 @@ export const refreshWorldFiles = internalAction({
     await refreshRuntimeAgentsMd(workspaceRoot, data);
     await refreshRuntimeSkillMds(workspaceRoot, data);
 
-    const letters = await ctx.runMutation(internal.rocklaw.worldRefresh.deliverLetters, {
-      agentName,
-      locationId: data.locationDoc?._id ?? null,
-      day,
-    });
-
     const workspacePath = path.join(workspaceRoot, 'world');
     await refreshRuntimeToolsMd(workspaceRoot, timeOfDay, data);
 
     await Promise.all([
       writeFile(workspacePath, 'inventory.md', buildInventoryMd(agentName, day, data)),
-      writeFile(workspacePath, 'location.md', buildLocationMd(agentName, day, timeOfDay, data, letters, firstSeenContacts)),
+      writeFile(workspacePath, 'location.md', buildLocationMd(agentName, day, timeOfDay, data, firstSeenContacts)),
       writeFile(workspacePath, 'village_news.md', buildVillageNewsMd(day, data)),
       writeFile(workspacePath, 'market_prices.md', buildMarketPricesMd(day, data)),
       writeFile(workspacePath, 'status.md', buildStatusMd(agentName, day, timeOfDay, data)),
@@ -171,7 +169,6 @@ function buildLocationMd(
   day: number,
   timeOfDay: string,
   data: any,
-  letters: any[] = [],
   firstSeenContacts: Array<{ name: string; role: string; location: string }> = [],
 ): string {
   const nearbyLines = data.nearby.length === 0
@@ -185,20 +182,18 @@ function buildLocationMd(
     ? '  (none)'
     : board.map((m: string) => `  - ${m}`).join('\n');
 
-  const letterLines = letters.length === 0
-    ? '  (none)'
-    : letters.map((l: any) =>
-        `  From ${l.fromAgent} (Day ${l.daySent}):\n  "${l.content}"`,
-      ).join('\n\n');
-
   const sections = [
     `# Location -- ${agentName} -- Day ${day}, ${timeOfDay}`,
     '',
     `Current: ${data.agent.location}`,
-    'Reachable places now:',
-    Array.isArray(data.reachableLocations) && data.reachableLocations.length > 0
-      ? data.reachableLocations.map((name: string) => `  - ${name}`).join('\n')
-      : '  (none)',
+    '',
+    '## Place',
+    'Economic stations and resources here:',
+    buildEconomicLocationState(data),
+    '',
+    '## Live Now',
+    'Possible trade partners here:',
+    buildTradeOpportunitiesSection(data),
     '',
     'Nearby:',
     nearbyLines,
@@ -206,15 +201,12 @@ function buildLocationMd(
     'Message board:',
     boardLines,
     '',
-    'Letters waiting for you here:',
-    letterLines,
-    '',
   ];
 
-  const pendingOffers = Array.isArray(data.pendingTransactions) ? data.pendingTransactions : [];
-  const pendingOfferLines = pendingOffers.length === 0
+  const incomingOffers = Array.isArray(data.incomingTransactions) ? data.incomingTransactions : [];
+  const incomingOfferLines = incomingOffers.length === 0
     ? '  (none)'
-    : pendingOffers.map((txn: any) => {
+    : incomingOffers.map((txn: any) => {
         const offer = JSON.parse(txn.offerJson) as Array<{ item: string; quantity: number }>;
         const request = JSON.parse(txn.requestJson) as Array<{ item: string; quantity: number }>;
         const offerText = offer.length === 0 ? 'nothing' : offer.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
@@ -225,8 +217,28 @@ function buildLocationMd(
         const messageNote = txn.message ? ` -- "${txn.message}"` : '';
         return `  - ${txn.responseRef}: ${txn.fromAgent} ${txn.kind}s with you: offers ${offerText} for ${requestText}${locationNote}${messageNote}`;
       }).join('\n');
-  sections.push('Pending offers here:');
-  sections.push(pendingOfferLines);
+  sections.push('Pending offers awaiting your decision:');
+  sections.push(incomingOfferLines);
+  sections.push('  Respond to these with `accept_transaction` or `reject_transaction` only if the other person is still here.');
+  sections.push('');
+
+  const outgoingOffers = Array.isArray(data.outgoingTransactions) ? data.outgoingTransactions : [];
+  const outgoingOfferLines = outgoingOffers.length === 0
+    ? '  (none)'
+    : outgoingOffers.map((txn: any) => {
+        const offer = JSON.parse(txn.offerJson) as Array<{ item: string; quantity: number }>;
+        const request = JSON.parse(txn.requestJson) as Array<{ item: string; quantity: number }>;
+        const offerText = offer.length === 0 ? 'nothing' : offer.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
+        const requestText = request.length === 0 ? 'nothing' : request.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
+        const locationNote = txn.recipientLocation === data.agent.location
+          ? ''
+          : ` [${txn.toAgent} is no longer here]`;
+        const messageNote = txn.message ? ` -- "${txn.message}"` : '';
+        return `  - ${txn.txnId}: you ${txn.kind} ${txn.toAgent}: offers ${offerText} for ${requestText}${locationNote}${messageNote}`;
+      }).join('\n');
+  sections.push('Your outgoing offers:');
+  sections.push(outgoingOfferLines);
+  sections.push('  These are your offers. Do not accept or reject them yourself. Wait, talk, or make a different offer instead.');
   sections.push('');
 
   const activeInteractions = Array.isArray(data.activeInteractions) ? data.activeInteractions : [];
@@ -274,12 +286,65 @@ function buildLocationMd(
   sections.push('');
 
   if (data.agent.pendingNote) {
-    sections.push('From last tick:');
+    sections.push('Recent changes:');
     sections.push(`  ${data.agent.pendingNote}`);
     sections.push('');
   }
 
+  sections.push('## Navigation');
+  sections.push('Reachable places now:');
+  sections.push(
+    Array.isArray(data.reachableLocations) && data.reachableLocations.length > 0
+      ? data.reachableLocations.map((name: string) => `  - ${name}`).join('\n')
+      : '  (none)',
+  );
+  sections.push('');
+
   return sections.join('\n');
+}
+
+function buildEconomicLocationState(data: any): string {
+  const lines: string[] = [];
+  const locationType = data.locationDoc?.type;
+  if (locationType) {
+    lines.push(`  - Location type: ${locationType}`);
+  }
+
+  const fieldsHere = Array.isArray(data.fieldsHere) ? data.fieldsHere : [];
+  for (const field of fieldsHere) {
+    const crop = field.cropItem ?? 'nothing';
+    lines.push(`  - Field ${field.fieldKey}: ${field.stage}${field.stage !== 'fallow' ? ` (${crop})` : ''}`);
+  }
+
+  const herbPatchesHere = Array.isArray(data.herbPatchesHere) ? data.herbPatchesHere : [];
+  for (const patch of herbPatchesHere) {
+    lines.push(`  - Herb patch ${patch.patchKey}: ${patch.available}/${patch.maxAvailable} ${patch.herbItem} available`);
+  }
+
+  const nearby = Array.isArray(data.nearby) ? data.nearby : [];
+  const innkeeperHere = nearby.find((other: any) => other.role === 'Innkeeper') || (data.agent.role === 'Innkeeper' ? data.agent : null);
+  if (data.agent.location === 'inn' && innkeeperHere) {
+    lines.push('  - Meal service may be offered here if bread and ale stock are available.');
+  }
+
+  return lines.length > 0 ? lines.join('\n') : '  (nothing special here)';
+}
+
+function buildTradeOpportunitiesSection(data: any): string {
+  const opportunities = Array.isArray(data.tradeOpportunities) ? data.tradeOpportunities : [];
+  if (opportunities.length === 0) return '  (none)';
+
+  return opportunities
+    .map((entry: any) => {
+      const sells = Array.isArray(entry.likelySells) && entry.likelySells.length > 0
+        ? entry.likelySells.join(', ')
+        : 'nothing obvious right now';
+      const buys = Array.isArray(entry.likelyBuys) && entry.likelyBuys.length > 0
+        ? entry.likelyBuys.join(', ')
+        : 'nothing obvious right now';
+      return `  - ${entry.name} (${entry.role}): likely sells ${sells}; likely buys ${buys}`;
+    })
+    .join('\n');
 }
 
 function buildVillageNewsMd(day: number, data: any): string {
@@ -373,6 +438,7 @@ function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: 
     affordances.push(`  - sleep: available now because your energy is critically low (${energy}/100).`);
   }
   const affordanceLines = affordances.length === 0 ? '  (none)' : affordances.join('\n');
+  const economicNeeds = buildEconomicNeeds(data);
 
   return [
     `# Status -- ${agentName} -- Day ${day}, ${timeOfDay}`,
@@ -384,22 +450,51 @@ function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: 
     '',
     `Conditions: ${conditionLine}`,
     '',
+    'Economic pressure:',
+    economicNeeds,
+    '',
     'Action affordances:',
     affordanceLines,
     '',
   ].join('\n');
 }
 
+function buildEconomicNeeds(data: any): string {
+  const notes: string[] = [];
+  const prices = Array.isArray(data.prices) ? data.prices : [];
+  const shortageItems = prices.filter((price: any) => price.shortageLevel === 'critical').map((price: any) => price.item);
+  if (shortageItems.length > 0) {
+    notes.push(`  - Village shortages are strongest in: ${shortageItems.join(', ')}.`);
+  }
+  if (data.agent.hunger > 40) {
+    notes.push('  - Food demand matters to you right now; buying or producing food is becoming more urgent.');
+  }
+  if (data.agent.health < 70) {
+    notes.push('  - Medicine and herbs matter more while your health is low.');
+  }
+  if (data.agent.role === 'Blacksmith') {
+    notes.push('  - Ore and coal shortages directly constrain your production.');
+  }
+  if (data.agent.role === 'Innkeeper') {
+    notes.push('  - Bread and ale stock determine whether meal service can be offered.');
+  }
+  return notes.length > 0 ? notes.join('\n') : '  (no urgent economic pressure right now)';
+}
+
 function buildTemporaryActionsSection(timeOfDay: string, data: any): string {
   const activeTalks = Array.isArray(data.activeInteractions)
     ? data.activeInteractions.filter((interaction: any) => interaction.kind === 'talk')
     : [];
+  const liveTransactionScenes = Array.isArray(data.activeInteractions)
+    ? data.activeInteractions.filter((interaction: any) =>
+        interaction.kind === 'buy' || interaction.kind === 'sell' || interaction.kind === 'trade')
+    : [];
   const sections: string[] = [];
 
-  if (activeTalks.length > 0) {
+  if (activeTalks.length > 0 || liveTransactionScenes.length > 0) {
     sections.push(
-      '- `wait`: remain where you are and keep the current live conversation open.',
-      '  Example JSON: `{"action":"wait","duration_ticks":1,"thought":"Stay here and keep the conversation open for a reply."}`',
+      '- `wait`: remain where you are and keep the current live local scene open.',
+      '  Example JSON: `{"action":"wait","duration_ticks":1,"thought":"Stay here and keep the live conversation or offer scene open for a reply."}`',
     );
   }
 
@@ -427,6 +522,40 @@ function buildTemporaryActionsSection(timeOfDay: string, data: any): string {
   ].join('\n');
 }
 
+function buildEconomicActionsSection(data: any): string {
+  const entries = Array.isArray(data.economicSurface) ? data.economicSurface : [];
+  const incomingOffers = Array.isArray(data.incomingTransactions) ? data.incomingTransactions : [];
+  const available = entries.filter((entry: any) => entry.status === 'available');
+  const unavailable = entries.filter((entry: any) => entry.status === 'unavailable');
+
+  if (incomingOffers.length > 0) {
+    available.unshift({
+      action: 'accept_transaction',
+      detail: 'Recipient-only. Use the short pending offer reference from "Pending offers awaiting your decision", such as `offer-1`.',
+    });
+    available.unshift({
+      action: 'reject_transaction',
+      detail: 'Recipient-only. Use the short pending offer reference from "Pending offers awaiting your decision", such as `offer-1`.',
+    });
+  }
+
+  const formatLines = (list: any[]) =>
+    list.length === 0
+      ? '  (none)'
+      : list.map((entry: any) => `- \`${entry.action}\`: ${entry.detail}`).join('\n');
+
+  return [
+    '## Economic actions right now',
+    '',
+    '### Available now',
+    formatLines(available),
+    '',
+    '### Unavailable here',
+    formatLines(unavailable),
+    '',
+  ].join('\n');
+}
+
 async function refreshRuntimeToolsMd(workspaceDir: string, timeOfDay: string, data: any): Promise<void> {
   const backupPath = path.join(workspaceDir, 'state', 'seeded_docs', 'TOOLS.md');
   const runtimePath = path.join(workspaceDir, 'TOOLS.md');
@@ -439,6 +568,7 @@ async function refreshRuntimeToolsMd(workspaceDir: string, timeOfDay: string, da
   }
 
   const temporarySection = buildTemporaryActionsSection(timeOfDay, data);
+  const economicSection = buildEconomicActionsSection(data);
   const canTalkNow = Array.isArray(data.nearby) && data.nearby.length > 0;
   const talkBlock = canTalkNow
     ? [
@@ -453,7 +583,10 @@ async function refreshRuntimeToolsMd(workspaceDir: string, timeOfDay: string, da
   const content = template
     .replace('- `talk`: use `target` and `text`; this creates an active local interaction if the other person is here\n  Example JSON: `{"action":"talk","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1}`', talkBlock)
     .replace('- `move`: use `location`\n  Example JSON: `{"action":"move","location":"market","duration_ticks":1}`', moveBlock)
-    .replace('{{TEMPORARY_ACTIONS}}\n', temporarySection);
+    .replace('{{TEMPORARY_ACTIONS}}\n', temporarySection)
+    .replace(/## Economic actions[\s\S]*?## Act in the world\n\n/, `${economicSection}## Act in the world\n\n`)
+    .replace(/## Innkeeper skills[\s\S]*$/m, `## Innkeeper skills\n\n- Use \`sell\` to offer stocked food or drink directly to someone who is here.\n  Example JSON: \`{"action":"sell","target":"Old Rook","item":"meal","quantity":1,"amount":8,"duration_ticks":1,"thought":"A hot meal is ready and he is here at the inn."}\`\n\n- Use \`buy\` to restock bread, grain, or ale when inn inventory is getting thin.\n  Example JSON: \`{"action":"buy","target":"Finn","item":"grain","quantity":3,"amount":18,"duration_ticks":1,"thought":"The inn needs grain before meal service stalls."}\`\n`)
+    .replace(/## Merchant skills[\s\S]*$/m, `## Merchant skills\n\n- Use \`buy\` to make direct in-person offers when stock is needed.\n  Example JSON: \`{"action":"buy","target":"Finn","item":"grain","quantity":4,"amount":24,"duration_ticks":1,"thought":"Grain is scarce and Finn is here."}\`\n\n- Use \`sell\` to move inventory directly while the other person is present.\n  Example JSON: \`{"action":"sell","target":"Elena Voss","item":"coal","quantity":3,"amount":12,"duration_ticks":1,"thought":"Elena needs fuel and we are both here."}\`\n\n- Use \`trade\` when a direct swap will close faster than coin.\n  Example JSON: \`{"action":"trade","target":"Finn","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}],"duration_ticks":1,"thought":"A direct swap is better than waiting on coin."}\`\n`);
   await fs.writeFile(runtimePath, content, 'utf8');
 }
 
@@ -470,19 +603,110 @@ async function refreshRuntimeAgentsMd(workspaceDir: string, data: any): Promise<
   }
 
   let content = template;
-  if (!canTalkNow) {
-    content = content
-      .replace(
-        'For local scenes: when someone is present and `talk` appears in TOOLS.md, it creates an active local interaction. `buy`, `sell`, and `trade` create in-person offers when both people are present. These do not transfer goods immediately. Use `accept_transaction` or `reject_transaction` with the short pending offer reference shown in your location file, such as `offer-1`.',
-        'For local scenes: `buy`, `sell`, and `trade` create in-person offers when both people are present. These do not transfer goods immediately. Use `accept_transaction` or `reject_transaction` with the short pending offer reference shown in your location file, such as `offer-1`.',
-      )
-      .replace(
-        'Valid actions: talk, move, craft, repair, smelt, eat,\n',
-        'Valid actions: move, craft, repair, smelt, eat,\n',
-      );
-  }
+  const incomingOffers = Array.isArray(data.incomingTransactions) ? data.incomingTransactions : [];
+  const actionProfile = buildRuntimeAgentActionProfile(data, canTalkNow, incomingOffers.length > 0);
+  content = content.replace(
+    /For local scenes:[^\n]*/,
+    actionProfile.localScenesLine,
+  );
+  content = content.replace(
+    /Examples:\n[\s\S]*?\n\nValid actions:/,
+    `Examples:\n${actionProfile.examples.join('\n')}\n\nValid actions:`,
+  );
+  content = content.replace(
+    /Valid actions:[\s\S]*?Check TOOLS\.md for the actions available to you right now\./,
+    `${actionProfile.validActions}\n\nCheck TOOLS.md for the actions available to you right now.`,
+  );
 
   await fs.writeFile(runtimePath, content, 'utf8');
+}
+
+function buildRuntimeAgentActionProfile(data: any, canTalkNow: boolean, canRespondToOffers: boolean) {
+  const role = data.agent.role;
+  const hasTradePartners = Array.isArray(data.nearby) && data.nearby.length > 0;
+  const roleSpecificActionsByRole: Record<string, string[]> = {
+    Blacksmith: ['craft', 'smelt'],
+    Merchant: [],
+    Farmer: ['check_field', 'plant', 'water', 'harvest'],
+    Herbalist: ['gather', 'brew'],
+    Priest: ['pray'],
+    Innkeeper: [],
+    Child: ['play'],
+    'Retired Soldier': [],
+  };
+  const roleExamplesByRole: Record<string, string[]> = {
+    Blacksmith: [
+      '- craft: `{"action":"craft","item":"horseshoe","quantity":2,"duration_ticks":1,"consumes":[{"item":"iron_ore","quantity":4},{"item":"coal","quantity":2}],"produces":[{"item":"horseshoe","quantity":2}],"thought":"Market demand is severe and I have the materials."}`',
+      '- sell: `{"action":"sell","target":"Marcus Hale","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1,"thought":"He is here and the horseshoe is ready."}`',
+    ],
+    Merchant: [
+      '- buy: `{"action":"buy","target":"Elena Voss","item":"iron_ore","quantity":5,"amount":20,"duration_ticks":1,"thought":"I need stock and she is here."}`',
+      '- trade: `{"action":"trade","target":"Finn","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}],"duration_ticks":1,"thought":"A direct swap is faster than waiting on coin."}`',
+    ],
+    Farmer: [
+      '- check_field: `{"action":"check_field","duration_ticks":1,"thought":"I need to see what the field needs before committing labor."}`',
+      '- harvest: `{"action":"harvest","duration_ticks":1,"thought":"A field is ready and food is needed."}`',
+    ],
+    Herbalist: [
+      '- gather: `{"action":"gather","duration_ticks":1,"thought":"Herbs are available here and medicine stock matters."}`',
+      '- brew: `{"action":"brew","item":"medicine","quantity":1,"duration_ticks":1,"consumes":[{"item":"herbs","quantity":2}],"produces":[{"item":"medicine","quantity":1}],"thought":"Medicine is needed and I have the herbs."}`',
+    ],
+    Priest: [
+      '- pray: `{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1,"thought":"Offer a prayer for the village."}`',
+    ],
+    Innkeeper: [
+      '- sell: `{"action":"sell","target":"Old Rook","item":"meal","quantity":1,"amount":8,"duration_ticks":1,"thought":"A hot meal is ready and he is here at the inn."}`',
+    ],
+    Child: [
+      '- play: `{"action":"play","duration_ticks":1,"thought":"Nothing urgent presses right now."}`',
+    ],
+    'Retired Soldier': [],
+  };
+
+  const examples = [
+    '- move: `{"action":"move","location":"market","duration_ticks":1,"thought":"Need supplies before work stalls.","message":"Going to the market."}`',
+    ...(canTalkNow ? ['- talk: `{"action":"talk","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1,"thought":"He is here, so I can speak directly."}`'] : []),
+    ...(hasTradePartners
+      ? [
+          '- buy: `{"action":"buy","target":"Marcus Hale","item":"coal","quantity":3,"amount":12,"duration_ticks":1,"thought":"I need fuel and he is here with me. This creates an in-person offer, not an immediate transfer.","message":"Offering 12 coin for three coal."}`',
+          '- trade: `{"action":"trade","target":"Finn","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}],"duration_ticks":1,"thought":"Propose an in-person swap; it settles only if Finn accepts."}`',
+        ]
+      : []),
+    ...(canRespondToOffers
+      ? [
+          '- accept_transaction: `{"action":"accept_transaction","target":"offer-1","duration_ticks":1,"thought":"The offer is fair and I am the one being asked."}`',
+          '- reject_transaction: `{"action":"reject_transaction","target":"offer-1","duration_ticks":1,"thought":"The offer is poor or no longer works.","message":"No deal."}`',
+        ]
+      : []),
+    ...(roleExamplesByRole[role] ?? []),
+  ];
+
+  const validActions = [
+    ...(canTalkNow ? ['talk'] : []),
+    'move',
+    'eat',
+    ...(hasTradePartners ? ['buy', 'sell', 'trade'] : []),
+    'pay',
+    'give',
+    ...(canRespondToOffers ? ['accept_transaction', 'reject_transaction'] : []),
+    ...(roleSpecificActionsByRole[role] ?? []),
+  ];
+
+  if (role === 'Priest' && !validActions.includes('pray')) validActions.push('pray');
+
+  const localScenesLine = canTalkNow
+    ? canRespondToOffers
+      ? 'For local scenes: when someone is present and `talk` appears in TOOLS.md, it creates an active local interaction. `buy`, `sell`, and `trade` create in-person offers when both people are present. These do not transfer goods immediately. Trade targets must be people who are here, never places like market or inn. Use `accept_transaction` or `reject_transaction` only for offers awaiting your decision, using the short pending offer reference shown in your location file, such as `offer-1`. Do not accept or reject your own outgoing offers.'
+      : 'For local scenes: when someone is present and `talk` appears in TOOLS.md, it creates an active local interaction. `buy`, `sell`, and `trade` create in-person offers when both people are present. These do not transfer goods immediately. Trade targets must be people who are here, never places like market or inn. Only respond with `accept_transaction` or `reject_transaction` when TOOLS.md shows offers awaiting your decision. Do not accept or reject your own outgoing offers.'
+    : canRespondToOffers
+      ? 'For local scenes: `buy`, `sell`, and `trade` create in-person offers when both people are present. These do not transfer goods immediately. Trade targets must be people who are here, never places like market or inn. Use `accept_transaction` or `reject_transaction` only for offers awaiting your decision, using the short pending offer reference shown in your location file, such as `offer-1`. Do not accept or reject your own outgoing offers.'
+      : 'For local scenes: `buy`, `sell`, and `trade` create in-person offers when both people are present. These do not transfer goods immediately. Trade targets must be people who are here, never places like market or inn. Only respond with `accept_transaction` or `reject_transaction` when TOOLS.md shows offers awaiting your decision. Do not accept or reject your own outgoing offers.';
+
+  return {
+    localScenesLine,
+    examples,
+    validActions: `Valid actions: ${validActions.join(', ')}`,
+  };
 }
 
 async function refreshRuntimeSkillMds(workspaceDir: string, data: any): Promise<void> {
@@ -538,11 +762,11 @@ async function ensureWorkspaceScaffold(workspaceDir: string): Promise<void> {
 
   await ensureFile(
     sentLogPath,
-    '# Sent Messages Log\n\nNo sent messages yet.\n',
+    '# Sent Messages Log\n\nMessaging is currently disabled.\n',
   );
   await ensureFile(
     inboxReadmePath,
-    '# Inbox\n\nIncoming letters are reflected in world/location.md under "Letters waiting for you here".\nUse this folder only as your personal correspondence archive when needed.\n',
+    '# Inbox\n\nMessaging is currently disabled. Use talk for direct communication.\n',
   );
 }
 

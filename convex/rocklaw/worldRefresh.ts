@@ -7,12 +7,195 @@
 
 import { v } from 'convex/values';
 import { internalMutation, internalQuery } from '../_generated/server';
+import { RECIPE_CATALOGUE, ROLE_ECONOMIC_ACTIONS, ROLE_TRADE_PROFILES, SERVICE_CATALOGUE } from './economy';
+
+type EconomicSurfaceEntry = {
+  action: string;
+  status: 'available' | 'unavailable';
+  detail: string;
+};
+
+type TradeOpportunity = {
+  name: string;
+  role: string;
+  likelySells: string[];
+  likelyBuys: string[];
+};
 
 function timeOfDayForTick(tick: number): 'morning' | 'afternoon' | 'evening' {
   const mod = tick % 3;
   if (mod === 1) return 'afternoon';
   if (mod === 2) return 'evening';
   return 'morning';
+}
+
+function findPrimaryTradeLocation(agentLocation: string): string {
+  return agentLocation === 'market' ? 'inn' : 'market';
+}
+
+function buildTradeOpportunities(args: { agent: any; nearby: any[] }): TradeOpportunity[] {
+  const { agent, nearby } = args;
+  return nearby
+    .filter((other) => other.name !== agent.name)
+    .map((other) => {
+      const profile = ROLE_TRADE_PROFILES[other.role] ?? { likelySells: [], likelyBuys: [] };
+      const inv = JSON.parse(other.inventory ?? '{}') as Record<string, number>;
+      const likelySells = profile.likelySells.filter((item) => {
+        if (item === 'meal' && other.role === 'Innkeeper') {
+          return other.location === 'inn' && (inv.bread ?? 0) >= 1 && (inv.ale ?? 0) >= 1;
+        }
+        return (inv[item] ?? 0) > 0;
+      });
+      return {
+        name: other.name,
+        role: other.role,
+        likelySells,
+        likelyBuys: profile.likelyBuys,
+      };
+    });
+}
+
+function buildEconomicSurface(args: {
+  agent: any;
+  nearby: any[];
+  fieldsHere: any[];
+  herbPatchesHere: any[];
+  prices: any[];
+  reachableLocations: string[];
+}): EconomicSurfaceEntry[] {
+  const { agent, nearby, fieldsHere, herbPatchesHere, prices, reachableLocations } = args;
+  const inv = JSON.parse(agent.inventory) as Record<string, number>;
+  const roleActions = ROLE_ECONOMIC_ACTIONS[agent.role] ?? ['buy', 'sell', 'trade'];
+  const entries: EconomicSurfaceEntry[] = [];
+  const nearbyTradePartners = nearby.filter((other) => other.name !== agent.name);
+  const primaryTradeLocation = findPrimaryTradeLocation(agent.location);
+
+  if (roleActions.includes('buy')) {
+    if (nearbyTradePartners.length > 0) {
+      const mealSeller = nearby.find((other) => other.role === 'Innkeeper' && agent.location === 'inn');
+      entries.push({
+        action: 'buy',
+        status: 'available',
+        detail: mealSeller
+          ? `Available now. ${mealSeller.name} can trade here, including meal service if stocked.`
+          : 'Available now because a trade partner is here.',
+      });
+    }
+  }
+
+  if (roleActions.includes('sell')) {
+    const mealService = SERVICE_CATALOGUE.meal;
+    const canServeMeal = agent.role === mealService.providerRole
+      && agent.location === mealService.location
+      && nearbyTradePartners.length > 0;
+    if (nearbyTradePartners.length > 0) {
+      entries.push({
+        action: 'sell',
+        status: 'available',
+        detail: canServeMeal
+          ? 'Available now. You can sell goods here, and meal service may be offered if your stock supports it.'
+          : 'Available now because a trade partner is here.',
+      });
+    }
+  }
+
+  if (roleActions.includes('trade')) {
+    if (nearbyTradePartners.length > 0) {
+      entries.push({
+        action: 'trade',
+        status: 'available',
+        detail: 'Available now because a trade partner is here.',
+      });
+    }
+  }
+
+  for (const recipe of RECIPE_CATALOGUE.filter((entry) => roleActions.includes(entry.action))) {
+    const cheapestPrice = prices.find((price) => price.item === recipe.output)?.price;
+    const hasInputs = recipe.consumes.every((entry) => (inv[entry.item] ?? 0) >= entry.quantity);
+    entries.push({
+      action: `${recipe.action}:${recipe.output}`,
+      status: agent.location === recipe.location && hasInputs ? 'available' : 'unavailable',
+      detail: agent.location !== recipe.location
+        ? `Unavailable here. Move to ${recipe.location} to ${recipe.action} ${recipe.output}.`
+        : hasInputs
+        ? `Available now at ${recipe.location}${typeof cheapestPrice === 'number' ? `; ${recipe.output} is priced around ${cheapestPrice}c.` : '.'}`
+        : `Unavailable now. You lack the inputs to ${recipe.action} ${recipe.output}.`
+    });
+  }
+
+  const mealService = SERVICE_CATALOGUE.meal;
+  if (agent.role === mealService.providerRole) {
+    const hasMealInputs = mealService.consumes.every((entry) => (inv[entry.item] ?? 0) >= entry.quantity);
+    if (agent.location === mealService.location && nearbyTradePartners.length > 0) {
+      entries.push({
+        action: 'meal_service',
+        status: hasMealInputs ? 'available' : 'unavailable',
+        detail: hasMealInputs
+          ? 'Available now through `sell` with `item:"meal"`.'
+          : 'Unavailable now. You need bread and ale before `sell` with `item:"meal"` will work.',
+      });
+    }
+  }
+
+  if (roleActions.includes('check_field')) {
+    entries.push({
+      action: 'check_field',
+      status: agent.location === 'farm' ? 'available' : 'unavailable',
+      detail: agent.location === 'farm'
+        ? `Available now. ${fieldsHere.length} field${fieldsHere.length === 1 ? '' : 's'} here need attention.`
+        : 'Unavailable here. Move to farm to inspect field state.',
+    });
+  }
+  if (roleActions.includes('plant')) {
+    const hasFallowField = fieldsHere.some((field) => field.stage === 'fallow');
+    entries.push({
+      action: 'plant',
+      status: agent.location === 'farm' && hasFallowField ? 'available' : 'unavailable',
+      detail: agent.location === 'farm'
+        ? hasFallowField
+          ? 'Available now. At least one field is fallow and ready to plant.'
+          : 'Unavailable now. All fields are already in use.'
+        : 'Unavailable here. Move to farm to plant crops.',
+    });
+  }
+  if (roleActions.includes('water')) {
+    const needsWater = fieldsHere.some((field) => field.stage === 'growing');
+    entries.push({
+      action: 'water',
+      status: agent.location === 'farm' && needsWater ? 'available' : 'unavailable',
+      detail: agent.location === 'farm'
+        ? needsWater
+          ? 'Available now. A growing field can be watered to speed it along.'
+          : 'Unavailable now. No growing field needs water.'
+        : 'Unavailable here. Move to farm to water crops.',
+    });
+  }
+  if (roleActions.includes('harvest')) {
+    const readyFields = fieldsHere.filter((field) => field.stage === 'ready');
+    entries.push({
+      action: 'harvest',
+      status: agent.location === 'farm' && readyFields.length > 0 ? 'available' : 'unavailable',
+      detail: agent.location === 'farm'
+        ? readyFields.length > 0
+          ? `Available now. ${readyFields.length} field${readyFields.length === 1 ? '' : 's'} is ready to harvest.`
+          : 'Unavailable now. No field is ready to harvest.'
+        : 'Unavailable here. Move to farm to harvest crops.',
+    });
+  }
+
+  if (roleActions.includes('gather')) {
+    const gatherable = herbPatchesHere.some((patch) => patch.available > 0);
+    const remedy = reachableLocations.includes('shrine') ? 'shrine' : reachableLocations[0] ?? 'shrine';
+    entries.push({
+      action: 'gather',
+      status: gatherable ? 'available' : 'unavailable',
+      detail: gatherable
+        ? 'Available now. Herbs can be gathered here.'
+        : `Unavailable here. Move to ${remedy} to gather herbs.`,
+    });
+  }
+
+  return entries;
 }
 
 // ── Letter delivery ───────────────────────────────────────────────────────────
@@ -249,6 +432,14 @@ export const getWorldSnapshot = internalQuery({
       .withIndex('name', (q) => q.eq('name', agent.location))
       .unique();
     const allLocations = await ctx.db.query('rl_locations').collect();
+    const fieldsHere = await ctx.db
+      .query('rl_fields')
+      .withIndex('location', (q) => q.eq('location', agent.location))
+      .collect();
+    const herbPatchesHere = await ctx.db
+      .query('rl_herb_patches')
+      .withIndex('location', (q) => q.eq('location', agent.location))
+      .collect();
 
     // Recent trade activity (last 5 actions involving trades)
     const recentTrades = await ctx.db
@@ -278,9 +469,13 @@ export const getWorldSnapshot = internalQuery({
       .withIndex('agentName', (q) => q.eq('agentName', agentName))
       .unique();
 
-    const pendingTransactions = await ctx.db
+    const incomingTransactions = await ctx.db
       .query('rl_transactions')
       .withIndex('recipient_status', (q) => q.eq('toAgent', agentName).eq('status', 'pending'))
+      .collect();
+    const outgoingTransactions = await ctx.db
+      .query('rl_transactions')
+      .withIndex('sender_status', (q) => q.eq('fromAgent', agentName).eq('status', 'pending'))
       .collect();
 
     const receivedInteractions = await ctx.db
@@ -293,7 +488,8 @@ export const getWorldSnapshot = internalQuery({
       .collect();
 
     const counterpartNames = Array.from(new Set([
-      ...pendingTransactions.map((txn) => txn.fromAgent),
+      ...incomingTransactions.map((txn) => txn.fromAgent),
+      ...outgoingTransactions.map((txn) => txn.toAgent),
       ...receivedInteractions.map((interaction) => interaction.fromAgent),
       ...sentInteractions.map((interaction) => interaction.toAgent),
     ]));
@@ -306,31 +502,51 @@ export const getWorldSnapshot = internalQuery({
       proposers.filter(Boolean).map((agent) => [agent!.name, agent!]),
     );
 
-    const orderedPendingTransactions = pendingTransactions
-      .slice()
-      .sort((a, b) =>
-        a.createdDay - b.createdDay
-        || a.createdTick - b.createdTick
-        || a.fromAgent.localeCompare(b.fromAgent),
-      );
+    const orderTransactions = (transactions: any[], counterpartField: 'fromAgent' | 'toAgent') =>
+      transactions
+        .slice()
+        .sort((a, b) =>
+          a.createdDay - b.createdDay
+          || a.createdTick - b.createdTick
+          || a[counterpartField].localeCompare(b[counterpartField]),
+        );
+
+    const actionableIncomingTransactions = incomingTransactions.filter((txn) =>
+      proposerByName.get(txn.fromAgent)?.location === agent.location,
+    );
+    const actionableOutgoingTransactions = outgoingTransactions.filter((txn) =>
+      proposerByName.get(txn.toAgent)?.location === agent.location,
+    );
+
+    const orderedIncomingTransactions = orderTransactions(actionableIncomingTransactions, 'fromAgent');
+    const orderedOutgoingTransactions = orderTransactions(actionableOutgoingTransactions, 'toAgent');
+
+    const nearbyOthers = nearby.filter((a) => a.name !== agentName);
+    const reachableLocations = allLocations
+      .map((entry) => entry.name)
+      .filter((name) => name !== agent.location)
+      .sort((a, b) => a.localeCompare(b));
 
     return {
       agent,
-      nearby: nearby.filter((a) => a.name !== agentName),
-      reachableLocations: allLocations
-        .map((entry) => entry.name)
-        .filter((name) => name !== agent.location)
-        .sort((a, b) => a.localeCompare(b)),
+      nearby: nearbyOthers,
+      reachableLocations,
       prices,
       events,
       locationDoc: location,
+      fieldsHere,
+      herbPatchesHere,
       recentTrades,
       mentions,
       reputation,
-      pendingTransactions: orderedPendingTransactions.map((txn, index) => ({
+      incomingTransactions: orderedIncomingTransactions.map((txn, index) => ({
         ...txn,
         responseRef: `offer-${index + 1}`,
         proposerLocation: proposerByName.get(txn.fromAgent)?.location ?? null,
+      })),
+      outgoingTransactions: orderedOutgoingTransactions.map((txn) => ({
+        ...txn,
+        recipientLocation: proposerByName.get(txn.toAgent)?.location ?? null,
       })),
       activeInteractions: [...receivedInteractions, ...sentInteractions].map((interaction) => ({
         ...interaction,
@@ -343,6 +559,18 @@ export const getWorldSnapshot = internalQuery({
         .query('rl_social_knowledge')
         .withIndex('observer', (q) => q.eq('observerAgent', agentName))
         .collect(),
+      economicSurface: buildEconomicSurface({
+        agent,
+        nearby: nearbyOthers,
+        fieldsHere,
+        herbPatchesHere,
+        prices,
+        reachableLocations,
+      }),
+      tradeOpportunities: buildTradeOpportunities({
+        agent,
+        nearby: nearbyOthers,
+      }),
       workspacePath: agent.workspacePath,
     };
   },
@@ -379,12 +607,6 @@ function buildLocationMd(
     ? '  (none)'
     : board.map((m: string) => `  - ${m}`).join('\n');
 
-  const letterLines = letters.length === 0
-    ? '  (none)'
-    : letters.map((l: any) =>
-        `  From ${l.fromAgent} (Day ${l.daySent}):\n  "${l.content}"`,
-      ).join('\n\n');
-
   const sections = [
     `# Location -- ${agentName} -- Day ${day}, ${timeOfDay}`,
     '',
@@ -394,9 +616,6 @@ function buildLocationMd(
     '',
     'Message board:',
     boardLines,
-    '',
-    'Letters waiting for you here:',
-    letterLines,
     '',
   ];
 

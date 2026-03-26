@@ -9,12 +9,8 @@ Do not invent actions like `blacksmith`.
 
 - `craft`: make finished goods from materials.
   Example JSON: `{"action":"craft","item":"horseshoe","quantity":2,"duration_ticks":1,"consumes":[{"item":"iron_ore","quantity":4},{"item":"coal","quantity":2}],"produces":[{"item":"horseshoe","quantity":2}],"thought":"Demand is high and I have the stock."}`
-- `repair`: restore a damaged item.
-  Example JSON: `{"action":"repair","item":"axe","duration_ticks":1,"thought":"Repairing is cheaper than replacing."}`
 - `smelt`: turn ore into refined metal.
   Example JSON: `{"action":"smelt","item":"iron_ingot","quantity":1,"duration_ticks":1,"consumes":[{"item":"iron_ore","quantity":2},{"item":"coal","quantity":1}],"produces":[{"item":"iron_ingot","quantity":1}]}`
-- `appraise`: inspect an item's likely quality or value.
-  Example JSON: `{"action":"appraise","item":"knife","duration_ticks":1,"thought":"I need a fair sense of what this is worth."}`
 - `sell` / `trade`: move finished goods in person.
   Example JSON: `{"action":"sell","target":"Finn","item":"horseshoe","quantity":2,"amount":24,"duration_ticks":1,"thought":"Offer finished work directly while he is here."}`
 

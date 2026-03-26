@@ -11,6 +11,7 @@ import { v } from 'convex/values';
 import { internalMutation, internalQuery } from '../_generated/server';
 import { internal } from '../_generated/api';
 import { TICK_INTERVAL_MS } from './engine';
+import { getRecipe, getService, hungerRestoreFor, isEdible } from './economy';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -48,6 +49,19 @@ type InteractionPayload = {
   lastNonResponseDay?: number;
 };
 
+type WorldValidation =
+  | { ok: false; note: string }
+  | {
+      ok: true;
+      resolvedLocation?: string;
+      consumes?: Array<{ item: string; quantity: number }>;
+      produces?: Array<{ item: string; quantity: number }>;
+      fieldKey?: string;
+      cropItem?: string;
+      herbPatchKey?: string;
+      note?: string;
+    };
+
 // Effort costs per action (deducted from energy after completion)
 const EFFORT_COSTS: Record<string, number> = {
   // Physical labour
@@ -64,7 +78,7 @@ const EFFORT_COSTS: Record<string, number> = {
   // Universal
   move: 5, talk: 2, buy: 2, sell: 2, pay: 1, give: 1,
   trade: 2, accept_transaction: 1, reject_transaction: 1, wait: 0, observe: 1, write: 2, pray: 0,
-  leave_message: 2, recall: 0,
+  recall: 0,
   eat: 0, rest: -40, sleep: -100,
 };
 
@@ -199,7 +213,7 @@ function normaliseAction(parsed: RocklawAction): RocklawAction {
   if (action === 'move' && !normalized.location && target) {
     normalized.location = target;
   }
-  if ((action === 'talk' || action === 'leave_message' || action === 'write' || action === 'pray' || action === 'eavesdrop') && !normalized.text && parsed.message) {
+  if ((action === 'talk' || action === 'write' || action === 'pray' || action === 'eavesdrop') && !normalized.text && parsed.message) {
     normalized.text = parsed.message;
   }
   if ((action === 'craft' || action === 'repair' || action === 'smelt' || action === 'eat' || action === 'buy' || action === 'sell' || action === 'give') && !normalized.item && target) {
@@ -299,6 +313,14 @@ function applyInventoryChanges(
   return { newInventory: JSON.stringify(inv), newCoin };
 }
 
+function transferToRecipient(
+  inventoryJson: string,
+  coin: number,
+  produces: Array<{ item: string; quantity: number }>,
+): { newInventory: string; newCoin: number } {
+  return applyInventoryChanges(inventoryJson, coin, [], produces, 'transfer');
+}
+
 function inventoryHasAtLeast(inventoryJson: string, item: string, required: number): boolean {
   const inv = JSON.parse(inventoryJson) as Record<string, number>;
   return (inv[item] ?? 0) >= required;
@@ -319,14 +341,62 @@ function formatInventoryShortfall(inventoryJson: string, consumes: unknown[]): s
   return null;
 }
 
+function inventoryHasItems(inventoryJson: string, required: Array<{ item: string; quantity: number }>): boolean {
+  const inv = JSON.parse(inventoryJson) as Record<string, number>;
+  return required.every((entry) => (inv[entry.item] ?? 0) >= entry.quantity);
+}
+
+function formatRequirementShortfall(inventoryJson: string, required: Array<{ item: string; quantity: number }>): string | null {
+  return formatInventoryShortfall(
+    inventoryJson,
+    required.map((entry) => ({ item: entry.item, quantity: entry.quantity })),
+  );
+}
+
+async function getFieldsAtLocation(ctx: any, location: string) {
+  const fields = await ctx.db
+    .query('rl_fields')
+    .withIndex('location', (q: any) => q.eq('location', location))
+    .collect();
+  return fields.slice().sort((a: any, b: any) => a.fieldKey.localeCompare(b.fieldKey));
+}
+
+async function getHerbPatchesAtLocation(ctx: any, location: string) {
+  const patches = await ctx.db
+    .query('rl_herb_patches')
+    .withIndex('location', (q: any) => q.eq('location', location))
+    .collect();
+  return patches.slice().sort((a: any, b: any) => a.patchKey.localeCompare(b.patchKey));
+}
+
+function serviceRequirementsFor(item: string | null | undefined) {
+  const service = getService(item);
+  return service?.consumes ?? [];
+}
+
+function canProvideService(agentDoc: any, item: string | null | undefined) {
+  const service = getService(item);
+  if (!service) return false;
+  if (agentDoc.role !== service.providerRole) return false;
+  if (agentDoc.location !== service.location) return false;
+  return inventoryHasItems(agentDoc.inventory, service.consumes);
+}
+
 async function targetAgentAtSameLocation(ctx: any, actorLocation: string, targetName: string) {
+  const trimmedTarget = targetName.trim().toLowerCase();
+  if (trimmedTarget === 'market' || trimmedTarget === 'inn' || trimmedTarget === 'forge' || trimmedTarget === 'farm' || trimmedTarget === 'shrine' || trimmedTarget === 'square' || trimmedTarget === 'gate') {
+    return {
+      ok: false,
+      note: `${targetName} is a place, not a trading counterparty. Buy or sell only with a person who is here.`,
+    };
+  }
   const targetAgent = await ctx.db
     .query('rl_agents')
     .withIndex('name', (q: any) => q.eq('name', targetName))
     .unique();
   if (!targetAgent) return { ok: false, note: `Target agent not found: ${targetName}.` };
   if (targetAgent.location !== actorLocation) {
-    return { ok: false, note: `${targetName} is not at your location (${actorLocation}).` };
+    return { ok: false, note: `${targetName} moved away earlier this tick and is no longer at your location (${actorLocation}). The local scene is no longer live.` };
   }
   return { ok: true, targetAgent };
 }
@@ -364,6 +434,32 @@ async function resolvePendingTransactionReference(ctx: any, recipientName: strin
   return ordered[offerNumber - 1] ?? null;
 }
 
+async function findTransactionByTargetReference(ctx: any, rawTarget: string) {
+  const direct = await ctx.db
+    .query('rl_transactions')
+    .withIndex('txnId', (q: any) => q.eq('txnId', rawTarget))
+    .unique();
+  if (direct) return direct;
+
+  const offerNumber = parseOfferReference(rawTarget);
+  if (!offerNumber || offerNumber < 1) return null;
+
+  const pending = await ctx.db
+    .query('rl_transactions')
+    .filter((q: any) => q.eq(q.field('status'), 'pending'))
+    .collect();
+
+  const ordered = pending
+    .slice()
+    .sort((a: any, b: any) =>
+      a.createdDay - b.createdDay
+      || a.createdTick - b.createdTick
+      || a.fromAgent.localeCompare(b.fromAgent),
+    );
+
+  return ordered[offerNumber - 1] ?? null;
+}
+
 async function resolveLocationName(ctx: any, rawLocation: string | null | undefined) {
   if (!rawLocation) return null;
   const trimmed = rawLocation.trim();
@@ -388,11 +484,17 @@ async function resolveLocationName(ctx: any, rawLocation: string | null | undefi
   return locations.find((location: any) => normaliseLocationToken(location.name) === normalised) ?? null;
 }
 
-async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAction, tick?: number) {
+async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAction, tick?: number): Promise<WorldValidation> {
   const destination = parsed.location ?? parsed.target ?? null;
 
   if (Array.isArray(parsed.consumes) && parsed.consumes.length > 0) {
-    const missingInventory = formatInventoryShortfall(agentDoc.inventory, parsed.consumes);
+    const consumesForShortfall = parsed.consumes.filter((entry: any) => {
+      const normalised = normaliseItemEntry(entry);
+      if (!normalised) return false;
+      const item = normalised.value.split(':')[0].trim();
+      return !getService(item);
+    });
+    const missingInventory = formatInventoryShortfall(agentDoc.inventory, consumesForShortfall);
     if (missingInventory) return { ok: false, note: missingInventory };
 
     const needed = parseItemList(parsed.consumes);
@@ -416,8 +518,9 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
     case 'give':
     case 'trade': {
       if (!parsed.target) return { ok: false, note: `${parsed.action} requires a target agent.` };
+      if (parsed.target === agentDoc.name) return { ok: false, note: `${parsed.action} requires another agent, not yourself.` };
       const targetCheck = await targetAgentAtSameLocation(ctx, agentDoc.location, parsed.target);
-      if (!targetCheck.ok) return targetCheck;
+      if (!targetCheck.ok) return { ok: false, note: targetCheck.note ?? `${parsed.target} is not available here.` };
 
       if ((parsed.action === 'buy' || parsed.action === 'sell' || parsed.action === 'give') && !parsed.item) {
         return { ok: false, note: `${parsed.action} requires an item.` };
@@ -435,12 +538,24 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
         if (agentDoc.coin < parsed.amount) {
           return { ok: false, note: `Not enough coin: need ${parsed.amount}c, have ${agentDoc.coin}c.` };
         }
+        if (parsed.item === 'meal') {
+          if (targetCheck.targetAgent.role !== 'Innkeeper' || targetCheck.targetAgent.location !== 'inn') {
+            return { ok: false, note: 'Meals can only be bought from the innkeeper at the inn.' };
+          }
+          if (!canProvideService(targetCheck.targetAgent, 'meal')) {
+            return { ok: false, note: 'Meal service is unavailable right now because the inn lacks stock.' };
+          }
+        }
       }
       if (parsed.action === 'sell') {
         if (typeof parsed.amount !== 'number' || parsed.amount <= 0) {
           return { ok: false, note: 'Sell requires a positive amount.' };
         }
-        if (!inventoryHasAtLeast(agentDoc.inventory, parsed.item!, parsed.quantity!)) {
+        if (parsed.item === 'meal') {
+          if (!canProvideService(agentDoc, 'meal')) {
+            return { ok: false, note: 'Meal service is unavailable here until you have bread and ale at the inn.' };
+          }
+        } else if (!inventoryHasAtLeast(agentDoc.inventory, parsed.item!, parsed.quantity!)) {
           const sellerInv = JSON.parse(agentDoc.inventory) as Record<string, number>;
           return {
             ok: false,
@@ -469,14 +584,123 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
       }
       return { ok: true };
     }
+    case 'craft':
+    case 'smelt':
+    case 'brew': {
+      const recipe = getRecipe(parsed.action, parsed.item ?? parsed.target);
+      if (!recipe) {
+        if (parsed.action === 'craft' && (parsed.item ?? parsed.target) === 'meal') {
+          return { ok: false, note: 'Meals are offered through sell, not craft.' };
+        }
+        return { ok: false, note: `${parsed.action} requires a known output item.` };
+      }
+      if (agentDoc.location !== recipe.location) {
+        return { ok: false, note: `${parsed.action} ${recipe.output} is unavailable here. Move to ${recipe.location}.` };
+      }
+      const shortfall = formatRequirementShortfall(agentDoc.inventory, recipe.consumes);
+      if (shortfall) return { ok: false, note: shortfall };
+      return { ok: true, consumes: recipe.consumes, produces: recipe.produces, note: recipe.note };
+    }
+    case 'check_field': {
+      if (agentDoc.location !== 'farm') {
+        return { ok: false, note: 'check_field is only useful at the farm.' };
+      }
+      return { ok: true };
+    }
+    case 'plant': {
+      if (agentDoc.location !== 'farm') {
+        return { ok: false, note: 'plant is only available at the farm.' };
+      }
+      const fields = await getFieldsAtLocation(ctx, agentDoc.location);
+      const field = fields.find((entry: any) => entry.stage === 'fallow');
+      if (!field) return { ok: false, note: 'No fallow field is available to plant right now.' };
+      const cropItem = parsed.item ?? 'grain';
+      if (!['grain', 'vegetables'].includes(cropItem)) {
+        return { ok: false, note: 'plant currently supports grain or vegetables.' };
+      }
+      if (!inventoryHasAtLeast(agentDoc.inventory, cropItem, 1)) {
+        const inv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+        return { ok: false, note: `Not enough ${cropItem}: need 1, have ${inv[cropItem] ?? 0}.` };
+      }
+      return { ok: true, fieldKey: field.fieldKey, cropItem, consumes: [{ item: cropItem, quantity: 1 }], note: `Plant ${cropItem} in ${field.fieldKey}.` };
+    }
+    case 'water': {
+      if (agentDoc.location !== 'farm') {
+        return { ok: false, note: 'water is only available at the farm.' };
+      }
+      const fields = await getFieldsAtLocation(ctx, agentDoc.location);
+      const field = fields.find((entry: any) => entry.stage === 'growing');
+      if (!field) return { ok: false, note: 'No growing field needs water right now.' };
+      return { ok: true, fieldKey: field.fieldKey, note: `Water ${field.fieldKey}.` };
+    }
+    case 'harvest': {
+      if (agentDoc.location !== 'farm') {
+        return { ok: false, note: 'harvest is only available at the farm.' };
+      }
+      const fields = await getFieldsAtLocation(ctx, agentDoc.location);
+      const field = fields.find((entry: any) => entry.stage === 'ready');
+      if (!field || !field.cropItem) return { ok: false, note: 'No field is ready to harvest.' };
+      const quantity = field.cropItem === 'grain' ? 4 : 3;
+      return {
+        ok: true,
+        fieldKey: field.fieldKey,
+        cropItem: field.cropItem,
+        produces: [{ item: field.cropItem, quantity }],
+        note: `Harvest ${field.cropItem} from ${field.fieldKey}.`,
+      };
+    }
+    case 'gather': {
+      const patches = await getHerbPatchesAtLocation(ctx, agentDoc.location);
+      const patch = patches.find((entry: any) => entry.available > 0);
+      if (!patch) {
+        return { ok: false, note: 'No gatherable herbs are available here right now.' };
+      }
+      const quantity = Math.min(2, patch.available);
+      return {
+        ok: true,
+        herbPatchKey: patch.patchKey,
+        produces: [{ item: patch.herbItem, quantity }],
+        note: `Gather ${quantity} ${patch.herbItem} from ${patch.patchKey}.`,
+      };
+    }
+    case 'identify':
+      if (!parsed.item) return { ok: false, note: 'identify requires an item.' };
+      if (!inventoryHasAtLeast(agentDoc.inventory, parsed.item, 1)) {
+        const inv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+        return { ok: false, note: `Not enough ${parsed.item}: need 1, have ${inv[parsed.item] ?? 0}.` };
+      }
+      return { ok: true };
     case 'accept_transaction':
     case 'reject_transaction':
       if (!parsed.target) return { ok: false, note: `${parsed.action} requires a pending offer reference.` };
+      {
+        const txn = await resolvePendingTransactionReference(ctx, agentDoc.name, parsed.target);
+        if (!txn) {
+          const referencedTxn = await findTransactionByTargetReference(ctx, parsed.target);
+          if (referencedTxn?.fromAgent === agentDoc.name) {
+            return { ok: false, note: 'You cannot accept or reject your own offer. Wait for the other person or make a new offer.' };
+          }
+          if (referencedTxn?.status && referencedTxn.status !== 'pending') {
+            return { ok: false, note: `That offer is no longer pending (${referencedTxn.status}).` };
+          }
+          return { ok: false, note: `Unknown pending offer: ${parsed.target}.` };
+        }
+        const proposer = await ctx.db
+          .query('rl_agents')
+          .withIndex('name', (q: any) => q.eq('name', txn.fromAgent))
+          .unique();
+        if (!proposer) {
+          return { ok: false, note: 'The other party no longer exists.' };
+        }
+        if (proposer.location !== agentDoc.location) {
+          return { ok: false, note: `${proposer.name} is no longer here. In-person offers can only be answered while the local scene is still live.` };
+        }
+      }
       return { ok: true };
     case 'wait':
-      return await agentHasActiveTalk(ctx, agentDoc.name)
+      return await agentHasLiveWaitScene(ctx, agentDoc)
         ? { ok: true }
-        : { ok: false, note: 'wait is only valid when you are holding a live conversation open.' };
+        : { ok: false, note: 'wait is only valid when you are holding a live local conversation or offer scene open.' };
     case 'rest':
       return agentDoc.energy < 60
         ? { ok: true }
@@ -487,16 +711,6 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
         ? { ok: true }
         : { ok: false, note: 'sleep is only appropriate in the evening or when you are critically exhausted.' };
     }
-    case 'leave_message': {
-      if (!parsed.target) return { ok: false, note: 'leave_message requires a target agent.' };
-      if (!(parsed.text ?? parsed.message)) return { ok: false, note: 'leave_message requires text.' };
-      const targetAgent = await ctx.db
-        .query('rl_agents')
-        .withIndex('name', (q: any) => q.eq('name', parsed.target))
-        .unique();
-      if (!targetAgent) return { ok: false, note: `Target agent not found: ${parsed.target}.` };
-      return { ok: true };
-    }
     case 'write':
     case 'pray':
     case 'eavesdrop':
@@ -506,8 +720,15 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
       return { ok: true };
     case 'eat':
       if (!parsed.item) return { ok: false, note: 'Eat requires an item.' };
+      if (!isEdible(parsed.item)) return { ok: false, note: `${parsed.item} is not edible.` };
       if (!inventoryHasAtLeast(agentDoc.inventory, parsed.item, parsed.quantity ?? 1)) {
         const inv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+        if (parsed.item === 'meal') {
+          return {
+            ok: false,
+            note: `Not enough meal: need ${parsed.quantity ?? 1}, have ${inv[parsed.item] ?? 0}. Accept or buy one first.`,
+          };
+        }
         return { ok: false, note: `Not enough ${parsed.item}: need ${parsed.quantity ?? 1}, have ${inv[parsed.item] ?? 0}.` };
       }
       return { ok: true };
@@ -642,6 +863,39 @@ async function agentHasActiveTalk(ctx: any, agentName: string) {
     .withIndex('sender_status', (q: any) => q.eq('fromAgent', agentName).eq('status', 'active'))
     .collect();
   return sent.some((interaction: any) => interaction.kind === 'talk');
+}
+
+async function agentHasLivePendingTransactionScene(ctx: any, agentDoc: any) {
+  const incoming = await ctx.db
+    .query('rl_transactions')
+    .withIndex('to_status', (q: any) => q.eq('toAgent', agentDoc.name).eq('status', 'pending'))
+    .collect();
+  for (const txn of incoming) {
+    const counterparty = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q: any) => q.eq('name', txn.fromAgent))
+      .unique();
+    if (counterparty?.location === agentDoc.location) return true;
+  }
+
+  const outgoing = await ctx.db
+    .query('rl_transactions')
+    .withIndex('from_status', (q: any) => q.eq('fromAgent', agentDoc.name).eq('status', 'pending'))
+    .collect();
+  for (const txn of outgoing) {
+    const counterparty = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q: any) => q.eq('name', txn.toAgent))
+      .unique();
+    if (counterparty?.location === agentDoc.location) return true;
+  }
+
+  return false;
+}
+
+async function agentHasLiveWaitScene(ctx: any, agentDoc: any) {
+  if (await agentHasActiveTalk(ctx, agentDoc.name)) return true;
+  return agentHasLivePendingTransactionScene(ctx, agentDoc);
 }
 
 async function noteTalkNonResponse(
@@ -918,6 +1172,29 @@ async function resolveTransactionResponse(
   const txn = await resolvePendingTransactionReference(ctx, agentDoc.name, parsed.target!);
 
   if (!txn) {
+    const referencedTxn = await findTransactionByTargetReference(ctx, parsed.target!);
+    if (referencedTxn?.fromAgent === agentDoc.name) {
+      return recordFailedAction(
+        ctx,
+        agentDoc,
+        agentDoc.name,
+        parsed,
+        tick,
+        day,
+        'You cannot accept or reject your own offer. Wait for the other person or make a new offer.',
+      );
+    }
+    if (referencedTxn?.status && referencedTxn.status !== 'pending') {
+      return recordFailedAction(
+        ctx,
+        agentDoc,
+        agentDoc.name,
+        parsed,
+        tick,
+        day,
+        `That offer is no longer pending (${referencedTxn.status}).`,
+      );
+    }
     return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, `Unknown pending offer: ${parsed.target}.`);
   }
   if (txn.toAgent !== agentDoc.name) {
@@ -1043,6 +1320,20 @@ async function resolveTransactionResponse(
         await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
         return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
       }
+    } else if (getService(item.item)) {
+      if (!canProvideService(proposer, item.item)) {
+        const note = `${proposer.name} can no longer provide ${item.item} service right now.`;
+        await ctx.db.patch(txn._id, { status: 'failed', resolvedTick: tick, resolvedDay: day, outcomeNote: note });
+        await setInteractionOutcomeByTransactionId(ctx, txn.txnId, {
+          status: 'failed',
+          resolvedTick: tick,
+          resolvedDay: day,
+          outcomeNote: note,
+        });
+        await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
+        await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
+        return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
+      }
     } else if ((proposerInv[item.item] ?? 0) < item.quantity) {
       const note = `${proposer.name} no longer has enough ${item.item}: need ${item.quantity}, have ${proposerInv[item.item] ?? 0}.`;
       await ctx.db.patch(txn._id, { status: 'failed', resolvedTick: tick, resolvedDay: day, outcomeNote: note });
@@ -1094,6 +1385,17 @@ async function resolveTransactionResponse(
     request,
     txn.kind,
   );
+  for (const item of offer) {
+    const service = getService(item.item);
+    if (!service) continue;
+    proposerApplied.newInventory = applyInventoryChanges(
+      proposerApplied.newInventory,
+      proposerApplied.newCoin,
+      service.consumes,
+      [],
+      txn.kind,
+    ).newInventory;
+  }
   const recipientApplied = applyInventoryChanges(
     agentDoc.inventory,
     agentDoc.coin,
@@ -1317,6 +1619,19 @@ export const commitAction = internalMutation({
       return recordFailedAction(ctx, agentDoc, agentName, parsed, tick, day, failNote);
     }
 
+    if (Array.isArray(worldValidation.consumes)) {
+      parsed.consumes = worldValidation.consumes;
+    }
+    if (Array.isArray(worldValidation.produces)) {
+      parsed.produces = worldValidation.produces;
+      if (!parsed.item && worldValidation.produces.length === 1) {
+        parsed.item = worldValidation.produces[0].item;
+      }
+    }
+    if (worldValidation.cropItem && !parsed.item) {
+      parsed.item = worldValidation.cropItem;
+    }
+
     const energyCost = EFFORT_COSTS[parsed.action] ?? 5;
 
     // ── Reputation gating ───────────────────────────────────────────────────
@@ -1404,23 +1719,6 @@ export const commitAction = internalMutation({
       });
     }
 
-    // Handle letter -- insert into rl_messages for delivery at current location
-    if (parsed.action === 'leave_message' && parsed.target && (parsed.text || parsed.message)) {
-      const locationDoc = await ctx.db
-        .query('rl_locations')
-        .withIndex('name', (q) => q.eq('name', agentDoc.location))
-        .unique();
-      await ctx.db.insert('rl_messages', {
-        fromAgent: agentName,
-        toAgent: parsed.target,
-        content: parsed.text ?? parsed.message ?? '',
-        status: 'unread',
-        deliveryLocationId: locationDoc?._id ?? undefined,
-        daySent: day,
-        tickSent: tick,
-      });
-    }
-
     // Apply movement
     let newLocation = agentDoc.location;
     if (parsed.action === 'move' && (parsed.location ?? parsed.target)) {
@@ -1463,7 +1761,7 @@ export const commitAction = internalMutation({
       : undefined;
 
     // Eating reduces hunger
-    const eatingHungerReduction = parsed.action === 'eat' ? 40 : 0;
+    const eatingHungerReduction = parsed.action === 'eat' ? hungerRestoreFor(parsed.item) : 0;
     const finalHunger = Math.max(0, newHunger - eatingHungerReduction);
 
     // In-person commerce is two-phase: create an offer now, settle only on explicit acceptance.
@@ -1493,6 +1791,38 @@ export const commitAction = internalMutation({
       );
     }
 
+    if (parsed.action === 'pay' || parsed.action === 'give') {
+      if (!parsed.target) {
+        return recordFailedAction(ctx, agentDoc, agentName, parsed, tick, day, `${parsed.action} requires a target agent.`);
+      }
+      const targetName = parsed.target;
+      const recipient = await ctx.db
+        .query('rl_agents')
+        .withIndex('name', (q) => q.eq('name', targetName))
+        .unique();
+      if (!recipient) {
+        return recordFailedAction(ctx, agentDoc, agentName, parsed, tick, day, `Target agent not found: ${targetName}.`);
+      }
+
+      const recipientProduces =
+        parsed.action === 'pay'
+          ? [{ item: 'coin', quantity: parsed.amount ?? 0 }]
+          : parsed.item && typeof parsed.quantity === 'number'
+          ? [{ item: parsed.item, quantity: parsed.quantity }]
+          : [];
+
+      const recipientApplied = transferToRecipient(
+        recipient.inventory,
+        recipient.coin,
+        recipientProduces,
+      );
+
+      await ctx.db.patch(recipient._id, {
+        inventory: recipientApplied.newInventory,
+        coin: recipientApplied.newCoin,
+      });
+    }
+
     if (parsed.action === 'talk') {
       return createTalkInteraction(
         ctx,
@@ -1504,6 +1834,61 @@ export const commitAction = internalMutation({
         newHealth,
         finalHunger,
       );
+    }
+
+    if (parsed.action === 'plant' && worldValidation.fieldKey) {
+      const field = await ctx.db
+        .query('rl_fields')
+        .withIndex('fieldKey', (q: any) => q.eq('fieldKey', worldValidation.fieldKey!))
+        .unique();
+      if (field) {
+        await ctx.db.patch(field._id, {
+          cropItem: worldValidation.cropItem ?? parsed.item ?? 'grain',
+          stage: 'growing',
+          readyTick: tick + 4,
+        });
+      }
+    }
+
+    if (parsed.action === 'water' && worldValidation.fieldKey) {
+      const field = await ctx.db
+        .query('rl_fields')
+        .withIndex('fieldKey', (q: any) => q.eq('fieldKey', worldValidation.fieldKey!))
+        .unique();
+      if (field && typeof field.readyTick === 'number') {
+        await ctx.db.patch(field._id, {
+          readyTick: Math.max(tick + 1, field.readyTick - 1),
+        });
+      }
+    }
+
+    if (parsed.action === 'harvest' && worldValidation.fieldKey) {
+      const field = await ctx.db
+        .query('rl_fields')
+        .withIndex('fieldKey', (q: any) => q.eq('fieldKey', worldValidation.fieldKey!))
+        .unique();
+      if (field) {
+        await ctx.db.patch(field._id, {
+          cropItem: null,
+          stage: 'fallow',
+          readyTick: null,
+        });
+      }
+    }
+
+    if (parsed.action === 'gather' && worldValidation.herbPatchKey) {
+      const patch = await ctx.db
+        .query('rl_herb_patches')
+        .withIndex('patchKey', (q: any) => q.eq('patchKey', worldValidation.herbPatchKey!))
+        .unique();
+      if (patch) {
+        const gatheredQty = Array.isArray(worldValidation.produces) && worldValidation.produces.length > 0
+          ? worldValidation.produces[0].quantity
+          : 1;
+        await ctx.db.patch(patch._id, {
+          available: Math.max(0, patch.available - gatheredQty),
+        });
+      }
     }
 
     if (parsed.action !== 'wait') {
@@ -1535,7 +1920,7 @@ export const commitAction = internalMutation({
     });
 
     // Recalculate market prices if inventory changed
-    if (['buy', 'sell', 'craft', 'give', 'trade', 'eat'].includes(parsed.action)) {
+    if (['buy', 'sell', 'craft', 'smelt', 'brew', 'give', 'trade', 'eat', 'plant', 'harvest', 'gather'].includes(parsed.action)) {
       await ctx.scheduler.runAfter(0, internal.rocklaw.priceEngine.recalculate, {});
     }
 

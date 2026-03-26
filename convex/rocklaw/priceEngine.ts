@@ -4,6 +4,7 @@
  */
 
 import { internalMutation } from '../_generated/server';
+import { demandPressureForItem } from './economy';
 
 // Base prices and village-wide supply thresholds
 const ITEM_CONFIG: Record<string, { basePrice: number; criticalSupply: number; moderateSupply: number }> = {
@@ -11,12 +12,14 @@ const ITEM_CONFIG: Record<string, { basePrice: number; criticalSupply: number; m
   coal:      { basePrice: 4,  criticalSupply: 8,  moderateSupply: 20 },
   grain:     { basePrice: 8,  criticalSupply: 10, moderateSupply: 30 },
   bread:     { basePrice: 4,  criticalSupply: 5,  moderateSupply: 15 },
+  ale:       { basePrice: 5,  criticalSupply: 3,  moderateSupply: 10 },
   horseshoe: { basePrice: 14, criticalSupply: 2,  moderateSupply: 8  },
   medicine:  { basePrice: 12, criticalSupply: 3,  moderateSupply: 10 },
   tools:     { basePrice: 18, criticalSupply: 2,  moderateSupply: 6  },
   axe:       { basePrice: 20, criticalSupply: 1,  moderateSupply: 5  },
   knife:     { basePrice: 10, criticalSupply: 2,  moderateSupply: 8  },
   herbs:     { basePrice: 6,  criticalSupply: 3,  moderateSupply: 12 },
+  meal:      { basePrice: 8,  criticalSupply: 2,  moderateSupply: 10 },
 };
 
 async function readSysFloat(ctx: any, systemName: string, key: string, def: number) {
@@ -33,6 +36,10 @@ export const recalculate = internalMutation({
   args: {},
   handler: async (ctx) => {
     const agents = await ctx.db.query('rl_agents').collect();
+    const events = await ctx.db
+      .query('rl_world_events')
+      .withIndex('active', (q) => q.eq('active', true))
+      .collect();
     const now = Date.now();
 
     // Live system knobs
@@ -58,6 +65,9 @@ export const recalculate = internalMutation({
         multiplier = (1.0 + (1.0 - ratio) * 1.0) * scarcityMultiplier;
         shortageLevel = 'moderate';
       }
+
+      const demandMultiplier = demandPressureForItem(item, agents, events);
+      multiplier *= demandMultiplier;
 
       const effectiveBasePrice = Math.round(config.basePrice * basePriceMultiplier);
       const newPrice = Math.round(effectiveBasePrice * multiplier);

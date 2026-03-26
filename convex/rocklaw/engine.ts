@@ -71,6 +71,12 @@ export const runRocklawTick = internalAction({
     const { tick, day, timeOfDay } = next;
     console.log(`[engine] clock tick ${tick} — Day ${day}, ${timeOfDay}`);
 
+    await ctx.runMutation((internal as any).rocklaw.economy.advanceEconomicState, {
+      tick,
+      day,
+      timeOfDay,
+    });
+
     // Clear any stale busy flags
     await ctx.runMutation(internal.rocklaw.engine.clearStaleBusy, { tick });
 
@@ -178,6 +184,12 @@ export const manualTick = action({
 
     const { tick, day, timeOfDay } = next;
     console.log(`[engine] manualTick — tick ${tick}, Day ${day}, ${timeOfDay}`);
+
+    await ctx.runMutation((internal as any).rocklaw.economy.advanceEconomicState, {
+      tick,
+      day,
+      timeOfDay,
+    });
 
     if (agentName) {
       await ctx.runAction(internal.rocklaw.bridgeNode.tickAgent, { agentName, _manual: true });

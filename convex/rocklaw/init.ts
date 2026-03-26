@@ -6,6 +6,7 @@
 import { mutation, internalMutation } from '../_generated/server';
 import { internal } from '../_generated/api';
 import { v } from 'convex/values';
+import { SEEDED_FIELDS, SEEDED_HERB_PATCHES } from './economy';
 
 // Agent roster with initial state
 const AGENT_ROSTER = [
@@ -128,6 +129,31 @@ export const initRocklaw = mutation({
       }
     }
 
+    // Production state
+    for (const field of SEEDED_FIELDS) {
+      const existingField = await ctx.db
+        .query('rl_fields')
+        .withIndex('fieldKey', (q) => q.eq('fieldKey', field.fieldKey))
+        .unique();
+      if (existingField) {
+        await ctx.db.patch(existingField._id, field);
+      } else {
+        await ctx.db.insert('rl_fields', field);
+      }
+    }
+
+    for (const patch of SEEDED_HERB_PATCHES) {
+      const existingPatch = await ctx.db
+        .query('rl_herb_patches')
+        .withIndex('patchKey', (q) => q.eq('patchKey', patch.patchKey))
+        .unique();
+      if (existingPatch) {
+        await ctx.db.patch(existingPatch._id, patch);
+      } else {
+        await ctx.db.insert('rl_herb_patches', patch);
+      }
+    }
+
     // Agents
     for (const agentData of AGENT_ROSTER) {
       const existingAgent = await ctx.db
@@ -182,6 +208,8 @@ export const initRocklaw = mutation({
 
 async function clearRocklawTables(ctx: any) {
   await deleteAll(ctx, 'rl_social_knowledge');
+  await deleteAll(ctx, 'rl_fields');
+  await deleteAll(ctx, 'rl_herb_patches');
   await deleteAll(ctx, 'rl_interactions');
   await deleteAll(ctx, 'rl_transactions');
   await deleteAll(ctx, 'rl_messages');

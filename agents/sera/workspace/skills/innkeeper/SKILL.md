@@ -13,10 +13,7 @@ Do not invent actions like `innkeeper`.
   Example JSON: `{"action":"sell","target":"Marcus Hale","item":"bread","quantity":2,"amount":6,"duration_ticks":1,"thought":"Move fresh stock while people are here."}`
 - `pay` / `give`: settle small obligations directly.
   Example JSON: `{"action":"pay","target":"Cora","amount":2,"duration_ticks":1}`
-- `eavesdrop`: capture something overheard in the room.
-  Example JSON: `{"action":"eavesdrop","text":"Marcus is quietly trying to secure iron ore before prices rise.","duration_ticks":1}`
-- `leave_message`: pass along lodging or meeting information.
-  Example JSON: `{"action":"leave_message","target":"Old Rook","text":"There is food waiting for you at the inn if you want it.","duration_ticks":1}`
+- `talk`: pass along lodging or meeting information.
 
 ## Working style
 

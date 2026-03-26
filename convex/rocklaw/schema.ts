@@ -144,9 +144,33 @@ export const rocklawTables = {
     lastSeenDay: v.number(),
     lastSeenTick: v.number(),
     lastSeenLocation: v.string(),
-  })
+    })
     .index('observer_subject', ['observerAgent', 'subjectAgent'])
     .index('observer', ['observerAgent']),
+
+  // Field lifecycle state for grounded farm production.
+  rl_fields: defineTable({
+    fieldKey: v.string(),
+    location: v.string(),
+    cropItem: v.optional(v.union(v.string(), v.null())),
+    stage: v.union(v.literal('fallow'), v.literal('growing'), v.literal('ready')),
+    readyTick: v.optional(v.union(v.number(), v.null())),
+  })
+    .index('fieldKey', ['fieldKey'])
+    .index('location', ['location']),
+
+  // Renewable herb supply that powers gathering and brewing.
+  rl_herb_patches: defineTable({
+    patchKey: v.string(),
+    location: v.string(),
+    herbItem: v.string(),
+    available: v.number(),
+    maxAvailable: v.number(),
+    regenPerDay: v.number(),
+    lastRegenDay: v.number(),
+  })
+    .index('patchKey', ['patchKey'])
+    .index('location', ['location']),
 
   // Village locations with message boards.
   rl_locations: defineTable({

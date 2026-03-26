@@ -1,1 +1,0 @@
-First impression: Child. Seems harmless enough, but children can be distractions. Best to observe for now.
