@@ -20,6 +20,8 @@ export type RocklawAction = {
   target?: string | null;
   location?: string | null;
   text?: string;
+  intent?: string | null;
+  offer_ref?: string | null;
   topic?: string;
   item?: string | null;
   quantity?: number | null;
@@ -81,6 +83,37 @@ const EFFORT_COSTS: Record<string, number> = {
   recall: 0,
   eat: 0, rest: -40, sleep: -100,
 };
+
+const LIVE_CHAT_SCENE_ACTIONS = new Set([
+  'chat',
+  'leave_chat',
+]);
+
+const CHAT_COMMERCE_INTENTS = new Set([
+  'buy',
+  'sell',
+  'trade',
+  'give',
+  'pay',
+  'accept_transaction',
+  'reject_transaction',
+]) as Set<string>;
+
+function sceneOnlyActionNote(intent: string) {
+  return `chat intent "${intent}" is only valid inside a live chat with the other agent. Start or continue a chat first.`;
+}
+
+function normaliseIntent(value: unknown): string | null | undefined {
+  const normalized = normaliseScalarString(value);
+  if (normalized === undefined || normalized === null) return normalized;
+  const lowered = normalized.toLowerCase();
+  return CHAT_COMMERCE_INTENTS.has(lowered) ? lowered : normalized;
+}
+
+function getChatIntent(parsed: RocklawAction): string | null {
+  const intent = typeof parsed.intent === 'string' ? parsed.intent.trim().toLowerCase() : '';
+  return CHAT_COMMERCE_INTENTS.has(intent) ? intent : null;
+}
 
 // ── Inventory helpers ─────────────────────────────────────────────────────────
 
@@ -171,15 +204,15 @@ function normaliseNumber(value: unknown): number | null | undefined {
 }
 
 function normaliseAction(parsed: RocklawAction): RocklawAction {
-  const parsedRecord = parsed as RocklawAction & { intent?: unknown };
   const action = parsed.action;
   const target = normaliseScalarString(parsed.target);
   const location = normaliseScalarString(parsed.location);
   const item = normaliseScalarString(parsed.item);
+  const intent = normaliseIntent(parsed.intent);
+  const offerRef = normaliseScalarString(parsed.offer_ref);
   const text = typeof parsed.text === 'string' ? parsed.text.trim() : undefined;
   const topic = typeof parsed.topic === 'string' ? parsed.topic.trim() : undefined;
-  const legacyIntent = typeof parsedRecord.intent === 'string' ? parsedRecord.intent.trim() : undefined;
-  const thought = typeof parsed.thought === 'string' ? parsed.thought.trim() : legacyIntent;
+  const thought = typeof parsed.thought === 'string' ? parsed.thought.trim() : undefined;
   const quantity = normaliseNumber(parsed.quantity);
   const amount = normaliseNumber(parsed.amount);
   const consumes = dedupeStringList(
@@ -200,6 +233,8 @@ function normaliseAction(parsed: RocklawAction): RocklawAction {
     target,
     location,
     text,
+    intent,
+    offer_ref: offerRef,
     topic,
     thought,
     item,
@@ -216,24 +251,28 @@ function normaliseAction(parsed: RocklawAction): RocklawAction {
   if ((action === 'chat' || action === 'say' || action === 'message' || action === 'talk' || action === 'write' || action === 'pray' || action === 'eavesdrop') && !normalized.text && parsed.message) {
     normalized.text = parsed.message;
   }
-  if ((action === 'craft' || action === 'repair' || action === 'smelt' || action === 'eat' || action === 'buy' || action === 'sell' || action === 'give') && !normalized.item && target) {
+  if ((action === 'craft' || action === 'repair' || action === 'smelt' || action === 'eat') && !normalized.item && target) {
     normalized.item = target;
   }
-  if ((action === 'buy' || action === 'sell' || action === 'give' || action === 'eat' || action === 'craft' || action === 'smelt') && normalized.quantity == null && normalized.item) {
+  if ((action === 'eat' || action === 'craft' || action === 'smelt') && normalized.quantity == null && normalized.item) {
     normalized.quantity = 1;
   }
-  if (action === 'pay' && normalized.amount == null && parsed.consumes?.length) {
+  if (action === 'chat' && (intent === 'buy' || intent === 'sell' || intent === 'give') && normalized.quantity == null && normalized.item) {
+    normalized.quantity = 1;
+  }
+  if (action === 'chat' && intent === 'pay' && normalized.amount == null && parsed.consumes?.length) {
     const consumed = parseItemList(parsed.consumes);
     if (typeof consumed.coin === 'number') normalized.amount = consumed.coin;
   }
-  if (action === 'trade') {
+  if (action === 'chat' && intent === 'trade') {
     normalized.offer = Array.isArray(parsed.offer) ? normaliseEntityList(parsed.offer) : undefined;
     normalized.request = Array.isArray(parsed.request) ? normaliseEntityList(parsed.request) : undefined;
   }
 
   const hasInventoryDelta = normalized.consumes.length > 0 || normalized.produces.length > 0;
   if (!hasInventoryDelta) {
-    switch (action) {
+    const effectiveAction = action === 'chat' ? intent : action;
+    switch (effectiveAction) {
       case 'pay':
         if (typeof normalized.amount === 'number' && normalized.amount > 0) {
           normalized.consumes = [{ item: 'coin', quantity: normalized.amount }];
@@ -533,6 +572,90 @@ async function createChatMessage(
   return threadKey;
 }
 
+async function createSceneSystemMessage(
+  ctx: any,
+  agentA: string,
+  agentB: string,
+  text: string,
+  tick: number,
+  day: number,
+) {
+  const threadKey = createChatThreadKey(agentA, agentB);
+  await ctx.db.insert('rl_chat_messages', {
+    threadKey,
+    fromAgent: '[system]',
+    toAgent: agentB,
+    text,
+    deliveryMode: 'live',
+    status: 'unread',
+    sentTick: tick,
+    sentDay: day,
+  });
+}
+
+function buildSceneVisibleActionText(parsed: RocklawAction, partner: string): string {
+  const explicit = (parsed.text ?? parsed.message ?? '').trim();
+  if (explicit) return explicit;
+  switch (parsed.action === 'chat' ? getChatIntent(parsed) : parsed.action) {
+    case 'buy':
+      return `I want to buy ${parsed.quantity ?? 1} ${parsed.item ?? 'item'} from you for ${parsed.amount ?? 0} coin.`;
+    case 'sell':
+      return `I can sell you ${parsed.quantity ?? 1} ${parsed.item ?? 'item'} for ${parsed.amount ?? 0} coin.`;
+    case 'trade':
+      return `I want to propose a trade with you.`;
+    case 'give':
+      return `I am giving you ${parsed.quantity ?? 1} ${parsed.item ?? 'item'}.`;
+    case 'pay':
+      return `I am paying you ${parsed.amount ?? 0} coin.`;
+    case 'accept_transaction':
+      return `I accept your offer, ${partner}.`;
+    case 'reject_transaction':
+      return `I must decline your offer, ${partner}.`;
+    default:
+      return '';
+  }
+}
+
+async function appendLiveSceneActionMessage(
+  ctx: any,
+  agentDoc: any,
+  parsed: RocklawAction,
+  tick: number,
+  day: number,
+  partnerOverride?: string,
+) {
+  const scene = await getLiveChatSceneForAgent(ctx, agentDoc.name);
+  if (!scene) return;
+  const partner = partnerOverride ?? getScenePartner(scene, agentDoc.name);
+  const text = buildSceneVisibleActionText(parsed, partner);
+  if (!text) return;
+  await markUnreadChatFromContactRead(ctx, agentDoc.name, partner, tick, day);
+  await createChatMessage(ctx, {
+    fromAgent: agentDoc.name,
+    toAgent: partner,
+    text,
+    deliveryMode: 'live',
+    tick,
+    day,
+  });
+}
+
+async function advanceLiveSceneTurn(
+  ctx: any,
+  agentName: string,
+  tick: number,
+  day: number,
+) {
+  const scene = await getLiveChatSceneForAgent(ctx, agentName);
+  if (!scene) return;
+  await ctx.db.patch(scene._id, {
+    nextSpeaker: getScenePartner(scene, agentName),
+    lastSpeaker: agentName,
+    lastActiveTick: tick,
+    lastActiveDay: day,
+  });
+}
+
 async function createLocalSpeechNotes(
   ctx: any,
   args: {
@@ -650,21 +773,54 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
     if (parsed.action === 'leave_chat') {
       return { ok: true };
     }
-    if (parsed.action !== 'chat') {
+    if (!LIVE_CHAT_SCENE_ACTIONS.has(parsed.action)) {
       return {
         ok: false,
-        note: `You are currently in a live chat with ${partner}. Only chat or leave_chat are allowed until you leave that scene.`,
+        note: `You are currently in a live chat with ${partner}. Only scene actions with that person are allowed until you leave the chat.`,
       };
     }
-    if (parsed.target !== partner) {
-      return {
-        ok: false,
-        note: `You are currently in a live chat with ${partner}. Continue chatting with them or use leave_chat.`,
-      };
-    }
-    if (typeof tick === 'number' && activeChatScene.openedTick === tick) {
+    if (parsed.action === 'chat') {
+      const chatIntent = getChatIntent(parsed);
+      if (parsed.target !== partner) {
+        return {
+          ok: false,
+          note: `You are currently in a live chat with ${partner}. Continue chatting with them or use leave_chat.`,
+        };
+      }
+      if (typeof tick === 'number' && activeChatScene.openedTick === tick) {
+        if (!(parsed.text ?? parsed.message)) {
+          return { ok: false, note: 'chat requires text.' };
+        }
+        return { ok: true };
+      }
+      if (activeChatScene.nextSpeaker !== agentDoc.name) {
+        return {
+          ok: false,
+          note: `It is ${partner}'s turn in your live chat. Wait for their reply or leave_chat.`,
+        };
+      }
       if (!(parsed.text ?? parsed.message)) {
         return { ok: false, note: 'chat requires text.' };
+      }
+      if (chatIntent === 'buy' || chatIntent === 'sell' || chatIntent === 'give') {
+        if (!parsed.item) return { ok: false, note: `chat intent "${chatIntent}" requires an item.` };
+        if (!parsed.quantity || parsed.quantity < 1) return { ok: false, note: `chat intent "${chatIntent}" requires a positive quantity.` };
+      }
+      if (chatIntent === 'buy' || chatIntent === 'sell' || chatIntent === 'pay') {
+        if (typeof parsed.amount !== 'number' || parsed.amount <= 0) {
+          return { ok: false, note: `chat intent "${chatIntent}" requires a positive amount.` };
+        }
+      }
+      if (chatIntent === 'trade') {
+        if (!Array.isArray(parsed.offer) || parsed.offer.length === 0) {
+          return { ok: false, note: 'chat intent "trade" requires a non-empty offer.' };
+        }
+        if (!Array.isArray(parsed.request) || parsed.request.length === 0) {
+          return { ok: false, note: 'chat intent "trade" requires a non-empty request.' };
+        }
+      }
+      if ((chatIntent === 'accept_transaction' || chatIntent === 'reject_transaction') && !parsed.offer_ref) {
+        return { ok: false, note: `chat intent "${chatIntent}" requires offer_ref.` };
       }
       return { ok: true };
     }
@@ -674,10 +830,6 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
         note: `It is ${partner}'s turn in your live chat. Wait for their reply or leave_chat.`,
       };
     }
-    if (!(parsed.text ?? parsed.message)) {
-      return { ok: false, note: 'chat requires text.' };
-    }
-    return { ok: true };
   }
 
   if (Array.isArray(parsed.consumes) && parsed.consumes.length > 0) {
@@ -705,6 +857,7 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
       return { ok: true, resolvedLocation: locationDoc.name };
     }
     case 'chat': {
+      const chatIntent = getChatIntent(parsed);
       if (!parsed.target) {
         return { ok: false, note: 'chat requires a target agent. Use a known person from CHAT.md. Chats are one-to-one only.' };
       }
@@ -719,85 +872,21 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
       if (!(parsed.text ?? parsed.message)) {
         return { ok: false, note: 'chat requires text.' };
       }
+      if (chatIntent && !visibleNow) {
+        return { ok: false, note: sceneOnlyActionNote(chatIntent) };
+      }
       return { ok: true };
     }
     case 'say':
       if (parsed.target) return { ok: false, note: 'say is local speech and does not take a target. Use chat for one-to-one communication.' };
       if (!(parsed.text ?? parsed.message)) return { ok: false, note: 'say requires text.' };
       return { ok: true };
-    case 'talk':
     case 'pay':
     case 'buy':
     case 'sell':
     case 'give':
-    case 'trade': {
-      if (!parsed.target) return { ok: false, note: `${parsed.action} requires a target agent.` };
-      if (parsed.target === agentDoc.name) return { ok: false, note: `${parsed.action} requires another agent, not yourself.` };
-      const targetCheck = await targetAgentAtSameLocation(ctx, agentDoc.location, parsed.target);
-      if (!targetCheck.ok) return { ok: false, note: targetCheck.note ?? `${parsed.target} is not available here.` };
-
-      if ((parsed.action === 'buy' || parsed.action === 'sell' || parsed.action === 'give') && !parsed.item) {
-        return { ok: false, note: `${parsed.action} requires an item.` };
-      }
-      if ((parsed.action === 'buy' || parsed.action === 'sell' || parsed.action === 'give') && (!parsed.quantity || parsed.quantity < 1)) {
-        return { ok: false, note: `${parsed.action} requires a positive quantity.` };
-      }
-      if (parsed.action === 'pay' && (!parsed.amount || parsed.amount <= 0)) {
-        return { ok: false, note: 'Pay requires a positive amount.' };
-      }
-      if (parsed.action === 'buy') {
-        if (typeof parsed.amount !== 'number' || parsed.amount <= 0) {
-          return { ok: false, note: 'Buy requires a positive amount.' };
-        }
-        if (agentDoc.coin < parsed.amount) {
-          return { ok: false, note: `Not enough coin: need ${parsed.amount}c, have ${agentDoc.coin}c.` };
-        }
-        if (parsed.item === 'meal') {
-          if (targetCheck.targetAgent.role !== 'Innkeeper' || targetCheck.targetAgent.location !== 'inn') {
-            return { ok: false, note: 'Meals can only be bought from the innkeeper at the inn.' };
-          }
-          if (!canProvideService(targetCheck.targetAgent, 'meal')) {
-            return { ok: false, note: 'Meal service is unavailable right now because the inn lacks stock.' };
-          }
-        }
-      }
-      if (parsed.action === 'sell') {
-        if (typeof parsed.amount !== 'number' || parsed.amount <= 0) {
-          return { ok: false, note: 'Sell requires a positive amount.' };
-        }
-        if (parsed.item === 'meal') {
-          if (!canProvideService(agentDoc, 'meal')) {
-            return { ok: false, note: 'Meal service is unavailable here until you have bread and ale at the inn.' };
-          }
-        } else if (!inventoryHasAtLeast(agentDoc.inventory, parsed.item!, parsed.quantity!)) {
-          const sellerInv = JSON.parse(agentDoc.inventory) as Record<string, number>;
-          return {
-            ok: false,
-            note: `Not enough ${parsed.item}: need ${parsed.quantity}, have ${sellerInv[parsed.item!] ?? 0}.`,
-          };
-        }
-      }
-      if (parsed.action === 'trade') {
-        if (!Array.isArray(parsed.offer) || parsed.offer.length === 0) {
-          return { ok: false, note: 'Trade requires a non-empty offer.' };
-        }
-        if (!Array.isArray(parsed.request) || parsed.request.length === 0) {
-          return { ok: false, note: 'Trade requires a non-empty request.' };
-        }
-        const proposerOffer = parseItemList(parsed.offer);
-        for (const [item, qty] of Object.entries(proposerOffer)) {
-          if (item === 'coin') {
-            if (agentDoc.coin < qty) {
-              return { ok: false, note: `Not enough coin: need ${qty}c, have ${agentDoc.coin}c.` };
-            }
-          } else if (!inventoryHasAtLeast(agentDoc.inventory, item, qty)) {
-            const proposerInv = JSON.parse(agentDoc.inventory) as Record<string, number>;
-            return { ok: false, note: `Not enough ${item}: need ${qty}, have ${proposerInv[item] ?? 0}.` };
-          }
-        }
-      }
-      return { ok: true };
-    }
+    case 'trade':
+      return { ok: false, note: `Use chat with intent:"${parsed.action}" inside a live chat scene instead of the top-level ${parsed.action} action.` };
     case 'craft':
     case 'smelt':
     case 'brew': {
@@ -886,31 +975,7 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
       return { ok: true };
     case 'accept_transaction':
     case 'reject_transaction':
-      if (!parsed.target) return { ok: false, note: `${parsed.action} requires a pending offer reference.` };
-      {
-        const txn = await resolvePendingTransactionReference(ctx, agentDoc.name, parsed.target);
-        if (!txn) {
-          const referencedTxn = await findTransactionByTargetReference(ctx, parsed.target);
-          if (referencedTxn?.fromAgent === agentDoc.name) {
-            return { ok: false, note: 'You cannot accept or reject your own offer. Wait for the other person or make a new offer.' };
-          }
-          if (referencedTxn?.status && referencedTxn.status !== 'pending') {
-            return { ok: false, note: `That offer is no longer pending (${referencedTxn.status}).` };
-          }
-          return { ok: false, note: `Unknown pending offer: ${parsed.target}.` };
-        }
-        const proposer = await ctx.db
-          .query('rl_agents')
-          .withIndex('name', (q: any) => q.eq('name', txn.fromAgent))
-          .unique();
-        if (!proposer) {
-          return { ok: false, note: 'The other party no longer exists.' };
-        }
-        if (proposer.location !== agentDoc.location) {
-          return { ok: false, note: `${proposer.name} is no longer here. In-person offers can only be answered while the local scene is still live.` };
-        }
-      }
-      return { ok: true };
+      return { ok: false, note: `Use chat with intent:"${parsed.action}" and offer_ref inside a live chat scene instead of the top-level ${parsed.action} action.` };
     case 'leave_chat':
       return { ok: false, note: 'You are not in a live chat right now.' };
     case 'wait':
@@ -949,6 +1014,106 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
     default:
       return { ok: true };
   }
+}
+
+async function validateChatIntentSideEffect(
+  ctx: any,
+  agentDoc: any,
+  parsed: RocklawAction,
+  intent: string,
+): Promise<WorldValidation> {
+  const scene = await getLiveChatSceneForAgent(ctx, agentDoc.name);
+  if (!scene) return { ok: false, note: sceneOnlyActionNote(intent) };
+  const partner = getScenePartner(scene, agentDoc.name);
+  if (parsed.target !== partner) {
+    return { ok: false, note: `You are currently in a live chat with ${partner}. Direct commerce actions must target that same person until you leave the scene.` };
+  }
+
+  if (intent === 'accept_transaction' || intent === 'reject_transaction') {
+    if (!parsed.offer_ref) return { ok: false, note: `chat intent "${intent}" requires offer_ref.` };
+    const txn = await resolvePendingTransactionReference(ctx, agentDoc.name, parsed.offer_ref);
+    if (!txn) {
+      const referencedTxn = await findTransactionByTargetReference(ctx, parsed.offer_ref);
+      if (referencedTxn?.fromAgent === agentDoc.name) {
+        return { ok: false, note: 'You cannot accept or reject your own offer. Wait for the other person or make a new offer.' };
+      }
+      if (referencedTxn?.status && referencedTxn.status !== 'pending') {
+        return { ok: false, note: `That offer is no longer pending (${referencedTxn.status}).` };
+      }
+      return { ok: false, note: `Unknown pending offer: ${parsed.offer_ref}.` };
+    }
+    const proposer = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q: any) => q.eq('name', txn.fromAgent))
+      .unique();
+    if (!proposer) return { ok: false, note: 'The other party no longer exists.' };
+    if (proposer.name !== partner) {
+      return { ok: false, note: `You can only respond to offers from ${partner} while this live chat is active.` };
+    }
+    if (proposer.location !== agentDoc.location) {
+      return { ok: false, note: `${proposer.name} is no longer here. In-person offers can only be answered while the local scene is still live.` };
+    }
+    return { ok: true };
+  }
+
+  const targetCheck = await targetAgentAtSameLocation(ctx, agentDoc.location, partner);
+  if (!targetCheck.ok) return { ok: false, note: targetCheck.note ?? `${partner} is not available here.` };
+
+  if ((intent === 'buy' || intent === 'sell' || intent === 'give') && !parsed.item) {
+    return { ok: false, note: `${intent} requires an item.` };
+  }
+  if ((intent === 'buy' || intent === 'sell' || intent === 'give') && (!parsed.quantity || parsed.quantity < 1)) {
+    return { ok: false, note: `${intent} requires a positive quantity.` };
+  }
+  if (intent === 'pay' && (!parsed.amount || parsed.amount <= 0)) {
+    return { ok: false, note: 'Pay requires a positive amount.' };
+  }
+  if (intent === 'buy') {
+    if (typeof parsed.amount !== 'number' || parsed.amount <= 0) {
+      return { ok: false, note: 'Buy requires a positive amount.' };
+    }
+    if (agentDoc.coin < parsed.amount) {
+      return { ok: false, note: `Not enough coin: need ${parsed.amount}c, have ${agentDoc.coin}c.` };
+    }
+    if (parsed.item === 'meal') {
+      if (targetCheck.targetAgent.role !== 'Innkeeper' || targetCheck.targetAgent.location !== 'inn') {
+        return { ok: false, note: 'Meals can only be bought from the innkeeper at the inn.' };
+      }
+      if (!canProvideService(targetCheck.targetAgent, 'meal')) {
+        return { ok: false, note: 'Meal service is unavailable right now because the inn lacks stock.' };
+      }
+    }
+  }
+  if (intent === 'sell') {
+    if (typeof parsed.amount !== 'number' || parsed.amount <= 0) {
+      return { ok: false, note: 'Sell requires a positive amount.' };
+    }
+    if (parsed.item === 'meal') {
+      if (!canProvideService(agentDoc, 'meal')) {
+        return { ok: false, note: 'Meal service is unavailable here until you have bread and ale at the inn.' };
+      }
+    } else if (!inventoryHasAtLeast(agentDoc.inventory, parsed.item!, parsed.quantity!)) {
+      const sellerInv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+      return {
+        ok: false,
+        note: `Not enough ${parsed.item}: need ${parsed.quantity}, have ${sellerInv[parsed.item!] ?? 0}.`,
+      };
+    }
+  }
+  if (intent === 'trade') {
+    if (!Array.isArray(parsed.offer) || parsed.offer.length === 0) return { ok: false, note: 'Trade requires a non-empty offer.' };
+    if (!Array.isArray(parsed.request) || parsed.request.length === 0) return { ok: false, note: 'Trade requires a non-empty request.' };
+    const proposerOffer = parseItemList(parsed.offer);
+    for (const [item, qty] of Object.entries(proposerOffer)) {
+      if (item === 'coin') {
+        if (agentDoc.coin < qty) return { ok: false, note: `Not enough coin: need ${qty}c, have ${agentDoc.coin}c.` };
+      } else if (!inventoryHasAtLeast(agentDoc.inventory, item, qty)) {
+        const proposerInv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+        return { ok: false, note: `Not enough ${item}: need ${qty}, have ${proposerInv[item] ?? 0}.` };
+      }
+    }
+  }
+  return { ok: true };
 }
 
 async function recordFailedAction(
@@ -1393,6 +1558,33 @@ async function sendChatAction(
   };
 }
 
+function buildGenericSceneIntentFailure(intent: string | null) {
+  switch (intent) {
+    case 'give':
+    case 'pay':
+      return 'The attempted transfer did not go through.';
+    case 'accept_transaction':
+    case 'reject_transaction':
+      return 'The attempted response did not go through.';
+    case 'buy':
+    case 'sell':
+    case 'trade':
+      return 'The attempted offer did not go through.';
+    default:
+      return 'The attempted action did not go through.';
+  }
+}
+
+function cloneChatAsIntentAction(parsed: RocklawAction, action: string): RocklawAction {
+  return {
+    ...parsed,
+    action,
+    target: action === 'accept_transaction' || action === 'reject_transaction'
+      ? parsed.offer_ref ?? parsed.target ?? null
+      : parsed.target,
+  };
+}
+
 async function createPendingTransaction(
   ctx: any,
   agentDoc: any,
@@ -1469,6 +1661,7 @@ async function resolveTransactionResponse(
   newEnergy: number,
   newHealth: number,
   finalHunger: number,
+  options?: { skipSceneVisibleMessage?: boolean },
 ) {
   const txn = await resolvePendingTransactionReference(ctx, agentDoc.name, parsed.target!);
 
@@ -1574,6 +1767,9 @@ async function resolveTransactionResponse(
       busy: false,
       busyUntilTick: undefined,
     });
+    if (!options?.skipSceneVisibleMessage) {
+      await appendLiveSceneActionMessage(ctx, agentDoc, parsed, tick, day, proposer.name);
+    }
     await appendAgentHeartbeat(
       ctx,
       proposer.name,
@@ -1754,6 +1950,9 @@ async function resolveTransactionResponse(
     outcome: 'success',
     outcomeNote: `Accepted ${txn.kind} offer ${txn.txnId}.`,
   });
+  if (!options?.skipSceneVisibleMessage) {
+    await appendLiveSceneActionMessage(ctx, agentDoc, parsed, tick, day, proposer.name);
+  }
 
   await ctx.scheduler.runAfter(0, internal.rocklaw.priceEngine.recalculate, {});
   await ctx.scheduler.runAfter(0, internal.rocklaw.reputation.updateReputation, {
@@ -1818,10 +2017,27 @@ export const createLiveChatScene = internalMutation({
     agentB: v.string(),
     location: v.string(),
     nextSpeaker: v.string(),
+    openingSpeaker: v.optional(v.string()),
+    openingText: v.optional(v.string()),
+    interruptedSpeaker: v.optional(v.string()),
+    interruptedText: v.optional(v.string()),
+    interruptedActionJson: v.optional(v.string()),
     tick: v.number(),
     day: v.number(),
   },
-  handler: async (ctx, { agentA, agentB, location, nextSpeaker, tick, day }) => {
+  handler: async (ctx, {
+    agentA,
+    agentB,
+    location,
+    nextSpeaker,
+    openingSpeaker,
+    openingText,
+    interruptedSpeaker,
+    interruptedText,
+    interruptedActionJson,
+    tick,
+    day,
+  }) => {
     const existingA = await getLiveChatSceneForAgent(ctx, agentA);
     if (existingA) return existingA.sceneId;
     const existingB = await getLiveChatSceneForAgent(ctx, agentB);
@@ -1838,8 +2054,26 @@ export const createLiveChatScene = internalMutation({
       openedDay: day,
       lastActiveTick: tick,
       lastActiveDay: day,
+      openingSpeaker,
+      openingText,
+      interruptedSpeaker,
+      interruptedText,
+      interruptedActionJson,
+      interruptedContextPending: Boolean(interruptedSpeaker && interruptedText),
     });
     return sceneId;
+  },
+});
+
+export const consumeInterruptedChatContext = internalMutation({
+  args: { agentName: v.string() },
+  handler: async (ctx, { agentName }) => {
+    const scene = await getLiveChatSceneForAgent(ctx, agentName);
+    if (!scene || scene.interruptedSpeaker !== agentName || !scene.interruptedContextPending) return null;
+    await ctx.db.patch(scene._id, {
+      interruptedContextPending: false,
+    });
+    return scene.sceneId;
   },
 });
 
@@ -1916,7 +2150,7 @@ function entityListToItems(entries: unknown[] | undefined): TransactionItem[] {
 }
 
 function buildTransactionTerms(parsed: RocklawAction): { offer: TransactionItem[]; request: TransactionItem[] } {
-  switch (parsed.action) {
+  switch (parsed.action === 'chat' ? getChatIntent(parsed) : parsed.action) {
     case 'buy':
       return {
         offer: typeof parsed.amount === 'number' && parsed.amount > 0 ? [{ item: 'coin', quantity: parsed.amount }] : [],
@@ -2165,7 +2399,7 @@ export const commitAction = internalMutation({
 
     // In-person commerce is two-phase: create an offer now, settle only on explicit acceptance.
     if (parsed.action === 'buy' || parsed.action === 'sell' || parsed.action === 'trade') {
-      return createPendingTransaction(
+      const result = await createPendingTransaction(
         ctx,
         agentDoc,
         parsed,
@@ -2175,6 +2409,11 @@ export const commitAction = internalMutation({
         newHealth,
         finalHunger,
       );
+      if (result?.outcome === 'success') {
+        await appendLiveSceneActionMessage(ctx, agentDoc, parsed, tick, day, parsed.target ?? undefined);
+        await advanceLiveSceneTurn(ctx, agentName, tick, day);
+      }
+      return result;
     }
 
     if (parsed.action === 'leave_chat') {
@@ -2233,7 +2472,7 @@ export const commitAction = internalMutation({
     }
 
     if (parsed.action === 'accept_transaction' || parsed.action === 'reject_transaction') {
-      return resolveTransactionResponse(
+      const result = await resolveTransactionResponse(
         ctx,
         agentDoc,
         parsed,
@@ -2243,9 +2482,144 @@ export const commitAction = internalMutation({
         newHealth,
         finalHunger,
       );
+      if (result?.outcome === 'success') {
+        await advanceLiveSceneTurn(ctx, agentName, tick, day);
+      }
+      return result;
     }
 
     if (parsed.action === 'chat') {
+      const chatIntent = getChatIntent(parsed);
+      if (chatIntent && chatDeliveryOverride === 'live') {
+        const partner = parsed.target!;
+        await markUnreadChatFromContactRead(ctx, agentDoc.name, partner, tick, day);
+        await createChatMessage(ctx, {
+          fromAgent: agentDoc.name,
+          toAgent: partner,
+          text: parsed.text ?? parsed.message ?? '',
+          deliveryMode: 'live',
+          tick,
+          day,
+        });
+
+        const commerceParsed = cloneChatAsIntentAction(parsed, chatIntent);
+        const sideEffectValidation = await validateChatIntentSideEffect(ctx, agentDoc, commerceParsed, chatIntent);
+        if (!sideEffectValidation.ok) {
+          await createSceneSystemMessage(
+            ctx,
+            agentDoc.name,
+            partner,
+            buildGenericSceneIntentFailure(chatIntent),
+            tick,
+            day,
+          );
+          await ctx.db.insert('rl_actions_log', {
+            agentName,
+            action: 'chat',
+            target: partner,
+            location: agentDoc.location,
+            message: parsed.text ?? parsed.message,
+            tick,
+            day,
+            outcome: 'failed',
+            outcomeNote: sideEffectValidation.note,
+          });
+          await ctx.db.patch(agentDoc._id, {
+            energy: newEnergy,
+            health: newHealth,
+            hunger: finalHunger,
+            busy: false,
+            busyUntilTick: undefined,
+          });
+          await advanceLiveSceneTurn(ctx, agentName, tick, day);
+          return { outcome: 'failed', note: sideEffectValidation.note };
+        }
+
+        let result:
+          | { outcome?: string; note?: string }
+          | undefined;
+        if (chatIntent === 'buy' || chatIntent === 'sell' || chatIntent === 'trade') {
+          result = await createPendingTransaction(
+            ctx,
+            agentDoc,
+            commerceParsed,
+            tick,
+            day,
+            newEnergy,
+            newHealth,
+            finalHunger,
+          );
+        } else if (chatIntent === 'accept_transaction' || chatIntent === 'reject_transaction') {
+          result = await resolveTransactionResponse(
+            ctx,
+            agentDoc,
+            commerceParsed,
+            tick,
+            day,
+            newEnergy,
+            newHealth,
+            finalHunger,
+            { skipSceneVisibleMessage: true },
+          );
+        } else if (chatIntent === 'pay' || chatIntent === 'give') {
+          const recipient = await ctx.db
+            .query('rl_agents')
+            .withIndex('name', (q) => q.eq('name', partner))
+            .unique();
+          if (!recipient) {
+            await createSceneSystemMessage(ctx, agentDoc.name, partner, buildGenericSceneIntentFailure(chatIntent), tick, day);
+            await ctx.db.patch(agentDoc._id, {
+              energy: newEnergy,
+              health: newHealth,
+              hunger: finalHunger,
+              busy: false,
+              busyUntilTick: undefined,
+            });
+            await advanceLiveSceneTurn(ctx, agentName, tick, day);
+            return { outcome: 'failed', note: `Target agent not found: ${partner}.` };
+          }
+          const recipientProduces =
+            chatIntent === 'pay'
+              ? [{ item: 'coin', quantity: commerceParsed.amount ?? 0 }]
+              : commerceParsed.item && typeof commerceParsed.quantity === 'number'
+              ? [{ item: commerceParsed.item, quantity: commerceParsed.quantity }]
+              : [];
+          const recipientApplied = transferToRecipient(
+            recipient.inventory,
+            recipient.coin,
+            recipientProduces,
+          );
+          await ctx.db.patch(recipient._id, {
+            inventory: recipientApplied.newInventory,
+            coin: recipientApplied.newCoin,
+          });
+          await ctx.db.insert('rl_actions_log', {
+            agentName,
+            action: chatIntent,
+            target: partner,
+            location: agentDoc.location,
+            message: parsed.text ?? parsed.message,
+            tick,
+            day,
+            outcome: 'success',
+            outcomeNote: `${chatIntent} completed in live chat.`,
+          });
+          await ctx.db.patch(agentDoc._id, {
+            energy: newEnergy,
+            health: newHealth,
+            hunger: finalHunger,
+            busy: false,
+            busyUntilTick: undefined,
+          });
+          result = { outcome: 'success', note: `${chatIntent} completed with ${partner}.` };
+        }
+
+        if (result?.outcome === 'success') {
+          await advanceLiveSceneTurn(ctx, agentName, tick, day);
+        }
+        return result ?? { outcome: 'success', note: `Live chat sent to ${partner}.` };
+      }
+
       const result = await sendChatAction(
         ctx,
         agentDoc,
@@ -2259,15 +2633,7 @@ export const commitAction = internalMutation({
         chatDeferredReason,
       );
       if ((chatDeliveryOverride === 'live') && result?.outcome === 'success') {
-        const scene = await getLiveChatSceneForAgent(ctx, agentName);
-        if (scene) {
-          await ctx.db.patch(scene._id, {
-            nextSpeaker: getScenePartner(scene, agentName),
-            lastSpeaker: agentName,
-            lastActiveTick: tick,
-            lastActiveDay: day,
-          });
-        }
+        await advanceLiveSceneTurn(ctx, agentName, tick, day);
       }
       return result;
     }
@@ -2313,6 +2679,8 @@ export const commitAction = internalMutation({
         inventory: recipientApplied.newInventory,
         coin: recipientApplied.newCoin,
       });
+      await appendLiveSceneActionMessage(ctx, agentDoc, parsed, tick, day, recipient.name);
+      await advanceLiveSceneTurn(ctx, agentName, tick, day);
     }
 
     if (parsed.action === 'talk') {

@@ -208,19 +208,51 @@ export const manualTick = action({
     }
 
     for (const scene of liveScenes) {
-      const speaker = scene.nextSpeaker;
-      const partner = scene.agentA === speaker ? scene.agentB : scene.agentA;
+      const currentScene = await ctx.runQuery(internal.rocklaw.bridge.getLiveChatScene, {
+        agentName: scene.agentA,
+      });
+      if (!currentScene) continue;
+
+      const speaker = currentScene.nextSpeaker;
+      const partner = currentScene.partner;
+      let interruptedDraftContext: string | null = null;
+      if (currentScene.interruptedContextPending && currentScene.interruptedSpeaker === speaker && currentScene.interruptedActionJson) {
+        try {
+          const interruptedAction = JSON.parse(currentScene.interruptedActionJson) as Record<string, unknown>;
+          if (typeof interruptedAction.intent === 'string') {
+            interruptedDraftContext = `Your interrupted draft also carried intent:"${interruptedAction.intent}". If you still want that commerce move, restate it naturally in this turn's chat.`;
+          }
+        } catch {
+          // ignore malformed stored draft context
+        }
+      }
+      const interruptedContext =
+        currentScene.interruptedContextPending && currentScene.interruptedSpeaker === speaker
+          ? [
+              `You were about to say: "${currentScene.interruptedText ?? ''}"`,
+              `But ${currentScene.openingSpeaker ?? partner} spoke first and said: "${currentScene.openingText ?? ''}"`,
+              ...(interruptedDraftContext ? [interruptedDraftContext] : []),
+              'Respond naturally from there.',
+            ].join('\n')
+          : null;
       const speakerPlan = await ctx.runAction(internal.rocklaw.bridgeNode.planAgentAction, {
         agentName: speaker,
         tick,
         day,
         timeOfDay,
         promptPrefix: [
-          `You are already in a live chat with ${partner} at ${scene.location}.`,
-          'Your only valid actions right now are `chat` to continue with the same person or `leave_chat` to end the scene.',
+          `You are already in a live chat with ${partner} at ${currentScene.location}.`,
+          'Your valid actions right now are `chat` and `leave_chat`.',
+          'If you want to buy, sell, trade, give, pay, accept, or reject inside this scene, do it through `chat` using a spoken `text` plus `intent` and the relevant fields.',
           'You cannot take a normal world action until you leave this chat scene.',
+          'Make progress. Do one of these each turn: ask one direct question, make one concrete offer, accept/reject a pending offer with the exact structured fields, answer the partner\'s last question, or leave_chat.',
+          'Do not repeat yourself, do not restate the same offer twice, and do not use filler like "..." or "waiting for your response".',
+          'If this conversation is no longer moving toward a concrete result, end it with leave_chat and a brief goodbye.',
+          ...(interruptedContext ? ['', interruptedContext] : []),
         ].join('\n'),
-        pendingNote: `LIVE CHAT: You are speaking with ${partner}. Only chat or leave_chat are valid until the scene ends.`,
+        pendingNote: interruptedContext
+          ? `LIVE CHAT: You are speaking with ${partner}. ${interruptedContext} Make concrete progress or end the chat.`
+          : `LIVE CHAT: You are speaking with ${partner}. Use chat to make concrete progress with one clear step, or leave_chat to end the scene.`,
       });
 
       if (speakerPlan.status === 'rejected') {
@@ -242,6 +274,11 @@ export const manualTick = action({
           day,
           chatDeliveryOverride: speakerPlan.action.action === 'chat' ? 'live' : undefined,
         });
+        if (currentScene.interruptedContextPending && currentScene.interruptedSpeaker === speaker) {
+          await ctx.runMutation(internal.rocklaw.bridge.consumeInterruptedChatContext, {
+            agentName: speaker,
+          });
+        }
         await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
           agentName: speaker,
           line: summariseManualAction(speakerPlan.action, day, timeOfDay, sceneResult?.outcome, sceneResult?.note),
@@ -267,34 +304,11 @@ export const manualTick = action({
         }
       }
 
-      const partnerDoc = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName: partner });
       const partnerScene = await ctx.runQuery(internal.rocklaw.bridge.getLiveChatScene, { agentName: partner });
-      if (partnerDoc && partnerScene) {
-        const waitNote = `Waiting for ${partnerScene.partner}'s next live chat turn.`;
+      if (partnerScene) {
         await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
           agentName: partner,
           line: `- Day ${day} ${timeOfDay}: chatting with ${partnerScene.partner} (${partnerScene.yourTurn ? 'your turn' : 'waiting'})`,
-        });
-        await ctx.runAction(internal.rocklaw.bridgeNode.appendTickDebugRecord, {
-          workspacePath: partnerDoc.workspacePath,
-          recordJson: JSON.stringify({
-            timestamp: new Date().toISOString(),
-            phase: 'completed',
-            agentName: partner,
-            tick,
-            day,
-            timeOfDay,
-            parsedAction: {
-              action: 'chat',
-              target: partnerScene.partner,
-              text: '[waiting in live chat]',
-              duration_ticks: 1,
-            },
-            validation: {
-              outcome: 'success',
-              note: waitNote,
-            },
-          }),
         });
       }
     }
@@ -352,8 +366,10 @@ export const manualTick = action({
     const deferredChats = new Set<string>();
     const deferredChatReasons = new Map<string, string>();
     const engagedAgents = new Set<string>(sceneParticipants);
+    const interruptedOpeners = new Set<string>();
+    const interruptedOpenerNotes = new Map<string, string>();
 
-    const liveIncomingByTarget = new Map<string, Array<{ fromAgent: string; text: string }>>();
+    const liveIncomingByTarget = new Map<string, Array<{ fromAgent: string; text: string; actionDoc: any }>>();
     for (const plan of actionablePlans) {
       const actionDoc = plan.action;
       if (actionDoc.action !== 'chat' || typeof actionDoc.target !== 'string') continue;
@@ -378,13 +394,23 @@ export const manualTick = action({
           : typeof actionDoc.message === 'string'
           ? actionDoc.message
           : '',
+        actionDoc,
       });
       liveIncomingByTarget.set(actionDoc.target, incoming);
     }
 
     for (const [targetName, incoming] of liveIncomingByTarget.entries()) {
       if (engagedAgents.has(targetName)) {
+        const targetScene = await ctx.runQuery(internal.rocklaw.bridge.getLiveChatScene, {
+          agentName: targetName,
+        });
         incoming.forEach((entry) => {
+          if (targetScene && targetScene.partner === entry.fromAgent) {
+            deferredChats.delete(entry.fromAgent);
+            deferredChatReasons.delete(entry.fromAgent);
+            engagedAgents.add(entry.fromAgent);
+            return;
+          }
           deferredChats.add(entry.fromAgent);
           deferredChatReasons.set(
             entry.fromAgent,
@@ -412,11 +438,21 @@ export const manualTick = action({
       if (mutualIncoming) {
         const targetDoc = agentByName.get(targetName);
         if (targetDoc) {
+          const openingText = typeof targetPlanned.text === 'string'
+            ? targetPlanned.text
+            : typeof targetPlanned.message === 'string'
+            ? targetPlanned.message
+            : '';
           await ctx.runMutation(internal.rocklaw.bridge.createLiveChatScene, {
             agentA: targetName,
             agentB: mutualIncoming.fromAgent,
             location: targetDoc.location,
             nextSpeaker: mutualIncoming.fromAgent,
+            openingSpeaker: targetName,
+            openingText,
+            interruptedSpeaker: mutualIncoming.fromAgent,
+            interruptedText: mutualIncoming.text,
+            interruptedActionJson: JSON.stringify(mutualIncoming.actionDoc),
             tick,
             day,
           });
@@ -427,6 +463,11 @@ export const manualTick = action({
         deferredChatReasons.delete(mutualIncoming.fromAgent);
         engagedAgents.add(targetName);
         engagedAgents.add(mutualIncoming.fromAgent);
+        interruptedOpeners.add(mutualIncoming.fromAgent);
+        interruptedOpenerNotes.set(
+          mutualIncoming.fromAgent,
+          `You were about to say "${mutualIncoming.text}", but ${targetName} spoke first: "${typeof targetPlanned.text === 'string' ? targetPlanned.text : typeof targetPlanned.message === 'string' ? targetPlanned.message : ''}"`,
+        );
         incoming
           .filter((entry) => entry.fromAgent !== mutualIncoming.fromAgent)
           .forEach((entry) => {
@@ -509,6 +550,32 @@ export const manualTick = action({
     for (const name of agents) {
       const actionDoc = finalActions.get(name);
       if (!actionDoc) continue;
+      if (interruptedOpeners.has(name) && actionDoc.action === 'chat') {
+        await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+          agentName: name,
+          line: `- Day ${day} ${timeOfDay}: live chat opened with ${actionDoc.target} (your opener was interrupted and saved for context)`,
+        });
+        const agentDoc = agentByName.get(name);
+        if (agentDoc) {
+          await ctx.runAction(internal.rocklaw.bridgeNode.appendTickDebugRecord, {
+            workspacePath: agentDoc.workspacePath,
+            recordJson: JSON.stringify({
+              timestamp: new Date().toISOString(),
+              phase: 'completed',
+              agentName: name,
+              tick,
+              day,
+              timeOfDay,
+              parsedAction: actionDoc,
+              validation: {
+                outcome: 'success',
+                note: interruptedOpenerNotes.get(name) ?? 'Your live opener was interrupted and stored as scene context.',
+              },
+            }),
+          });
+        }
+        continue;
+      }
       const isForcedLiveChat =
         actionDoc.action === 'chat'
         && typeof actionDoc.target === 'string'

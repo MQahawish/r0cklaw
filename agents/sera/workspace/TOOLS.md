@@ -47,9 +47,7 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 ## Economic actions right now
 
 ### Available now
-- `buy`: Available now because a trade partner is here.
-- `sell`: Available now because a trade partner is here.
-- `trade`: Available now because a trade partner is here.
+- `meal_service`: Available now through `sell` with `item:"meal"`.
 
 ### Unavailable here
   (none)
@@ -57,12 +55,14 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 
 - `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread
   Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1}`
+- `chat`: continue your live chat with Old Rook. Use the same target until you leave the scene.
+  Example JSON: `{"action":"chat","target":"Old Rook","text":"I understand.","duration_ticks":1}`
 
+- `chat` with `intent`: buy, sell, trade, give, pay, accept, or reject through the same spoken turn.
+  Example JSON: `{"action":"chat","target":"Old Rook","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1}`
 
-- `move`: use `location` and choose only from `Reachable places now` in `world/location.md, world/CHAT.md, and world/OFFERS.md`
-  Example JSON: `{"action":"move","location":"market","duration_ticks":1}`
-- `eat`: use `item`, optional `quantity`
-  Example JSON: `{"action":"eat","item":"bread","quantity":1,"duration_ticks":1}`
+- `leave_chat`: leave the live chat. You may include `text` for a final goodbye line.
+  Example JSON: `{"action":"leave_chat","text":"Goodbye for now.","duration_ticks":1,"thought":"I need to end this conversation now."}`
 
 ## Speaking into the world
 
@@ -73,10 +73,8 @@ If you want to pray, return a final JSON action with `"action": "pray"` and put 
 
 ## Innkeeper skills
 
-- Use `sell` to offer stocked food or drink directly to someone who is here.
-  Example JSON: `{"action":"sell","target":"Old Rook","item":"meal","quantity":1,"amount":8,"duration_ticks":1,"thought":"A hot meal is ready and he is here at the inn."}`
+- Use `chat` first to open a live conversation with a guest. Structured commerce is only valid while that live chat is active.
 
-- There is no separate `craft` action for meals. If nobody is here to buy, choose `say`, `move`, `buy`, or another real action instead of trying to prepare a meal as a crafted item.
+- There is no separate `craft` action for meals. Meal service happens through `chat` with `intent:"sell"` and `item:"meal"` while you are already chatting live with the guest.
 
-- Use `buy` to restock bread, grain, or ale when inn inventory is getting thin.
-  Example JSON: `{"action":"buy","target":"Finn","item":"grain","quantity":3,"amount":18,"duration_ticks":1,"thought":"The inn needs grain before meal service stalls."}`
+- Example JSON: `{"action":"chat","target":"Old Rook","text":"A hot meal is ready if you want one.","intent":"sell","item":"meal","quantity":1,"amount":8,"duration_ticks":1}`

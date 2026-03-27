@@ -228,7 +228,7 @@ function buildLocationMd(
       }).join('\n');
   sections.push('Pending offers awaiting your decision:');
   sections.push(incomingOfferLines);
-  sections.push('  Respond to these with `accept_transaction` or `reject_transaction` only if the other person is still here.');
+  sections.push('  Respond to these with `chat` plus `intent:"accept_transaction"` or `intent:"reject_transaction"` only while you are already in a live chat with the offer sender and they are still here.');
   sections.push('');
 
   const outgoingOffers = Array.isArray(data.outgoingTransactions) ? data.outgoingTransactions : [];
@@ -297,6 +297,10 @@ function buildLocationMd(
   if (data.currentChatScene) {
     sections.push('Your live chat:');
     sections.push(`  - With ${data.currentChatScene.partner} at ${data.currentChatScene.location} [${data.currentChatScene.yourTurn ? 'YOUR TURN' : `${data.currentChatScene.partner}'s turn`}]`);
+    if (data.currentChatScene.interruptionContext) {
+      sections.push(`  - You were about to say: "${data.currentChatScene.interruptionContext.interruptedText}"`);
+      sections.push(`  - But ${data.currentChatScene.interruptionContext.openingSpeaker} spoke first: "${data.currentChatScene.interruptionContext.openingText}"`);
+    }
     sections.push('');
   }
 
@@ -376,6 +380,14 @@ function buildChatThreadMd(agentName: string, thread: any): string {
     `STATUS: ${thread.live ? 'LIVE' : thread.online ? 'ONLINE' : 'OFFLINE'}`,
     `UNREAD: ${thread.unreadCount}`,
     ...(thread.live ? [`TURN: ${thread.yourTurn ? 'YOUR TURN' : `${thread.name}'s TURN`}`] : []),
+    ...(thread.interruptionContext?.pending
+      ? [
+          '',
+          'SCENE CONTEXT',
+          `- You were about to say: ${thread.interruptionContext.interruptedText}`,
+          `- But ${thread.interruptionContext.openingSpeaker} spoke first: ${thread.interruptionContext.openingText}`,
+        ]
+      : []),
     '',
     'MESSAGES',
     messageLines,
@@ -535,6 +547,10 @@ function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: 
   const affordances: string[] = [];
   if (data.currentChatScene) {
     affordances.push(`  - chat: continue your live chat with ${data.currentChatScene.partner}.`);
+    affordances.push(`  - chat intent: if you want to buy, sell, trade, give, pay, accept, or reject inside this scene, keep action:"chat" and add intent plus the relevant fields.`);
+    if (Array.isArray(data.incomingTransactions) && data.incomingTransactions.some((txn: any) => txn.fromAgent === data.currentChatScene.partner)) {
+      affordances.push(`  - offer_ref: use it on chat intent:"accept_transaction" or intent:"reject_transaction" while you remain in this live chat.`);
+    }
     affordances.push('  - leave_chat: leave the live chat and return to the world on the next tick.');
   } else {
     if (energy < 60) {
@@ -585,18 +601,31 @@ function buildEconomicNeeds(data: any): string {
     notes.push('  - Ore and coal shortages directly constrain your production.');
   }
   if (data.agent.role === 'Innkeeper') {
-    notes.push('  - Meal service uses `sell` directly when a guest is here and bread and ale stock are available. Do not try to craft meals as inventory items.');
+    notes.push('  - Meal service uses `chat` with `intent:"sell"` and `item:"meal"` when a guest is here and bread and ale stock are available. Do not try to craft meals as inventory items.');
   }
   return notes.length > 0 ? notes.join('\n') : '  (no urgent economic pressure right now)';
 }
 
 function buildTemporaryActionsSection(timeOfDay: string, data: any): string {
   if (data.currentChatScene) {
+    const partner = data.currentChatScene.partner;
+    const incomingOffers = Array.isArray(data.incomingTransactions)
+      ? data.incomingTransactions.filter((txn: any) => txn.fromAgent === partner)
+      : [];
     return [
       '## Temporary actions available now',
       '',
-      `- \`chat\`: continue your live chat with ${data.currentChatScene.partner}.`,
-      `  Example JSON: \`{"action":"chat","target":"${data.currentChatScene.partner}","text":"I hear you.","duration_ticks":1}\``,
+      `- \`chat\`: continue your live chat with ${partner}.`,
+      `  Example JSON: \`{"action":"chat","target":"${partner}","text":"I hear you.","duration_ticks":1}\``,
+      `- \`chat\` + \`intent\`: use structured commerce through chat while speaking naturally to ${partner}.`,
+      `  Example JSON: \`{"action":"chat","target":"${partner}","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1}\``,
+      `  Example JSON: \`{"action":"chat","target":"${partner}","text":"I can swap two coal for four grain.","intent":"trade","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}],"duration_ticks":1}\``,
+      ...(incomingOffers.length > 0
+        ? [
+            '- `chat` + `intent:"accept_transaction"` or `intent:"reject_transaction"`: respond to a pending offer from the person you are currently chatting with.',
+            '  Example JSON: `{"action":"chat","target":"' + partner + '","text":"Agreed.","intent":"accept_transaction","offer_ref":"offer-1","duration_ticks":1,"thought":"The offer is fair."}`',
+          ]
+        : []),
       '- `leave_chat`: leave the live chat. You may include `text` for a final goodbye line, then you will return to normal world actions on the next tick.',
       '  Example JSON: `{"action":"leave_chat","text":"All right, goodbye for now.","duration_ticks":1,"thought":"I should end this conversation and get back to work."}`',
       '',
@@ -630,19 +659,46 @@ function buildTemporaryActionsSection(timeOfDay: string, data: any): string {
 }
 
 function buildEconomicActionsSection(data: any): string {
+  if (data.currentChatScene) {
+    const partner = data.currentChatScene.partner;
+    const incomingOffers = Array.isArray(data.incomingTransactions)
+      ? data.incomingTransactions.filter((txn: any) => txn.fromAgent === partner)
+      : [];
+    const available = [
+      { action: 'chat + intent:"buy"', detail: `Make a direct buy offer to ${partner} inside this live chat.` },
+      { action: 'chat + intent:"sell"', detail: `Make a direct sell offer to ${partner} inside this live chat.` },
+      { action: 'chat + intent:"trade"', detail: `Propose a barter trade with ${partner} inside this live chat.` },
+      { action: 'chat + intent:"give"', detail: `Hand goods directly to ${partner} while this live chat is active.` },
+      { action: 'chat + intent:"pay"', detail: `Pay coin directly to ${partner} while this live chat is active.` },
+      ...(incomingOffers.length > 0
+        ? [
+            { action: 'chat + intent:"accept_transaction"', detail: `Respond to ${partner}'s pending offer using offer_ref from OFFERS.md.` },
+            { action: 'chat + intent:"reject_transaction"', detail: `Decline ${partner}'s pending offer using offer_ref from OFFERS.md.` },
+          ]
+        : []),
+    ];
+    return [
+      '## Economic actions right now',
+      '',
+      '### Available in this live chat',
+      available.map((entry: any) => `- \`${entry.action}\`: ${entry.detail}`).join('\n'),
+      '',
+    ].join('\n');
+  }
+
   const entries = Array.isArray(data.economicSurface) ? data.economicSurface : [];
   const incomingOffers = Array.isArray(data.incomingTransactions) ? data.incomingTransactions : [];
   const available = entries.filter((entry: any) => entry.status === 'available');
   const unavailable = entries.filter((entry: any) => entry.status === 'unavailable');
 
   if (incomingOffers.length > 0) {
-    available.unshift({
-      action: 'accept_transaction',
-      detail: 'Recipient-only. Use the short pending offer reference from "Pending offers awaiting your decision", such as `offer-1`.',
+    unavailable.unshift({
+      action: 'chat + intent:"accept_transaction"',
+      detail: 'Unavailable here. Open a live chat with the offer sender first, then respond inside that scene.',
     });
-    available.unshift({
-      action: 'reject_transaction',
-      detail: 'Recipient-only. Use the short pending offer reference from "Pending offers awaiting your decision", such as `offer-1`.',
+    unavailable.unshift({
+      action: 'chat + intent:"reject_transaction"',
+      detail: 'Unavailable here. Open a live chat with the offer sender first, then respond inside that scene.',
     });
   }
 
@@ -698,9 +754,9 @@ async function refreshRuntimeToolsMd(workspaceDir: string, timeOfDay: string, da
     .replace(/- `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread\n\s*Example JSON: `\{"action":"chat","target":"Marcus Hale","text":"I need coal by Day 9\.","duration_ticks":1\}`/, chatBlock)
     .replace('- `move`: use `location`\n  Example JSON: `{"action":"move","location":"market","duration_ticks":1}`', moveBlock)
     .replace(/## Economic actions[\s\S]*?## Act in the world\n\n/, `${economicSection}## Act in the world\n\n`)
-    .replace(/## Innkeeper skills[\s\S]*$/m, `## Innkeeper skills\n\n- Use \`sell\` to offer stocked food or drink directly to someone who is here.\n  Example JSON: \`{"action":"sell","target":"Old Rook","item":"meal","quantity":1,"amount":8,"duration_ticks":1,"thought":"A hot meal is ready and he is here at the inn."}\`\n\n- There is no separate \`craft\` action for meals. If nobody is here to buy, choose \`say\`, \`move\`, \`buy\`, or another real action instead of trying to prepare a meal as a crafted item.\n\n- Use \`buy\` to restock bread, grain, or ale when inn inventory is getting thin.\n  Example JSON: \`{"action":"buy","target":"Finn","item":"grain","quantity":3,"amount":18,"duration_ticks":1,"thought":"The inn needs grain before meal service stalls."}\`\n`)
-    .replace(/## Priest skills[\s\S]*?(?=\n## |\n$)/m, `## Priest skills\n\n- Use \`chat\` to offer blessings, guidance, or comfort directly to one person.\n  Example JSON: \`{"action":"chat","target":"Lena Marsh","text":"May peace and health be upon you, child.","duration_ticks":1,"thought":"Offer a blessing through direct chat."}\`\n\n- Use \`pray\` for prayers spoken into the world.\n  Example JSON: \`{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1,"thought":"Offer a prayer for the village."}\`\n\n- Use \`give\` to hand supplies directly to someone who is here.\n  Example JSON: \`{"action":"give","target":"Cora","item":"bread","quantity":1,"duration_ticks":1,"thought":"Offer bread directly while she is here."}\`\n`)
-    .replace(/## Merchant skills[\s\S]*$/m, `## Merchant skills\n\n- Use \`buy\` to make direct in-person offers when stock is needed.\n  Example JSON: \`{"action":"buy","target":"Finn","item":"grain","quantity":4,"amount":24,"duration_ticks":1,"thought":"Grain is scarce and Finn is here."}\`\n\n- Use \`sell\` to move inventory directly while the other person is present.\n  Example JSON: \`{"action":"sell","target":"Elena Voss","item":"coal","quantity":3,"amount":12,"duration_ticks":1,"thought":"Elena needs fuel and we are both here."}\`\n\n- Use \`trade\` when a direct swap will close faster than coin.\n  Example JSON: \`{"action":"trade","target":"Finn","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}],"duration_ticks":1,"thought":"A direct swap is better than waiting on coin."}\`\n`);
+    .replace(/## Innkeeper skills[\s\S]*$/m, `## Innkeeper skills\n\n- Use \`chat\` first to open a live conversation with a guest. Structured commerce is only valid while that live chat is active.\n\n- There is no separate \`craft\` action for meals. Meal service happens through \`chat\` with \`intent:"sell"\` and \`item:"meal"\` while you are already chatting live with the guest.\n\n- Example JSON: \`{"action":"chat","target":"Old Rook","text":"A hot meal is ready if you want one.","intent":"sell","item":"meal","quantity":1,"amount":8,"duration_ticks":1}\`\n`)
+    .replace(/## Priest skills[\s\S]*?(?=\n## |\n$)/m, `## Priest skills\n\n- Use \`chat\` to offer blessings, guidance, or comfort directly to one person.\n  Example JSON: \`{"action":"chat","target":"Lena Marsh","text":"May peace and health be upon you, child.","duration_ticks":1,"thought":"Offer a blessing through direct chat."}\`\n\n- Use \`pray\` for prayers spoken into the world.\n  Example JSON: \`{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1,"thought":"Offer a prayer for the village."}\`\n\n- If you want to hand supplies to someone, open a live chat first. \`give\` is only valid inside that chat scene.\n`)
+    .replace(/## Merchant skills[\s\S]*$/m, `## Merchant skills\n\n- Use \`chat\` first to open a live conversation. Direct commerce is only valid while you are already in a live chat with that same person.\n\n- Once the live chat is open, use \`chat\` with \`intent:"buy"\` to make an in-person offer for stock.\n  Example JSON: \`{"action":"chat","target":"Finn","text":"I can offer 24 coin for four grain.","intent":"buy","item":"grain","quantity":4,"amount":24,"duration_ticks":1}\`\n\n- Use \`chat\` with \`intent:"sell"\` to move inventory directly while that live chat is active.\n  Example JSON: \`{"action":"chat","target":"Elena Voss","text":"I can sell you three coal for 12 coin.","intent":"sell","item":"coal","quantity":3,"amount":12,"duration_ticks":1}\`\n\n- Use \`chat\` with \`intent:"trade"\` when a direct swap will close faster than coin.\n  Example JSON: \`{"action":"chat","target":"Finn","text":"I can swap two coal for four grain.","intent":"trade","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}],"duration_ticks":1}\`\n`);
   content = content
     .replace(/`talk`/g, '`chat`')
     .replace(/`message`/g, '`chat`')
@@ -713,7 +769,13 @@ async function refreshRuntimeToolsMd(workspaceDir: string, timeOfDay: string, da
     content = content.replace(/(## Act in the world\n\n[\s\S]*?)(\n## Speaking into the world)/, `$1\n${temporarySection}$2`);
   }
   if (inLiveChat) {
-    content = content.replace(/## Act in the world[\s\S]*?\n## Speaking into the world/m, `## Act in the world\n\n- \`chat\`: continue your live chat with ${data.currentChatScene.partner}. Use the same target until you leave the scene.\n  Example JSON: \`{"action":"chat","target":"${data.currentChatScene.partner}","text":"I understand.","duration_ticks":1}\`\n\n- \`leave_chat\`: leave the live chat. You may include \`text\` for a final goodbye line.\n  Example JSON: \`{"action":"leave_chat","text":"Goodbye for now.","duration_ticks":1,"thought":"I need to end this conversation now."}\`\n\n## Speaking into the world`);
+    const partner = data.currentChatScene.partner;
+    const incomingFromPartner = Array.isArray(data.incomingTransactions)
+      && data.incomingTransactions.some((txn: any) => txn.fromAgent === partner);
+    const sceneAcceptBlock = incomingFromPartner
+      ? `- \`chat\` with \`intent:"accept_transaction"\` or \`intent:"reject_transaction"\`: respond to ${partner}'s pending offers while you remain in this live chat.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"Agreed.","intent":"accept_transaction","offer_ref":"offer-1","duration_ticks":1,"thought":"The offer is fair."}\`\n\n`
+      : '';
+    content = content.replace(/## Act in the world[\s\S]*?\n## Speaking into the world/m, `## Act in the world\n\n- \`chat\`: continue your live chat with ${partner}. Use the same target until you leave the scene.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"I understand.","duration_ticks":1}\`\n\n- \`chat\` with \`intent\`: buy, sell, trade, give, pay, accept, or reject through the same spoken turn.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1}\`\n\n${sceneAcceptBlock}- \`leave_chat\`: leave the live chat. You may include \`text\` for a final goodbye line.\n  Example JSON: \`{"action":"leave_chat","text":"Goodbye for now.","duration_ticks":1,"thought":"I need to end this conversation now."}\`\n\n- Each live-chat turn must make progress: answer the partner's last question, ask one direct question, make one concrete offer, respond to a pending offer with the exact structured fields, or leave the chat.\n- Do not repeat the same point, do not restate the same offer twice, and never output filler like \`...\` or \`waiting for your response\`.\n\n## Speaking into the world`);
   }
   if (!inLiveChat && chatBlock && !content.includes('`chat`: use `target` and `text`')) {
     content = content.replace('## Act in the world\n\n', `## Act in the world\n\n${chatBlock}\n`);
@@ -767,10 +829,17 @@ async function refreshRuntimeAgentsMd(workspaceDir: string, data: any): Promise<
 function buildRuntimeAgentActionProfile(data: any, canChatNow: boolean, canRespondToOffers: boolean) {
   if (data.currentChatScene) {
     const partner = data.currentChatScene.partner;
+    const incomingFromPartner = Array.isArray(data.incomingTransactions)
+      && data.incomingTransactions.some((txn: any) => txn.fromAgent === partner);
     return {
-      localScenesLine: `You are currently in a live chat scene with ${partner}. Until you leave it, your only valid actions are \`chat\` to continue with ${partner} or \`leave_chat\` to end the scene.`,
+      localScenesLine: `You are currently in a live chat scene with ${partner}. Until you leave it, your only valid actions are \`chat\` and \`leave_chat\`. If you want to buy, sell, trade, give, pay, accept, or reject, do it through \`chat\` with \`intent\` and the relevant fields.`,
       examples: [
         `- chat: \`{"action":"chat","target":"${partner}","text":"I hear you.","duration_ticks":1,"thought":"Continue the live conversation."}\``,
+        `- chat with intent: \`{"action":"chat","target":"${partner}","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1}\``,
+        `- chat with intent: \`{"action":"chat","target":"${partner}","text":"I can swap two coal for four grain.","intent":"trade","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}],"duration_ticks":1}\``,
+        ...(incomingFromPartner
+          ? ['- chat with intent: `{"action":"chat","target":"' + partner + '","text":"Agreed.","intent":"accept_transaction","offer_ref":"offer-1","duration_ticks":1,"thought":"The offer is fair and we are already talking."}`']
+          : []),
         '- leave_chat: `{"action":"leave_chat","text":"Goodbye for now.","duration_ticks":1,"thought":"End the conversation and return to the world."}`',
       ],
       validActions: 'Valid actions: chat, leave_chat',
@@ -792,12 +861,8 @@ function buildRuntimeAgentActionProfile(data: any, canChatNow: boolean, canRespo
   const roleExamplesByRole: Record<string, string[]> = {
     Blacksmith: [
       '- craft: `{"action":"craft","item":"horseshoe","quantity":2,"duration_ticks":1,"consumes":[{"item":"iron_ore","quantity":4},{"item":"coal","quantity":2}],"produces":[{"item":"horseshoe","quantity":2}],"thought":"Market demand is severe and I have the materials."}`',
-      '- sell: `{"action":"sell","target":"Marcus Hale","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1,"thought":"He is here and the horseshoe is ready."}`',
     ],
-    Merchant: [
-      '- buy: `{"action":"buy","target":"Elena Voss","item":"iron_ore","quantity":5,"amount":20,"duration_ticks":1,"thought":"I need stock and she is here."}`',
-      '- trade: `{"action":"trade","target":"Finn","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}],"duration_ticks":1,"thought":"A direct swap is faster than waiting on coin."}`',
-    ],
+    Merchant: [],
     Farmer: [
       '- check_field: `{"action":"check_field","duration_ticks":1,"thought":"I need to see what the field needs before committing labor."}`',
       '- harvest: `{"action":"harvest","duration_ticks":1,"thought":"A field is ready and food is needed."}`',
@@ -809,9 +874,7 @@ function buildRuntimeAgentActionProfile(data: any, canChatNow: boolean, canRespo
     Priest: [
       '- pray: `{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1,"thought":"Offer a prayer for the village."}`',
     ],
-    Innkeeper: [
-      '- sell: `{"action":"sell","target":"Old Rook","item":"meal","quantity":1,"amount":8,"duration_ticks":1,"thought":"A hot meal is ready and he is here at the inn."}`',
-    ],
+    Innkeeper: [],
     Child: [
       '- play: `{"action":"play","duration_ticks":1,"thought":"Nothing urgent presses right now."}`',
     ],
@@ -822,18 +885,6 @@ function buildRuntimeAgentActionProfile(data: any, canChatNow: boolean, canRespo
     '- move: `{"action":"move","location":"market","duration_ticks":1,"thought":"Need supplies before work stalls.","message":"Going to the market."}`',
     ...(canChatNow ? ['- chat: `{"action":"chat","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1,"thought":"I should contact him directly. If he is here this becomes a live chat."}`'] : []),
     '- say: `{"action":"say","text":"Fresh bread is ready at the inn.","duration_ticks":1,"thought":"This is local speech for people who are here."}`',
-    ...(hasTradePartners
-      ? [
-          '- buy: `{"action":"buy","target":"Marcus Hale","item":"coal","quantity":3,"amount":12,"duration_ticks":1,"thought":"I need fuel and he is here with me. This creates an in-person offer, not an immediate transfer.","message":"Offering 12 coin for three coal."}`',
-          '- trade: `{"action":"trade","target":"Finn","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}],"duration_ticks":1,"thought":"Propose an in-person swap; it settles only if Finn accepts."}`',
-        ]
-      : []),
-    ...(canRespondToOffers
-      ? [
-          '- accept_transaction: `{"action":"accept_transaction","target":"offer-1","duration_ticks":1,"thought":"The offer is fair and I am the one being asked."}`',
-          '- reject_transaction: `{"action":"reject_transaction","target":"offer-1","duration_ticks":1,"thought":"The offer is poor or no longer works.","message":"No deal."}`',
-        ]
-      : []),
     ...(roleExamplesByRole[role] ?? []),
   ];
 
@@ -842,22 +893,14 @@ function buildRuntimeAgentActionProfile(data: any, canChatNow: boolean, canRespo
     'say',
     'move',
     'eat',
-    ...(hasTradePartners ? ['buy', 'sell', 'trade'] : []),
-    'pay',
-    'give',
-    ...(canRespondToOffers ? ['accept_transaction', 'reject_transaction'] : []),
     ...(roleSpecificActionsByRole[role] ?? []),
   ];
 
   if (role === 'Priest' && !validActions.includes('pray')) validActions.push('pray');
 
   const localScenesLine = canChatNow
-    ? canRespondToOffers
-      ? 'For local scenes: use `chat` for one-to-one communication. If the other person is here, it becomes a live chat. If they are elsewhere, it becomes a deferred chat in CHAT. Use `say` for local speech in your current location; it is not a thread and does not take a target. `buy`, `sell`, and `trade` create in-person offers when both people are present. These do not transfer goods immediately. Trade targets must be people who are here, never places like market or inn. Use `accept_transaction` or `reject_transaction` only for offers awaiting your decision, using the short pending offer reference shown in OFFERS.md, such as `offer-1`. Do not accept or reject your own outgoing offers.'
-      : 'For local scenes: use `chat` for one-to-one communication. If the other person is here, it becomes a live chat. If they are elsewhere, it becomes a deferred chat in CHAT. Use `say` for local speech in your current location; it is not a thread and does not take a target. `buy`, `sell`, and `trade` create in-person offers when both people are present. These do not transfer goods immediately. Trade targets must be people who are here, never places like market or inn. Only respond with `accept_transaction` or `reject_transaction` when TOOLS.md shows offers awaiting your decision. Do not accept or reject your own outgoing offers.'
-    : canRespondToOffers
-      ? 'For local scenes: use `chat` for one-to-one communication. If the other person is here, it becomes a live chat. If they are elsewhere, it becomes a deferred chat in CHAT. Use `say` for local speech in your current location; it is not a thread and does not take a target. `buy`, `sell`, and `trade` create in-person offers when both people are present. These do not transfer goods immediately. Trade targets must be people who are here, never places like market or inn. Use `accept_transaction` or `reject_transaction` only for offers awaiting your decision, using the short pending offer reference shown in OFFERS.md, such as `offer-1`. Do not accept or reject your own outgoing offers.'
-      : 'For local scenes: use `chat` for one-to-one communication. If the other person is here, it becomes a live chat. If they are elsewhere, it becomes a deferred chat in CHAT. Use `say` for local speech in your current location; it is not a thread and does not take a target. `buy`, `sell`, and `trade` create in-person offers when both people are present. These do not transfer goods immediately. Trade targets must be people who are here, never places like market or inn. Only respond with `accept_transaction` or `reject_transaction` when TOOLS.md shows offers awaiting your decision. Do not accept or reject your own outgoing offers.';
+    ? 'For local scenes: use `chat` for one-to-one communication. If the other person is here, it becomes a live chat. If they are elsewhere, it becomes a deferred chat in CHAT. Use `say` for local speech in your current location; it is not a thread and does not take a target. During a live chat, use `chat` with `intent` if you want to buy, sell, trade, give, pay, accept, or reject.'
+    : 'For local scenes: use `chat` for one-to-one communication. If the other person is here, it becomes a live chat. If they are elsewhere, it becomes a deferred chat in CHAT. Use `say` for local speech in your current location; it is not a thread and does not take a target. During a live chat, use `chat` with `intent` if you want to buy, sell, trade, give, pay, accept, or reject.';
 
   return {
     localScenesLine,

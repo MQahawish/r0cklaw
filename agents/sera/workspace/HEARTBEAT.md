@@ -1,10 +1,10 @@
 # HEARTBEAT -- Sera
 
 ## Recent Activity
-- Day 2 morning: move → market (Heading to the market to see what's available.)
-- Day 2 afternoon: first saw Cora (Child) at market.
-- Day 2 afternoon: chat → Cora (Good afternoon, Cora. What brings you to the market today?) ⚠ Live chat sent to Cora.
-- Day 2 evening: first saw Old Rook (Retired Soldier) at market.
-- Day 2 evening: chat → Old Rook (Good evening, Old Rook. How are you doing tonight?) ⚠ Live chat sent to Old Rook.
-- Day 3 morning: chat → Cora (Good morning, Cora. Did you find anything interesting at the) ⚠ Live chat sent to Cora.
-- Day 3 morning: talk with Old Rook ended [FAILED] ⚠ Old Rook left market, so the interaction ended.
+- Day 1 morning: [awaiting first tick]
+- Day 1 afternoon: say (Fresh bread and ale are available at the inn!)
+- Day 1 evening: sleep
+- Day 2 morning: first saw Marcus Hale (Merchant) at inn.
+- Day 2 morning: chat → Marcus Hale (Good morning, Marcus. What brings you to the inn so early?) ⚠ Live chat sent to Marcus Hale.
+- Day 2 evening: leave_chat (Well, I hope you find what you're looking for, Marcus.) ⚠ You said goodbye and left the live chat with Marcus Hale.
+- Day 3 morning: chat → Marcus Hale (Good morning, Marcus. Always a pleasure. I was just thinking) ⚠ Live chat sent to Marcus Hale.

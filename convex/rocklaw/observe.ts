@@ -29,6 +29,71 @@ export const getAgentWorkspacePaths = query({
   },
 });
 
+function createChatThreadKey(agentA: string, agentB: string): string {
+  return [agentA, agentB].sort((a, b) => a.localeCompare(b)).join('::');
+}
+
+function isRenderableSceneMessage(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (trimmed === '...') return false;
+  if (trimmed === '(waiting)') return false;
+  return true;
+}
+
+export const getStepSummary = query({
+  args: {},
+  handler: async (ctx) => {
+    const worldState = await ctx.db.query('rl_world_state').unique();
+    const scenes = await ctx.db
+      .query('rl_chat_scenes')
+      .withIndex('status_location', (q) => q.eq('status', 'live'))
+      .collect();
+
+    const sceneSummaries = await Promise.all(
+      scenes.map(async (scene) => {
+        const threadKey = createChatThreadKey(scene.agentA, scene.agentB);
+        const threadMessages = await ctx.db
+          .query('rl_chat_messages')
+          .withIndex('thread_sent', (q) => q.eq('threadKey', threadKey))
+          .collect();
+        const recentMessages = threadMessages
+          .slice()
+          .sort((a, b) => a.sentDay - b.sentDay || a.sentTick - b.sentTick)
+          .filter((entry) => isRenderableSceneMessage(entry.text))
+          .slice(-4)
+          .map((entry) => ({
+            fromAgent: entry.fromAgent,
+            text: entry.text,
+          }));
+        const interruptionContext =
+          scene.interruptedContextPending && scene.interruptedSpeaker
+            ? {
+                interruptedSpeaker: scene.interruptedSpeaker,
+                interruptedText: scene.interruptedText ?? '',
+                openingSpeaker: scene.openingSpeaker ?? '',
+                openingText: scene.openingText ?? '',
+              }
+            : null;
+        return {
+          left: scene.agentA,
+          right: scene.agentB,
+          location: scene.location,
+          recentMessages,
+          interruptionContext,
+        };
+      }),
+    );
+
+    return {
+      tick: worldState?.tick ?? 0,
+      day: worldState?.day ?? 1,
+      timeOfDay: worldState?.timeOfDay ?? 'morning',
+      liveScenes: sceneSummaries,
+    };
+  },
+});
+
 // ── Relationship graph ────────────────────────────────────────────────────────
 
 // Action types considered cooperative (green edges)

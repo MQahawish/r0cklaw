@@ -69,7 +69,7 @@ function buildEconomicSurface(args: {
 }): EconomicSurfaceEntry[] {
   const { agent, nearby, fieldsHere, herbPatchesHere, prices, reachableLocations } = args;
   const inv = JSON.parse(agent.inventory) as Record<string, number>;
-  const roleActions = ROLE_ECONOMIC_ACTIONS[agent.role] ?? ['buy', 'sell', 'trade'];
+  const roleActions = ROLE_ECONOMIC_ACTIONS[agent.role] ?? [];
   const entries: EconomicSurfaceEntry[] = [];
   const nearbyTradePartners = nearby.filter((other) => other.name !== agent.name);
   const primaryTradeLocation = findPrimaryTradeLocation(agent.location);
@@ -614,6 +614,17 @@ export const getWorldSnapshot = internalQuery({
           online: contact!.location === agent.location,
           live: Boolean(liveScene),
           yourTurn: liveScene ? liveScene.nextSpeaker === agentName : false,
+          interruptionContext:
+            liveScene
+            && liveScene.interruptedContextPending
+            && liveScene.interruptedSpeaker === agentName
+            ? {
+                pending: true,
+                interruptedText: liveScene.interruptedText ?? '',
+                openingSpeaker: liveScene.openingSpeaker ?? contact!.name,
+                openingText: liveScene.openingText ?? '',
+              }
+            : null,
           unreadCount,
           preview: lastMessage?.text ?? '(no messages yet)',
           messages: threadMessages.slice(-10).map((entry) => ({
@@ -678,6 +689,14 @@ export const getWorldSnapshot = internalQuery({
             location: currentChatScene.location,
             nextSpeaker: currentChatScene.nextSpeaker,
             yourTurn: currentChatScene.nextSpeaker === agentName,
+            interruptionContext:
+              currentChatScene.interruptedContextPending && currentChatScene.interruptedSpeaker === agentName
+                ? {
+                    interruptedText: currentChatScene.interruptedText ?? '',
+                    openingSpeaker: currentChatScene.openingSpeaker ?? (currentChatScene.agentA === agentName ? currentChatScene.agentB : currentChatScene.agentA),
+                    openingText: currentChatScene.openingText ?? '',
+                  }
+                : null,
           }
         : null,
       socialKnowledge,

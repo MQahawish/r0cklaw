@@ -8,24 +8,24 @@ Economic stations and resources here:
 
 ## Live Now
 Possible trade partners here:
-  - Marcus Hale (Merchant): likely sells grain, coal; likely buys iron_ore, horseshoe, tools, knife, medicine
+  (none)
 
 Nearby:
-  - Marcus Hale (Merchant)
+  (nobody nearby)
 
 Message board:
   (none)
 
 Pending offers awaiting your decision:
-  - offer-1: Marcus Hale buys with you: offers 80 coin for 8 iron_ore -- "Elena, I'm still interested in acquiring some iron ore. My offer of 80 coin for 8 units stands."
-  Respond to these with `accept_transaction` or `reject_transaction` only if the other person is still here.
+  (none)
+  Respond to these with `chat` plus `intent:"accept_transaction"` or `intent:"reject_transaction"` only while you are already in a live chat with the offer sender and they are still here.
 
 Your outgoing offers:
   (none)
   These are your offers. Do not accept or reject them yourself. Chat, move, or make a different offer instead.
 
 Active interactions here:
-  - Marcus Hale buys Elena Voss: offers 80 coin for 8 iron_ore -- "Elena, I'm still interested in acquiring some iron ore. My offer of 80 coin for 8 units stands."
+  (none)
 
 People chatting here:
   (none)

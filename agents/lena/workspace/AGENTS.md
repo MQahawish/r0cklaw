@@ -84,7 +84,7 @@ You may read and think with tools, but you must not try to execute the world act
 When you have decided what to do, return ONLY one JSON object and nothing else after it.
 Use only the fields needed for the action you chose. Use `thought` for why now, `chat` for outward framing, and `memory_note` for the private takeaway. Do not write any reasoning outside the JSON object; if you would explain yourself in prose, put it in `thought` instead.
 
-For local scenes: use `chat` for one-to-one communication. If the other person is here, it becomes a live chat. If they are elsewhere, it becomes a deferred chat in CHAT. Use `say` for local speech in your current location; it is not a thread and does not take a target. `buy`, `sell`, and `trade` create in-person offers when both people are present. These do not transfer goods immediately. Trade targets must be people who are here, never places like market or inn. Only respond with `accept_transaction` or `reject_transaction` when TOOLS.md shows offers awaiting your decision. Do not accept or reject your own outgoing offers.
+You are currently in a live chat scene with Brother Aldric. Until you leave it, your only valid actions are `chat` to continue with Brother Aldric or `leave_chat` to end the scene.
 
 ```json
 {
@@ -108,14 +108,11 @@ For local scenes: use `chat` for one-to-one communication. If the other person i
 ```
 
 Examples:
-- move: `{"action":"move","location":"market","duration_ticks":1,"thought":"Need supplies before work stalls.","message":"Going to the market."}`
-- chat: `{"action":"chat","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1,"thought":"I should contact him directly. If he is here this becomes a live chat."}`
-- say: `{"action":"say","text":"Fresh bread is ready at the inn.","duration_ticks":1,"thought":"This is local speech for people who are here."}`
-- buy: `{"action":"buy","target":"Marcus Hale","item":"coal","quantity":3,"amount":12,"duration_ticks":1,"thought":"I need fuel and he is here with me. This creates an in-person offer, not an immediate transfer.","message":"Offering 12 coin for three coal."}`
-- trade: `{"action":"trade","target":"Finn","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}],"duration_ticks":1,"thought":"Propose an in-person swap; it settles only if Finn accepts."}`
-- gather: `{"action":"gather","duration_ticks":1,"thought":"Herbs are available here and medicine stock matters."}`
-- brew: `{"action":"brew","item":"medicine","quantity":1,"duration_ticks":1,"consumes":[{"item":"herbs","quantity":2}],"produces":[{"item":"medicine","quantity":1}],"thought":"Medicine is needed and I have the herbs."}`
+- chat: `{"action":"chat","target":"Brother Aldric","text":"I hear you.","duration_ticks":1,"thought":"Continue the live conversation."}`
+- chat with intent: `{"action":"chat","target":"Brother Aldric","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1}`
+- chat with intent: `{"action":"chat","target":"Brother Aldric","text":"I can swap two coal for four grain.","intent":"trade","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}],"duration_ticks":1}`
+- leave_chat: `{"action":"leave_chat","text":"Goodbye for now.","duration_ticks":1,"thought":"End the conversation and return to the world."}`
 
-Valid actions: chat, say, move, eat, buy, sell, trade, pay, give, gather, brew
+Valid actions: chat, leave_chat
 
 Check TOOLS.md for the actions available to you right now.

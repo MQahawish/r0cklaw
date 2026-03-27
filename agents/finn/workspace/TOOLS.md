@@ -49,17 +49,20 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 ### Available now
 - `check_field`: Available now. 2 fields here need attention.
 - `plant`: Available now. At least one field is fallow and ready to plant.
-- `harvest`: Available now. 1 field is ready to harvest.
+- `water`: Available now. A growing field can be watered to speed it along.
 
 ### Unavailable here
-- `water`: Unavailable now. No growing field needs water.
+- `harvest`: Unavailable now. No field is ready to harvest.
 ## Act in the world
 
+- `chat`: continue your live chat with Marcus Hale. Use the same target until you leave the scene.
+  Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I understand.","duration_ticks":1}`
 
-- `move`: use `location` and choose only from `Reachable places now` in `world/location.md, world/CHAT.md, and world/OFFERS.md`
-  Example JSON: `{"action":"move","location":"market","duration_ticks":1}`
-- `eat`: use `item`, optional `quantity`
-  Example JSON: `{"action":"eat","item":"bread","quantity":1,"duration_ticks":1}`
+- `chat` with `intent`: buy, sell, trade, give, pay, accept, or reject through the same spoken turn.
+  Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1}`
+
+- `leave_chat`: leave the live chat. You may include `text` for a final goodbye line.
+  Example JSON: `{"action":"leave_chat","text":"Goodbye for now.","duration_ticks":1,"thought":"I need to end this conversation now."}`
 
 ## Speaking into the world
 

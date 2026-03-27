@@ -84,7 +84,7 @@ You may read and think with tools, but you must not try to execute the world act
 When you have decided what to do, return ONLY one JSON object and nothing else after it.
 Use only the fields needed for the action you chose. Use `thought` for why now, `chat` for outward framing, and `memory_note` for the private takeaway. Do not write any reasoning outside the JSON object; if you would explain yourself in prose, put it in `thought` instead.
 
-For local scenes: use `chat` for one-to-one communication. If the other person is here, it becomes a live chat. If they are elsewhere, it becomes a deferred chat in CHAT. Use `say` for local speech in your current location; it is not a thread and does not take a target. `buy`, `sell`, and `trade` create in-person offers when both people are present. These do not transfer goods immediately. Trade targets must be people who are here, never places like market or inn. Only respond with `accept_transaction` or `reject_transaction` when TOOLS.md shows offers awaiting your decision. Do not accept or reject your own outgoing offers.
+You are currently in a live chat scene with Marcus Hale. Until you leave it, your only valid actions are `chat` to continue with Marcus Hale or `leave_chat` to end the scene.
 
 ```json
 {
@@ -110,6 +110,6 @@ For local scenes: use `chat` for one-to-one communication. If the other person i
 Examples:
 - move: `{"action":"move","location":"market","duration_ticks":1,"thought":"Need supplies before work stalls.","message":"Going to the market."}`
 - sell: `{"action":"sell","target":"Old Rook","item":"meal","quantity":1,"amount":8,"duration_ticks":1,"thought":"A hot meal is ready and he is here at the inn."}`
-Valid actions: chat, say, move, eat, buy, sell, trade, pay, give
+Valid actions: chat, say, move, eat
 
 Check TOOLS.md for the actions available to you right now.

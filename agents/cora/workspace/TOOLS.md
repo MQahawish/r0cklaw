@@ -47,9 +47,7 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 ## Economic actions right now
 
 ### Available now
-- `buy`: Available now because a trade partner is here.
-- `sell`: Available now because a trade partner is here.
-- `trade`: Available now because a trade partner is here.
+  (none)
 
 ### Unavailable here
   (none)
@@ -58,11 +56,13 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 - `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread
   Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1}`
 
+- `chat`: continue your live chat with Old Rook. Use the same target until you leave the scene.
+  Example JSON: `{"action":"chat","target":"Old Rook","text":"I understand.","duration_ticks":1}`
 
-- `move`: use `location` and choose only from `Reachable places now` in `world/location.md, world/CHAT.md, and world/OFFERS.md`
-  Example JSON: `{"action":"move","location":"market","duration_ticks":1}`
-- `eat`: use `item`, optional `quantity`
-  Example JSON: `{"action":"eat","item":"bread","quantity":1,"duration_ticks":1}`
+- `leave_chat`: leave the live chat. You may include `text` for a final goodbye line.
+  Example JSON: `{"action":"leave_chat","text":"Goodbye for now.","duration_ticks":1,"thought":"I need to end this conversation now."}`
+
+
 
 
 ## Speaking into the world

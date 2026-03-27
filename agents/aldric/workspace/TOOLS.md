@@ -46,22 +46,25 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 
 ## Economic actions right now
 
-### Available now
-- `buy`: Available now because a trade partner is here.
-- `sell`: Available now because a trade partner is here.
-- `trade`: Available now because a trade partner is here.
-
-### Unavailable here
-  (none)
+### Available in this live chat
+- `chat + intent:"buy"`: Make a direct buy offer to Lena Marsh inside this live chat.
+- `chat + intent:"sell"`: Make a direct sell offer to Lena Marsh inside this live chat.
+- `chat + intent:"trade"`: Propose a barter trade with Lena Marsh inside this live chat.
+- `chat + intent:"give"`: Hand goods directly to Lena Marsh while this live chat is active.
+- `chat + intent:"pay"`: Pay coin directly to Lena Marsh while this live chat is active.
 ## Act in the world
 
-- `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread
-  Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1}`
-- `move`: use `location` and choose only from `Reachable places now` in `world/location.md, world/CHAT.md, and world/OFFERS.md`
-  Example JSON: `{"action":"move","location":"market","duration_ticks":1}`
-- `eat`: use `item`, optional `quantity`
-  Example JSON: `{"action":"eat","item":"bread","quantity":1,"duration_ticks":1}`
+- `chat`: continue your live chat with Lena Marsh. Use the same target until you leave the scene.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"I understand.","duration_ticks":1}`
 
+- `chat` with `intent`: buy, sell, trade, give, pay, accept, or reject through the same spoken turn.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1}`
+
+- `leave_chat`: leave the live chat. You may include `text` for a final goodbye line.
+  Example JSON: `{"action":"leave_chat","text":"Goodbye for now.","duration_ticks":1,"thought":"I need to end this conversation now."}`
+
+- Each live-chat turn must make progress: answer the partner's last question, ask one direct question, make one concrete offer, respond to a pending offer with the exact structured fields, or leave the chat.
+- Do not repeat the same point, do not restate the same offer twice, and never output filler like `...` or `waiting for your response`.
 
 ## Speaking into the world
 
@@ -71,6 +74,103 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 If you want to pray, return a final JSON action with `"action": "pray"` and put the prayer text in `text`.
 
 ## Priest skills
+
+- Use `chat` to offer blessings, guidance, or comfort directly to one person.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"May peace and health be upon you, child.","duration_ticks":1,"thought":"Offer a blessing through direct chat."}`
+
+- Use `pray` for prayers spoken into the world.
+  Example JSON: `{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1,"thought":"Offer a prayer for the village."}`
+
+- If you want to hand supplies to someone, open a live chat first. `give` is only valid inside that chat scene.
+
+
+- Use `chat` to offer blessings, guidance, or comfort directly to one person.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"May peace and health be upon you, child.","duration_ticks":1,"thought":"Offer a blessing through direct chat."}`
+
+- Use `pray` for prayers spoken into the world.
+  Example JSON: `{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1,"thought":"Offer a prayer for the village."}`
+
+- If you want to hand supplies to someone, open a live chat first. `give` is only valid inside that chat scene.
+
+
+- Use `chat` to offer blessings, guidance, or comfort directly to one person.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"May peace and health be upon you, child.","duration_ticks":1,"thought":"Offer a blessing through direct chat."}`
+
+- Use `pray` for prayers spoken into the world.
+  Example JSON: `{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1,"thought":"Offer a prayer for the village."}`
+
+- If you want to hand supplies to someone, open a live chat first. `give` is only valid inside that chat scene.
+
+
+- Use `chat` to offer blessings, guidance, or comfort directly to one person.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"May peace and health be upon you, child.","duration_ticks":1,"thought":"Offer a blessing through direct chat."}`
+
+- Use `pray` for prayers spoken into the world.
+  Example JSON: `{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1,"thought":"Offer a prayer for the village."}`
+
+- Use `give` to hand supplies directly to someone who is here.
+  Example JSON: `{"action":"give","target":"Cora","item":"bread","quantity":1,"duration_ticks":1,"thought":"Offer bread directly while she is here."}`
+
+
+- Use `chat` to offer blessings, guidance, or comfort directly to one person.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"May peace and health be upon you, child.","duration_ticks":1,"thought":"Offer a blessing through direct chat."}`
+
+- Use `pray` for prayers spoken into the world.
+  Example JSON: `{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1,"thought":"Offer a prayer for the village."}`
+
+- Use `give` to hand supplies directly to someone who is here.
+  Example JSON: `{"action":"give","target":"Cora","item":"bread","quantity":1,"duration_ticks":1,"thought":"Offer bread directly while she is here."}`
+
+
+- Use `chat` to offer blessings, guidance, or comfort directly to one person.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"May peace and health be upon you, child.","duration_ticks":1,"thought":"Offer a blessing through direct chat."}`
+
+- Use `pray` for prayers spoken into the world.
+  Example JSON: `{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1,"thought":"Offer a prayer for the village."}`
+
+- Use `give` to hand supplies directly to someone who is here.
+  Example JSON: `{"action":"give","target":"Cora","item":"bread","quantity":1,"duration_ticks":1,"thought":"Offer bread directly while she is here."}`
+
+
+- Use `chat` to offer blessings, guidance, or comfort directly to one person.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"May peace and health be upon you, child.","duration_ticks":1,"thought":"Offer a blessing through direct chat."}`
+
+- Use `pray` for prayers spoken into the world.
+  Example JSON: `{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1,"thought":"Offer a prayer for the village."}`
+
+- Use `give` to hand supplies directly to someone who is here.
+  Example JSON: `{"action":"give","target":"Cora","item":"bread","quantity":1,"duration_ticks":1,"thought":"Offer bread directly while she is here."}`
+
+
+- Use `chat` to offer blessings, guidance, or comfort directly to one person.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"May peace and health be upon you, child.","duration_ticks":1,"thought":"Offer a blessing through direct chat."}`
+
+- Use `pray` for prayers spoken into the world.
+  Example JSON: `{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1,"thought":"Offer a prayer for the village."}`
+
+- Use `give` to hand supplies directly to someone who is here.
+  Example JSON: `{"action":"give","target":"Cora","item":"bread","quantity":1,"duration_ticks":1,"thought":"Offer bread directly while she is here."}`
+
+
+- Use `chat` to offer blessings, guidance, or comfort directly to one person.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"May peace and health be upon you, child.","duration_ticks":1,"thought":"Offer a blessing through direct chat."}`
+
+- Use `pray` for prayers spoken into the world.
+  Example JSON: `{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1,"thought":"Offer a prayer for the village."}`
+
+- Use `give` to hand supplies directly to someone who is here.
+  Example JSON: `{"action":"give","target":"Cora","item":"bread","quantity":1,"duration_ticks":1,"thought":"Offer bread directly while she is here."}`
+
+
+- Use `chat` to offer blessings, guidance, or comfort directly to one person.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"May peace and health be upon you, child.","duration_ticks":1,"thought":"Offer a blessing through direct chat."}`
+
+- Use `pray` for prayers spoken into the world.
+  Example JSON: `{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1,"thought":"Offer a prayer for the village."}`
+
+- Use `give` to hand supplies directly to someone who is here.
+  Example JSON: `{"action":"give","target":"Cora","item":"bread","quantity":1,"duration_ticks":1,"thought":"Offer bread directly while she is here."}`
+
 
 - Use `chat` to offer blessings, guidance, or comfort directly to one person.
   Example JSON: `{"action":"chat","target":"Lena Marsh","text":"May peace and health be upon you, child.","duration_ticks":1,"thought":"Offer a blessing through direct chat."}`

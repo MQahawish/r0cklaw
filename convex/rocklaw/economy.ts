@@ -120,14 +120,14 @@ export const SERVICE_CATALOGUE: Record<string, ServiceDef> = {
 };
 
 export const ROLE_ECONOMIC_ACTIONS: Record<string, string[]> = {
-  Blacksmith: ['craft', 'smelt', 'buy', 'sell', 'trade'],
-  Farmer: ['check_field', 'plant', 'water', 'harvest', 'buy', 'sell', 'trade'],
-  Herbalist: ['gather', 'brew', 'buy', 'sell', 'trade'],
-  Innkeeper: ['buy', 'sell', 'trade'],
-  Merchant: ['buy', 'sell', 'trade'],
-  Priest: ['buy', 'sell', 'trade'],
-  Child: ['buy', 'sell', 'trade'],
-  'Retired Soldier': ['buy', 'sell', 'trade'],
+  Blacksmith: ['craft', 'smelt'],
+  Farmer: ['check_field', 'plant', 'water', 'harvest'],
+  Herbalist: ['gather', 'brew'],
+  Innkeeper: [],
+  Merchant: [],
+  Priest: [],
+  Child: [],
+  'Retired Soldier': [],
 };
 
 export const ROLE_TRADE_PROFILES: Record<string, TradeProfile> = {

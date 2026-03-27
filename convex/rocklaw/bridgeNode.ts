@@ -13,6 +13,8 @@ type RocklawAction = {
   target?: string | null;
   location?: string | null;
   text?: string;
+  intent?: string | null;
+  offer_ref?: string | null;
   topic?: string;
   item?: string | null;
   quantity?: number | null;
@@ -64,8 +66,7 @@ class ZeroClawTurnError extends Error {
 }
 
 const VALID_ACTIONS = new Set([
-  'chat', 'leave_chat', 'say', 'move', 'rest', 'sleep', 'eat', 'buy', 'sell', 'pay', 'give', 'trade',
-  'accept_transaction', 'reject_transaction',
+  'chat', 'leave_chat', 'say', 'move', 'rest', 'sleep', 'eat',
   'pray',
   'craft', 'smelt',
   'harvest', 'plant', 'water', 'check_field',
@@ -514,21 +515,22 @@ function buildTickMessage(
     'If you need more context with someone, read their thread file under world/chat/<name>/CHAT.md.',
     'Check world/OFFERS.md for incoming and outgoing offers.',
     'If an active interaction directly addresses you, respond to it before starting unrelated work unless you have a clear reason not to.',
-    'buy, sell, and trade create in-person offers when both people are present; they do not transfer goods immediately.',
-    'For buy, sell, trade, pay, and give, target a person who is here. Never target a place like market, inn, forge, or square.',
+    'Direct person-to-person commerce is expressed through action:"chat" with a spoken "text" plus a structured "intent" field while you are already in a live chat with that same person.',
+    'Valid chat intents are: buy, sell, trade, give, pay, accept_transaction, reject_transaction.',
+    'For chat intents, target a person you are actively chatting with. Never target a place like market, inn, forge, or square.',
     'If you want to explain why, put it in "thought".',
     'For chat, say, pray, and leave_chat, put the actual visible content in "text". Use "message" only for optional visible framing when it is distinct.',
     'Use "memory_note" for the private takeaway.',
     '',
     'Final response schema:',
-    '{"action":"...","duration_ticks":1,"target":"optional","location":"optional","text":"optional","topic":"optional","item":"optional","quantity":1,"amount":0,"consumes":[],"produces":[],"offer":[],"request":[],"thought":"optional","message":"optional","memory_note":"optional"}',
+    '{"action":"...","duration_ticks":1,"target":"optional","location":"optional","text":"optional","intent":"optional","offer_ref":"optional","topic":"optional","item":"optional","quantity":1,"amount":0,"consumes":[],"produces":[],"offer":[],"request":[],"thought":"optional","message":"optional","memory_note":"optional"}',
     '',
     'Examples:',
     '{"action":"move","location":"market","duration_ticks":1,"thought":"Need supplies before work stalls.","message":"Going to the market."}',
     '{"action":"chat","target":"Marcus Hale","text":"Do you still have coal available?","duration_ticks":1,"thought":"I should contact him directly before making an offer."}',
     '{"action":"say","text":"Fresh bread at the inn this morning.","duration_ticks":1,"thought":"People nearby may hear a local greeting or announcement."}',
-    '{"action":"buy","target":"Marcus Hale","item":"coal","quantity":3,"amount":12,"duration_ticks":1,"thought":"I need fuel and he is here with me. This creates an in-person offer, not an immediate transfer. The target must be a person, not a place.","message":"Offering 12 coin for three coal."}',
-    '{"action":"accept_transaction","target":"offer-1","duration_ticks":1,"thought":"The offer is fair and we are still together here.","message":"Accepted."}',
+    '{"action":"chat","target":"Marcus Hale","text":"I can pay 12 coin for three coal.","intent":"buy","item":"coal","quantity":3,"amount":12,"duration_ticks":1,"thought":"I am already in a live chat with Marcus and want to make an offer."}',
+    '{"action":"chat","target":"Marcus Hale","text":"Agreed.","intent":"accept_transaction","offer_ref":"offer-1","duration_ticks":1,"thought":"I am already in a live chat with the other person and the offer is fair."}',
     '{"action":"craft","item":"horseshoe","quantity":2,"duration_ticks":1,"consumes":[{"item":"iron_ore","quantity":4},{"item":"coal","quantity":2}],"produces":[{"item":"horseshoe","quantity":2}],"thought":"Market demand is severe and I have the materials.","message":"Crafting two horseshoes."}',
   ];
 
@@ -743,7 +745,7 @@ function validateAction(action: RocklawAction): boolean {
           typeof (entry as Record<string, unknown>).item === 'string' &&
           typeof (entry as Record<string, unknown>).quantity === 'number')));
 
-  if (!isStringish(action.target) || !isStringish(action.location) || !isStringish(action.text) || !isStringish(action.topic) || !isStringish(action.item) || !isStringish(action.thought)) {
+  if (!isStringish(action.target) || !isStringish(action.location) || !isStringish(action.text) || !isStringish(action.intent) || !isStringish(action.offer_ref) || !isStringish(action.topic) || !isStringish(action.item) || !isStringish(action.thought)) {
     return false;
   }
   if (!isNumberish(action.quantity) || !isNumberish(action.amount)) return false;
@@ -753,27 +755,30 @@ function validateAction(action: RocklawAction): boolean {
     case 'move':
       return typeof (action.location ?? action.target) === 'string';
     case 'chat':
+      if (typeof (action.text ?? action.message) !== 'string') return false;
+      if (action.intent === undefined || action.intent === null || action.intent === '') return true;
+      if (!['buy', 'sell', 'trade', 'give', 'pay', 'accept_transaction', 'reject_transaction'].includes(action.intent)) return false;
+      if (action.intent === 'accept_transaction' || action.intent === 'reject_transaction') {
+        return typeof action.offer_ref === 'string' && typeof action.target === 'string';
+      }
+      if (action.intent === 'trade') {
+        return typeof action.target === 'string' && Array.isArray(action.offer) && Array.isArray(action.request);
+      }
+      if (action.intent === 'pay') {
+        return typeof action.target === 'string' && typeof action.amount === 'number';
+      }
+      return typeof action.target === 'string' && typeof action.item === 'string';
     case 'say':
     case 'pray':
       return typeof (action.text ?? action.message) === 'string';
     case 'leave_chat':
       return true;
-    case 'pay':
-      return typeof action.target === 'string' && typeof action.amount === 'number';
-    case 'accept_transaction':
-    case 'reject_transaction':
-      return typeof action.target === 'string';
-    case 'buy':
-    case 'sell':
-    case 'give':
     case 'eat':
     case 'craft':
     case 'repair':
     case 'smelt':
     case 'appraise':
       return typeof (action.item ?? action.target) === 'string';
-    case 'trade':
-      return typeof action.target === 'string' && Array.isArray(action.offer) && Array.isArray(action.request);
     default:
       return true;
   }
@@ -783,16 +788,19 @@ function pseudoActionCorrection(action: Partial<RocklawAction> | null | undefine
   const raw = typeof action?.action === 'string' ? action.action.trim().toLowerCase() : '';
   if (!raw) return null;
   if (raw === 'look' || raw === 'inspect' || raw === 'observe' || raw === 'survey' || raw === 'file_write' || raw === 'write_file') {
-    return 'Observation is done through file reads and notes, not as a final world action. Choose a real Rocklaw action like move, chat, say, rest, sleep, buy, sell, or craft.';
+    return 'Observation is done through file reads and notes, not as a final world action. Choose a real Rocklaw action like move, chat, say, rest, sleep, or a role action.';
   }
   if (raw === 'gaze' || raw === 'stare' || raw === 'glance') {
-    return 'There is no gaze action. Read files to inspect the situation, then choose a real Rocklaw action like move, chat, say, buy, sell, or craft.';
+    return 'There is no gaze action. Read files to inspect the situation, then choose a real Rocklaw action like move, chat, say, or a role action.';
   }
   if (raw === 'no_action' || raw === 'noop') {
     return 'There is no no_action verb. If nothing urgent is happening, choose a real Rocklaw action such as move, eat, rest, sleep, chat, or say.';
   }
   if (raw === 'wait') {
     return 'There is no wait action in your current contract. If nothing urgent is happening, choose a real Rocklaw action such as move, say, eat, rest, sleep, chat, or a role action.';
+  }
+  if (['buy', 'sell', 'trade', 'give', 'pay', 'accept_transaction', 'reject_transaction'].includes(raw)) {
+    return `Do not use top-level ${raw}. In a live chat scene, use action:"chat" with text plus intent:"${raw}" and the relevant fields instead.`;
   }
   if (raw === 'bless') {
     return 'There is no bless action. Use chat to give a blessing to one person, or use pray for a prayer spoken into the world.';

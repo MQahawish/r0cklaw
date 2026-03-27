@@ -1,10 +1,10 @@
 # HEARTBEAT -- Marcus Hale
 
 ## Recent Activity
-- Day 1 evening: first saw Elena Voss (Blacksmith) at forge.
-- Day 1 evening: buy → Elena Voss (Elena, I'm interested in acquiring some iron ore. I can offe) ⚠ Offer txn-1-2-buy-marcus-hale-1774582740772 created for Elena Voss.
-- Day 2 morning: attempted wait (Waiting for Elena Voss's response to my offer.) [FAILED] ⚠ There is no wait action in your current contract. If nothing urgent is happening
-- Day 2 afternoon: Elena Voss rejected your buy offer [FAILED]
-- Day 2 afternoon: buy → Elena Voss (Elena, I'm still interested in acquiring some iron ore. My o) ⚠ Offer txn-2-4-buy-marcus-hale-1774582773045 created for Elena Voss.
-- Day 2 evening: sleep
-- Day 3 morning: say (Good morning, Elena. Have you had a chance to consider my of)
+- Day 1 afternoon: say (A quiet afternoon at the market.)
+- Day 1 evening: move → inn (Heading to the inn for the evening.)
+- Day 2 morning: first saw Sera (Innkeeper) at inn.
+- Day 2 morning: live chat opened with Sera (your opener was interrupted and saved for context)
+- Day 2 afternoon: chat → Sera (Good morning, Sera. Always a pleasure to see you. I was just) ⚠ Live chat sent to Sera.
+- Day 2 afternoon: chatting with Sera (waiting)
+- Day 3 morning: chat → Sera (Speaking of business, Sera, I'm always looking for opportuni) ⚠ Live chat sent to Sera.

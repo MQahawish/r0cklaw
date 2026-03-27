@@ -47,35 +47,23 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 ## Economic actions right now
 
 ### Available now
-- `reject_transaction`: Recipient-only. Use the short pending offer reference from "Pending offers awaiting your decision", such as `offer-1`.
-- `accept_transaction`: Recipient-only. Use the short pending offer reference from "Pending offers awaiting your decision", such as `offer-1`.
-- `buy`: Available now because a trade partner is here.
-- `sell`: Available now because a trade partner is here.
-- `trade`: Available now because a trade partner is here.
+- `craft:knife`: Available now at forge; knife is priced around 26c.
 
 ### Unavailable here
 - `craft:horseshoe`: Unavailable now. You lack the inputs to craft horseshoe.
 - `craft:tools`: Unavailable now. You lack the inputs to craft tools.
-- `craft:knife`: Unavailable now. You lack the inputs to craft knife.
 - `smelt:tools`: Unavailable now. You lack the inputs to smelt tools.
 ## Act in the world
 
-- `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread
-  Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1}`
+- `chat`: continue your live chat with Marcus Hale. Use the same target until you leave the scene.
+  Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I understand.","duration_ticks":1}`
 
+- `buy`, `sell`, `trade`, `give`, `pay`: direct interpersonal commerce is valid only with Marcus Hale while this live chat stays open.
+  Example JSON: `{"action":"sell","target":"Marcus Hale","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1,"message":"I can sell you one horseshoe for 35 coin."}`
 
+- `leave_chat`: leave the live chat. You may include `text` for a final goodbye line.
+  Example JSON: `{"action":"leave_chat","text":"Goodbye for now.","duration_ticks":1,"thought":"I need to end this conversation now."}`
 
-
-- `move`: use `location` and choose only from `Reachable places now` in `world/location.md, world/CHAT.md, and world/OFFERS.md`
-  Example JSON: `{"action":"move","location":"market","duration_ticks":1}`
-- `eat`: use `item`, optional `quantity`
-  Example JSON: `{"action":"eat","item":"bread","quantity":1,"duration_ticks":1}`
-
-
-## Temporary actions available now
-
-- `rest`: take a short break to recover.
-  Example JSON: `{"action":"rest","duration_ticks":1,"thought":"A short break will help me recover before harder work."}`
 
 ## Speaking into the world
 

@@ -47,9 +47,7 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 ## Economic actions right now
 
 ### Available now
-- `buy`: Available now because a trade partner is here.
-- `sell`: Available now because a trade partner is here.
-- `trade`: Available now because a trade partner is here.
+  (none)
 
 ### Unavailable here
   (none)
@@ -57,13 +55,14 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 
 - `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread
   Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1}`
+- `chat`: continue your live chat with Finn. Use the same target until you leave the scene.
+  Example JSON: `{"action":"chat","target":"Finn","text":"I understand.","duration_ticks":1}`
 
+- `chat` with `intent`: buy, sell, trade, give, pay, accept, or reject through the same spoken turn.
+  Example JSON: `{"action":"chat","target":"Finn","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1}`
 
-- `move`: use `location` and choose only from `Reachable places now` in `world/location.md, world/CHAT.md, and world/OFFERS.md`
-  Example JSON: `{"action":"move","location":"market","duration_ticks":1}`
-- `eat`: use `item`, optional `quantity`
-  Example JSON: `{"action":"eat","item":"bread","quantity":1,"duration_ticks":1}`
-
+- `leave_chat`: leave the live chat. You may include `text` for a final goodbye line.
+  Example JSON: `{"action":"leave_chat","text":"Goodbye for now.","duration_ticks":1,"thought":"I need to end this conversation now."}`
 
 ## Speaking into the world
 
@@ -74,11 +73,13 @@ If you want to pray, return a final JSON action with `"action": "pray"` and put 
 
 ## Merchant skills
 
-- Use `buy` to make direct in-person offers when stock is needed.
-  Example JSON: `{"action":"buy","target":"Finn","item":"grain","quantity":4,"amount":24,"duration_ticks":1,"thought":"Grain is scarce and Finn is here."}`
+- Use `chat` first to open a live conversation. Direct commerce is only valid while you are already in a live chat with that same person.
 
-- Use `sell` to move inventory directly while the other person is present.
-  Example JSON: `{"action":"sell","target":"Elena Voss","item":"coal","quantity":3,"amount":12,"duration_ticks":1,"thought":"Elena needs fuel and we are both here."}`
+- Once the live chat is open, use `chat` with `intent:"buy"` to make an in-person offer for stock.
+  Example JSON: `{"action":"chat","target":"Finn","text":"I can offer 24 coin for four grain.","intent":"buy","item":"grain","quantity":4,"amount":24,"duration_ticks":1}`
 
-- Use `trade` when a direct swap will close faster than coin.
-  Example JSON: `{"action":"trade","target":"Finn","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}],"duration_ticks":1,"thought":"A direct swap is better than waiting on coin."}`
+- Use `chat` with `intent:"sell"` to move inventory directly while that live chat is active.
+  Example JSON: `{"action":"chat","target":"Elena Voss","text":"I can sell you three coal for 12 coin.","intent":"sell","item":"coal","quantity":3,"amount":12,"duration_ticks":1}`
+
+- Use `chat` with `intent:"trade"` when a direct swap will close faster than coin.
+  Example JSON: `{"action":"chat","target":"Finn","text":"I can swap two coal for four grain.","intent":"trade","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}],"duration_ticks":1}`
