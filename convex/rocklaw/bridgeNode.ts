@@ -36,6 +36,21 @@ type WsEvent =
   | { type: 'error'; message?: string; code?: string }
   | { type: string; [key: string]: unknown };
 
+type PlannedTurnResult =
+  | {
+      status: 'action';
+      agentName: string;
+      action: RocklawAction;
+    }
+  | {
+      status: 'rejected';
+      agentName: string;
+      outcome: 'transport_failed' | 'parse_failed' | 'invalid_action';
+      note: string;
+      heartbeatLine: string;
+      pendingNote?: string;
+    };
+
 class ZeroClawTurnError extends Error {
   host?: string;
   events: WsEvent[];
@@ -49,8 +64,8 @@ class ZeroClawTurnError extends Error {
 }
 
 const VALID_ACTIONS = new Set([
-  'talk', 'move', 'rest', 'sleep', 'eat', 'buy', 'sell', 'pay', 'give', 'trade',
-  'accept_transaction', 'reject_transaction', 'wait',
+  'chat', 'leave_chat', 'say', 'move', 'rest', 'sleep', 'eat', 'buy', 'sell', 'pay', 'give', 'trade',
+  'accept_transaction', 'reject_transaction',
   'pray',
   'craft', 'smelt',
   'harvest', 'plant', 'water', 'check_field',
@@ -272,32 +287,237 @@ export const tickAgent = internalAction({
   },
 });
 
+export const planAgentAction = internalAction({
+  args: {
+    agentName: v.string(),
+    tick: v.number(),
+    day: v.number(),
+    timeOfDay: v.string(),
+    promptPrefix: v.optional(v.string()),
+    pendingNote: v.optional(v.string()),
+  },
+  handler: async (ctx, { agentName, tick, day, timeOfDay, promptPrefix, pendingNote }): Promise<PlannedTurnResult> => {
+    const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
+    if (!agent) {
+      return {
+        status: 'rejected',
+        agentName,
+        outcome: 'invalid_action',
+        note: 'Agent not found.',
+        heartbeatLine: summariseFailure(day, timeOfDay, 'agent planning failed', 'Agent not found.'),
+      };
+    }
+
+    if (pendingNote) {
+      await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
+        agentName,
+        note: pendingNote,
+      });
+    }
+
+    await ctx.runAction(internal.rocklaw.worldRefreshNode.refreshWorldFiles, {
+      agentName,
+      tick,
+      day,
+      timeOfDay,
+    });
+
+    const lastHeartbeatLine = await ctx.runAction(internal.rocklaw.worldRefreshNode.getLatestHeartbeatLine, {
+      agentName,
+    });
+
+    const tickMessage = buildTickMessage(
+      day,
+      timeOfDay,
+      tick,
+      lastHeartbeatLine ?? undefined,
+      promptPrefix ?? undefined,
+    );
+    const sessionId = buildSessionId(agentName);
+    const debugRecord: Record<string, unknown> = {
+      timestamp: new Date().toISOString(),
+      phase: 'started',
+      agentName,
+      tick,
+      day,
+      timeOfDay,
+      gatewayPort: agent.gatewayPort,
+      sessionId,
+      prompt: tickMessage,
+      events: [] as unknown[],
+    };
+
+    let rawResponse: string;
+    try {
+      const result = await runZeroClawTurn(agent.gatewayPort, sessionId, agentName, tickMessage);
+      rawResponse = result.finalResponse;
+      debugRecord.gatewayHost = result.host;
+      debugRecord.events = result.events;
+    } catch (err) {
+      const failureMessage = err instanceof Error ? err.message : String(err);
+      debugRecord.phase = 'transport_failed';
+      debugRecord.timestamp = new Date().toISOString();
+      debugRecord.error = failureMessage;
+      if (err instanceof ZeroClawTurnError) {
+        debugRecord.gatewayHost = err.host;
+        debugRecord.events = err.events;
+      }
+      await appendTickDebug(agent.workspacePath, debugRecord);
+      return {
+        status: 'rejected',
+        agentName,
+        outcome: 'transport_failed',
+        note: failureMessage,
+        heartbeatLine: summariseFailure(day, timeOfDay, 'agent turn failed before a final action', failureMessage),
+      };
+    }
+
+    debugRecord.rawResponse = rawResponse;
+    const trimmedResponse = rawResponse.trimStart();
+    const action = extractAction(rawResponse);
+    if (!trimmedResponse.startsWith('{') && action) {
+      debugRecord.responseSalvagedFromWrappedJson = true;
+    }
+
+    if (!trimmedResponse.startsWith('{') && !action) {
+      const note = 'Final response must contain one valid Rocklaw action JSON object.';
+      debugRecord.phase = 'parse_failed';
+      debugRecord.timestamp = new Date().toISOString();
+      debugRecord.validation = { outcome: 'parse_failed', note };
+      await appendTickDebug(agent.workspacePath, debugRecord);
+      return {
+        status: 'rejected',
+        agentName,
+        outcome: 'parse_failed',
+        note,
+        heartbeatLine: summariseFailure(day, timeOfDay, 'response rejected: no recoverable action JSON', note),
+        pendingNote: 'SYSTEM: Return one valid Rocklaw action JSON object. Do not wrap it in prose.',
+      };
+    }
+
+    if (!action) {
+      const note = 'Could not parse final response as Rocklaw action JSON.';
+      debugRecord.phase = 'parse_failed';
+      debugRecord.timestamp = new Date().toISOString();
+      debugRecord.validation = { outcome: 'parse_failed', note };
+      await appendTickDebug(agent.workspacePath, debugRecord);
+      return {
+        status: 'rejected',
+        agentName,
+        outcome: 'parse_failed',
+        note,
+        heartbeatLine: summariseFailure(day, timeOfDay, 'response rejected: JSON parse failed', note),
+        pendingNote: 'SYSTEM: Next response must be JSON only. Start with { and end with }.',
+      };
+    }
+
+    debugRecord.parsedAction = action;
+
+    if (!validateAction(action)) {
+      const note = pseudoActionCorrection(action) ?? 'Parsed JSON was structurally invalid for Rocklaw.';
+      debugRecord.phase = 'invalid_action';
+      debugRecord.timestamp = new Date().toISOString();
+      debugRecord.validation = { outcome: 'invalid_action', note };
+      await appendTickDebug(agent.workspacePath, debugRecord);
+      return {
+        status: 'rejected',
+        agentName,
+        outcome: 'invalid_action',
+        note,
+        heartbeatLine: summariseRejectedAttempt(action, day, timeOfDay, note),
+        pendingNote: 'SYSTEM: Next response must be one valid JSON action object only.',
+      };
+    }
+
+    debugRecord.phase = 'planned';
+    debugRecord.timestamp = new Date().toISOString();
+    debugRecord.validation = { outcome: 'planned', note: null };
+    await appendTickDebug(agent.workspacePath, debugRecord);
+
+    return {
+      status: 'action',
+      agentName,
+      action,
+    };
+  },
+});
+
+export const resolveChatInterrupt = internalAction({
+  args: {
+    agentName: v.string(),
+    tick: v.number(),
+    day: v.number(),
+    timeOfDay: v.string(),
+    previousActionJson: v.string(),
+    incomingJson: v.string(),
+  },
+  handler: async (ctx, { agentName, tick, day, timeOfDay, previousActionJson, incomingJson }): Promise<PlannedTurnResult> => {
+    const previousAction = JSON.parse(previousActionJson) as RocklawAction;
+    const incoming = JSON.parse(incomingJson) as Array<{ fromAgent: string; text: string }>;
+    const incomingLines = incoming.map((entry, index) => `${index + 1}. ${entry.fromAgent}: "${entry.text}"`).join('\n');
+    const promptPrefix = [
+      'LIVE CHAT INTERRUPT:',
+      'You already planned a world action for this tick, but one or more people who are online right now are trying to chat with you live.',
+      'If you return a chat action to one of the people listed below, that chat reply will replace your previously planned action for this tick.',
+      'If you want to keep your previously planned action, return that planned action JSON unchanged.',
+      'Incoming live chats:',
+      incomingLines,
+      '',
+      'Previously planned action JSON:',
+      JSON.stringify(previousAction),
+    ].join('\n');
+
+    return await ctx.runAction(internal.rocklaw.bridgeNode.planAgentAction, {
+      agentName,
+      tick,
+      day,
+      timeOfDay,
+      promptPrefix,
+      pendingNote: `Live chats now: ${incoming.map((entry) => `${entry.fromAgent}`).join(', ')}. Replying replaces your planned action this tick.`,
+    });
+  },
+});
+
+export const appendTickDebugRecord = internalAction({
+  args: {
+    workspacePath: v.string(),
+    recordJson: v.string(),
+  },
+  handler: async (_ctx, { workspacePath, recordJson }) => {
+    await appendTickDebug(workspacePath, JSON.parse(recordJson) as Record<string, unknown>);
+  },
+});
+
 function buildTickMessage(
   day: number,
   timeOfDay: string,
   tick: number,
   lastHeartbeatLine?: string,
+  promptPrefix?: string,
 ): string {
   const sections = [
     `It is ${timeOfDay}, Day ${day}, tick ${tick} in Rocklaw.`,
     `Last tick: ${lastHeartbeatLine ?? 'none yet'}`,
+    ...(promptPrefix ? ['', promptPrefix] : []),
     'Use your files and tools only to understand the situation and decide.',
     'Anchor yourself in HEARTBEAT.md first so your next action follows from what you already did.',
     'Think silently. Read only the minimum files needed. In most ticks, 3-5 reads are enough.',
     'Do observation, inspection, memory recall, and private note-writing inside your tool use, not as the final world action.',
-    'Use only actions currently listed in TOOLS.md. Temporary actions like wait, rest, and sleep appear there only when they are currently available.',
+    'Use only actions currently listed in TOOLS.md. Temporary actions like rest and sleep appear there only when they are currently available.',
     'For move, choose only from Reachable places now in world/location.md.',
     'When you know what to do, stop using tools and return the final answer immediately.',
     'Return exactly one JSON object and nothing else.',
     'The first character must be { and the last character must be }.',
     'No prose before or after the JSON object.',
     'Do not ask clarifying questions. Do not emit tool_code. Do not execute shell commands for world actions.',
-    'Active interactions in world/location.md are current local social moments that may need your response.',
+    'Check world/CHAT.md for who is online, unread chats, and active threads.',
+    'If you need more context with someone, read their thread file under world/chat/<name>/CHAT.md.',
+    'Check world/OFFERS.md for incoming and outgoing offers.',
     'If an active interaction directly addresses you, respond to it before starting unrelated work unless you have a clear reason not to.',
     'buy, sell, and trade create in-person offers when both people are present; they do not transfer goods immediately.',
     'For buy, sell, trade, pay, and give, target a person who is here. Never target a place like market, inn, forge, or square.',
     'If you want to explain why, put it in "thought".',
-    'For talk and pray, put the actual spoken or written content in "text". Use "message" only for optional visible framing when it is distinct.',
+    'For chat, say, pray, and leave_chat, put the actual visible content in "text". Use "message" only for optional visible framing when it is distinct.',
     'Use "memory_note" for the private takeaway.',
     '',
     'Final response schema:',
@@ -305,6 +525,8 @@ function buildTickMessage(
     '',
     'Examples:',
     '{"action":"move","location":"market","duration_ticks":1,"thought":"Need supplies before work stalls.","message":"Going to the market."}',
+    '{"action":"chat","target":"Marcus Hale","text":"Do you still have coal available?","duration_ticks":1,"thought":"I should contact him directly before making an offer."}',
+    '{"action":"say","text":"Fresh bread at the inn this morning.","duration_ticks":1,"thought":"People nearby may hear a local greeting or announcement."}',
     '{"action":"buy","target":"Marcus Hale","item":"coal","quantity":3,"amount":12,"duration_ticks":1,"thought":"I need fuel and he is here with me. This creates an in-person offer, not an immediate transfer. The target must be a person, not a place.","message":"Offering 12 coin for three coal."}',
     '{"action":"accept_transaction","target":"offer-1","duration_ticks":1,"thought":"The offer is fair and we are still together here.","message":"Accepted."}',
     '{"action":"craft","item":"horseshoe","quantity":2,"duration_ticks":1,"consumes":[{"item":"iron_ore","quantity":4},{"item":"coal","quantity":2}],"produces":[{"item":"horseshoe","quantity":2}],"thought":"Market demand is severe and I have the materials.","message":"Crafting two horseshoes."}',
@@ -530,9 +752,12 @@ function validateAction(action: RocklawAction): boolean {
   switch (action.action) {
     case 'move':
       return typeof (action.location ?? action.target) === 'string';
-    case 'talk':
+    case 'chat':
+    case 'say':
     case 'pray':
       return typeof (action.text ?? action.message) === 'string';
+    case 'leave_chat':
+      return true;
     case 'pay':
       return typeof action.target === 'string' && typeof action.amount === 'number';
     case 'accept_transaction':
@@ -558,10 +783,27 @@ function pseudoActionCorrection(action: Partial<RocklawAction> | null | undefine
   const raw = typeof action?.action === 'string' ? action.action.trim().toLowerCase() : '';
   if (!raw) return null;
   if (raw === 'look' || raw === 'inspect' || raw === 'observe' || raw === 'survey' || raw === 'file_write' || raw === 'write_file') {
-    return 'Observation is done through file reads and notes, not as a final world action. Choose a real Rocklaw action like move, talk, rest, sleep, buy, sell, or craft.';
+    return 'Observation is done through file reads and notes, not as a final world action. Choose a real Rocklaw action like move, chat, say, rest, sleep, buy, sell, or craft.';
+  }
+  if (raw === 'gaze' || raw === 'stare' || raw === 'glance') {
+    return 'There is no gaze action. Read files to inspect the situation, then choose a real Rocklaw action like move, chat, say, buy, sell, or craft.';
   }
   if (raw === 'no_action' || raw === 'noop') {
-    return 'There is no no_action verb. If nothing urgent is happening, choose a real Rocklaw action such as wait for a live scene, move, eat, rest, sleep, or talk.';
+    return 'There is no no_action verb. If nothing urgent is happening, choose a real Rocklaw action such as move, eat, rest, sleep, chat, or say.';
+  }
+  if (raw === 'wait') {
+    return 'There is no wait action in your current contract. If nothing urgent is happening, choose a real Rocklaw action such as move, say, eat, rest, sleep, chat, or a role action.';
+  }
+  if (raw === 'bless') {
+    return 'There is no bless action. Use chat to give a blessing to one person, or use pray for a prayer spoken into the world.';
+  }
+  const itemLike = typeof action?.item === 'string'
+    ? action.item.trim().toLowerCase()
+    : typeof action?.target === 'string'
+    ? action.target.trim().toLowerCase()
+    : '';
+  if (raw === 'craft' && itemLike === 'meal') {
+    return 'Meals are not crafted as inventory items. Use sell with item:"meal" when someone is here to be served, or choose another real action.';
   }
   return null;
 }

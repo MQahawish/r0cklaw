@@ -213,6 +213,8 @@ async function clearRocklawTables(ctx: any) {
   await deleteAll(ctx, 'rl_interactions');
   await deleteAll(ctx, 'rl_transactions');
   await deleteAll(ctx, 'rl_messages');
+  await deleteAll(ctx, 'rl_chat_messages');
+  await deleteAll(ctx, 'rl_chat_scenes');
   await deleteAll(ctx, 'rl_actions_log');
   await deleteAll(ctx, 'rl_prayers');
   await deleteAll(ctx, 'rl_world_events');

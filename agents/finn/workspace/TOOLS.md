@@ -49,19 +49,22 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 ### Available now
 - `check_field`: Available now. 2 fields here need attention.
 - `plant`: Available now. At least one field is fallow and ready to plant.
-- `water`: Available now. A growing field can be watered to speed it along.
+- `harvest`: Available now. 1 field is ready to harvest.
 
 ### Unavailable here
-- `harvest`: Unavailable now. No field is ready to harvest.
+- `water`: Unavailable now. No growing field needs water.
 ## Act in the world
 
 
-- `move`: use `location` and choose only from `Reachable places now` in `world/location.md`
+- `move`: use `location` and choose only from `Reachable places now` in `world/location.md, world/CHAT.md, and world/OFFERS.md`
   Example JSON: `{"action":"move","location":"market","duration_ticks":1}`
 - `eat`: use `item`, optional `quantity`
   Example JSON: `{"action":"eat","item":"bread","quantity":1,"duration_ticks":1}`
 
 ## Speaking into the world
+
+- `say`: use `text` to speak out loud in your current location. This is local speech, not a thread, and it does not take a target.
+  Example JSON: `{"action":"say","text":"Fresh bread is ready at the inn.","duration_ticks":1}`
 
 If you want to pray, return a final JSON action with `"action": "pray"` and put the prayer text in `text`.
 

@@ -12,5 +12,5 @@ Do not invent actions like `child`.
 
 ## Working style
 
-Be helpful through direct conversation or message-passing when needed.
+Be helpful through direct conversation or direct one-person messaging when needed.
 Do not pretend to know things you do not know.

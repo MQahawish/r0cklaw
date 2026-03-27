@@ -15,10 +15,11 @@ const INSPECTOR_FILES = [
   { label: 'Plans', file: 'self/plans.md' },
   { label: 'Secrets', file: 'self/secrets.md' },
   { label: 'Desires', file: 'self/desires.md' },
-  { label: 'Sent log', file: 'self/messages/sent_log.md' },
   { label: 'Status', file: 'world/status.md' },
   { label: 'Inventory', file: 'world/inventory.md' },
   { label: 'Location', file: 'world/location.md' },
+  { label: 'Chat', file: 'world/CHAT.md' },
+  { label: 'Offers', file: 'world/OFFERS.md' },
   { label: 'News', file: 'world/village_news.md' },
 ];
 

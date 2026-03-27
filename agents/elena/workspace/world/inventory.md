@@ -1,7 +1,7 @@
-# Inventory -- Elena Voss -- Day 2
+# Inventory -- Elena Voss -- Day 3
 
-iron_ore     3 units
-coal         7 units
+coal         5 units
 bread        2 units
-tools        1 units
+horseshoe    2 units
+knife        1 units
 coin:         20c

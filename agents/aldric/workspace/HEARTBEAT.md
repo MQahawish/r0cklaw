@@ -1,10 +1,10 @@
 # HEARTBEAT -- Brother Aldric
 
 ## Recent Activity
-- Day 1 morning: [awaiting first tick]
-- Day 1 afternoon: first saw Lena Marsh (Herbalist) at shrine.
-- Day 1 afternoon: talk → Lena Marsh (Child, may the light of the divine guide your hands in your ) ⚠ Interaction ix-1-1-talk-brother-aldric-lena-marsh-1774550635160 created for Lena
-- Day 1 evening: pray (May this village be kept in peace and health through the com)
-- Day 2 morning: talk → Lena Marsh (You are worthy, child. Your work is a blessing to us all.) ⚠ Interaction ix-2-3-talk-brother-aldric-lena-marsh-1774550661121 created for Lena
-- Day 2 afternoon: pray (May this village continue to find peace and strength in thei)
-- Day 2 evening: pray (May the blessings of the divine watch over Rocklaw as night )
+- Day 1 evening: chat → Lena Marsh (You are most welcome, child. Go in peace.) ⚠ Live chat sent to Lena Marsh.
+- Day 2 morning: pray (May this day bring peace and grace to all in Rocklaw.)
+- Day 2 afternoon: You turned to other matters before answering Lena Marsh.
+- Day 2 afternoon: chat → Lena Marsh (And to you as well, child. May your morning be blessed.) ⚠ Lena Marsh kept their planned action instead of replying live. Your chat was sen
+- Day 2 evening: You turned to other matters before answering Lena Marsh.
+- Day 2 evening: chat → Lena Marsh (And to you as well, child. May your morning be blessed.) ⚠ Lena Marsh kept their planned action instead of replying live. Your chat was sen
+- Day 3 morning: pray (May this day bring peace and grace to all in Rocklaw.)

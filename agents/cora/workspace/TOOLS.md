@@ -55,17 +55,20 @@ Return one JSON object when you are ready to act. Use only the fields that matte
   (none)
 ## Act in the world
 
+- `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread
+  Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1}`
 
-- `move`: use `location` and choose only from `Reachable places now` in `world/location.md`
+
+- `move`: use `location` and choose only from `Reachable places now` in `world/location.md, world/CHAT.md, and world/OFFERS.md`
   Example JSON: `{"action":"move","location":"market","duration_ticks":1}`
 - `eat`: use `item`, optional `quantity`
   Example JSON: `{"action":"eat","item":"bread","quantity":1,"duration_ticks":1}`
-## Temporary actions available now
 
-- `wait`: remain where you are and keep the current live conversation open.
-  Example JSON: `{"action":"wait","duration_ticks":1,"thought":"Stay here and keep the conversation open for a reply."}`
 
 ## Speaking into the world
+
+- `say`: use `text` to speak out loud in your current location. This is local speech, not a thread, and it does not take a target.
+  Example JSON: `{"action":"say","text":"Fresh bread is ready at the inn.","duration_ticks":1}`
 
 If you want to pray, return a final JSON action with `"action": "pray"` and put the prayer text in `text`.
 

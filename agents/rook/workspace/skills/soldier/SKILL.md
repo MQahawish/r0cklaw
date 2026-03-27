@@ -7,7 +7,7 @@ Do not invent actions like `soldier`.
 
 ## Current role actions
 
-- `talk`: pass on instructions when someone is not here.
+- `chat`: send a direct one-person instruction or update to someone you already know when they are away.
 
 ## Working style
 

@@ -1,18 +1,18 @@
-# Rocklaw Market -- Day 2
+# Rocklaw Market -- Day 3
 
 Item          Price    Change    Note
-iron_ore      10c      +67%      MODERATE shortage
+iron_ore      12c      +100%     MODERATE shortage
 coal          5c       +25%      
-grain         9c       +13%      
-bread         5c       +25%      
+grain         10c      +25%      
+bread         6c       +50%      
 ale           10c      +100%     MODERATE shortage
-horseshoe     37c      +164%     CRITICAL shortage
-medicine      15c      +25%      MODERATE shortage
-tools         45c      +150%     CRITICAL shortage
+horseshoe     34c      +143%     CRITICAL shortage
+medicine      17c      +42%      MODERATE shortage
+tools         48c      +167%     CRITICAL shortage
 axe           42c      +110%     CRITICAL shortage
-knife         26c      +160%     CRITICAL shortage
+knife         25c      +150%     CRITICAL shortage
 herbs         6c       stable    
-meal          23c      +188%     CRITICAL shortage
+meal          25c      +213%     CRITICAL shortage
 
 Shortage alerts:
   ! iron_ore: MODERATE
@@ -25,7 +25,5 @@ Shortage alerts:
   ! meal: CRITICAL
 
 Recent trades:
-  - Sera sell Old Rook (Day 2)
-  - Sera sell Old Rook (Day 1)
-  - Elena Voss sell Cora (Child) (Day 1)
-  - Marcus Hale buy market (Day 1)
+  - Marcus Hale buy Elena Voss (Day 2)
+  - Marcus Hale buy Elena Voss (Day 1)

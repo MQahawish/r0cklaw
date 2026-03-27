@@ -57,7 +57,7 @@ const ACTION_EMOJI: Record<string, string> = {
   serve: '🍺', rent_room: '🛏️', eavesdrop: '👂', post_notice: '📌',
   bless: '✨', counsel: '🙏', preach: '📣', officiate: '🎗️',
   play: '🎮', run_errand: '📦',
-  talk: '💬', buy: '💰', sell: '💰', trade: '🤝',
+  talk: '💬', chat: '💬', say: '📣', buy: '💰', sell: '💰', trade: '🤝',
   give: '🎁', pay: '💸',
   move: '🚶', observe: '👁️', write: '✍️', pray: '🙏',
   leave_message: '✉️', recall: '💭',

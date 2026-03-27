@@ -196,13 +196,384 @@ export const manualTick = action({
       return { tick, day, timeOfDay, agents: [agentName] };
     }
 
-    // Tick all non-busy agents (no self-scheduling in manual mode)
-    const agents = await ctx.runQuery(internal.rocklaw.engine.getNonBusyAgents, { tick });
-    await Promise.all(
-      agents.map((name: string) =>
-        ctx.runAction(internal.rocklaw.bridgeNode.tickAgent, { agentName: name, _manual: true }),
-      ),
+    const allAgents = await ctx.runQuery(internal.rocklaw.engine.getNonBusyAgents, { tick });
+
+    // Process existing live chat scenes first. Participants do not take normal
+    // world actions while the scene is active.
+    const liveScenes = await ctx.runQuery(internal.rocklaw.bridge.listLiveChatScenes, {});
+    const sceneParticipants = new Set<string>();
+    for (const scene of liveScenes) {
+      sceneParticipants.add(scene.agentA);
+      sceneParticipants.add(scene.agentB);
+    }
+
+    for (const scene of liveScenes) {
+      const speaker = scene.nextSpeaker;
+      const partner = scene.agentA === speaker ? scene.agentB : scene.agentA;
+      const speakerPlan = await ctx.runAction(internal.rocklaw.bridgeNode.planAgentAction, {
+        agentName: speaker,
+        tick,
+        day,
+        timeOfDay,
+        promptPrefix: [
+          `You are already in a live chat with ${partner} at ${scene.location}.`,
+          'Your only valid actions right now are `chat` to continue with the same person or `leave_chat` to end the scene.',
+          'You cannot take a normal world action until you leave this chat scene.',
+        ].join('\n'),
+        pendingNote: `LIVE CHAT: You are speaking with ${partner}. Only chat or leave_chat are valid until the scene ends.`,
+      });
+
+      if (speakerPlan.status === 'rejected') {
+        await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+          agentName: speakerPlan.agentName,
+          line: speakerPlan.heartbeatLine,
+        });
+        if (speakerPlan.pendingNote) {
+          await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
+            agentName: speakerPlan.agentName,
+            note: speakerPlan.pendingNote,
+          });
+        }
+      } else {
+        const sceneResult = await ctx.runMutation(internal.rocklaw.bridge.commitAction, {
+          agentName: speaker,
+          action: JSON.stringify(speakerPlan.action),
+          tick,
+          day,
+          chatDeliveryOverride: speakerPlan.action.action === 'chat' ? 'live' : undefined,
+        });
+        await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+          agentName: speaker,
+          line: summariseManualAction(speakerPlan.action, day, timeOfDay, sceneResult?.outcome, sceneResult?.note),
+        });
+        const speakerDoc = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName: speaker });
+        if (speakerDoc) {
+          await ctx.runAction(internal.rocklaw.bridgeNode.appendTickDebugRecord, {
+            workspacePath: speakerDoc.workspacePath,
+            recordJson: JSON.stringify({
+              timestamp: new Date().toISOString(),
+              phase: 'completed',
+              agentName: speaker,
+              tick,
+              day,
+              timeOfDay,
+              parsedAction: speakerPlan.action,
+              validation: {
+                outcome: sceneResult?.outcome ?? 'success',
+                note: sceneResult?.note ?? null,
+              },
+            }),
+          });
+        }
+      }
+
+      const partnerDoc = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName: partner });
+      const partnerScene = await ctx.runQuery(internal.rocklaw.bridge.getLiveChatScene, { agentName: partner });
+      if (partnerDoc && partnerScene) {
+        const waitNote = `Waiting for ${partnerScene.partner}'s next live chat turn.`;
+        await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+          agentName: partner,
+          line: `- Day ${day} ${timeOfDay}: chatting with ${partnerScene.partner} (${partnerScene.yourTurn ? 'your turn' : 'waiting'})`,
+        });
+        await ctx.runAction(internal.rocklaw.bridgeNode.appendTickDebugRecord, {
+          workspacePath: partnerDoc.workspacePath,
+          recordJson: JSON.stringify({
+            timestamp: new Date().toISOString(),
+            phase: 'completed',
+            agentName: partner,
+            tick,
+            day,
+            timeOfDay,
+            parsedAction: {
+              action: 'chat',
+              target: partnerScene.partner,
+              text: '[waiting in live chat]',
+              duration_ticks: 1,
+            },
+            validation: {
+              outcome: 'success',
+              note: waitNote,
+            },
+          }),
+        });
+      }
+    }
+
+    // In manual mode, stage non-scene actions first so new live chats can
+    // interrupt and replace other planned actions before anything commits.
+    const agents = allAgents
+      .filter((name: string) => !sceneParticipants.has(name));
+    const plannedResults = [];
+    const PLAN_BATCH_SIZE = 2;
+    for (let index = 0; index < agents.length; index += PLAN_BATCH_SIZE) {
+      const batch = agents.slice(index, index + PLAN_BATCH_SIZE);
+      const batchResults = await Promise.all(
+        batch.map((name: string) =>
+          ctx.runAction(internal.rocklaw.bridgeNode.planAgentAction, {
+            agentName: name,
+            tick,
+            day,
+            timeOfDay,
+          })),
+      );
+      plannedResults.push(...batchResults);
+    }
+
+    for (const result of plannedResults) {
+      if (result.status !== 'rejected') continue;
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        agentName: result.agentName,
+        line: result.heartbeatLine,
+      });
+      if (result.pendingNote) {
+        await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
+          agentName: result.agentName,
+          note: result.pendingNote,
+        });
+      }
+    }
+
+    const actionablePlans = plannedResults
+      .filter((result: any) => result.status === 'action') as Array<{ status: 'action'; agentName: string; action: any }>;
+    const agentDocs = await Promise.all(
+      actionablePlans.map((plan) => ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName: plan.agentName })),
     );
-    return { tick, day, timeOfDay, agents };
+    const agentByName = new Map(
+      agentDocs.filter(Boolean).map((doc) => [doc!.name, doc!]),
+    );
+    const activeTalkPartnerLists = await Promise.all(
+      actionablePlans.map((plan) => ctx.runQuery(internal.rocklaw.bridge.getActiveTalkPartners, { agentName: plan.agentName })),
+    );
+    const activeTalkPartners = new Map(
+      actionablePlans.map((plan, index) => [plan.agentName, activeTalkPartnerLists[index] ?? []]),
+    );
+
+    const finalActions = new Map(actionablePlans.map((plan) => [plan.agentName, plan.action]));
+    const deferredChats = new Set<string>();
+    const deferredChatReasons = new Map<string, string>();
+    const engagedAgents = new Set<string>(sceneParticipants);
+
+    const liveIncomingByTarget = new Map<string, Array<{ fromAgent: string; text: string }>>();
+    for (const plan of actionablePlans) {
+      const actionDoc = plan.action;
+      if (actionDoc.action !== 'chat' || typeof actionDoc.target !== 'string') continue;
+      const sender = agentByName.get(plan.agentName);
+      const target = agentByName.get(actionDoc.target);
+      if (!sender || !target) continue;
+      const targetActivePartners = activeTalkPartners.get(actionDoc.target) ?? [];
+      if (targetActivePartners.some((partner: string) => partner !== plan.agentName)) {
+        deferredChats.add(plan.agentName);
+        deferredChatReasons.set(
+          plan.agentName,
+          `${actionDoc.target} is already busy chatting with someone else. Your chat was sent to their thread instead.`,
+        );
+        continue;
+      }
+      if (sender.location !== target.location) continue;
+      const incoming = liveIncomingByTarget.get(actionDoc.target) ?? [];
+      incoming.push({
+        fromAgent: plan.agentName,
+        text: typeof actionDoc.text === 'string'
+          ? actionDoc.text
+          : typeof actionDoc.message === 'string'
+          ? actionDoc.message
+          : '',
+      });
+      liveIncomingByTarget.set(actionDoc.target, incoming);
+    }
+
+    for (const [targetName, incoming] of liveIncomingByTarget.entries()) {
+      if (engagedAgents.has(targetName)) {
+        incoming.forEach((entry) => {
+          deferredChats.add(entry.fromAgent);
+          deferredChatReasons.set(
+            entry.fromAgent,
+            `${targetName} stayed busy in another live chat. Your chat was sent to their thread instead.`,
+          );
+        });
+        continue;
+      }
+
+      const targetPlanned = finalActions.get(targetName);
+      if (!targetPlanned) {
+        incoming.forEach((entry) => {
+          deferredChats.add(entry.fromAgent);
+          deferredChatReasons.set(
+            entry.fromAgent,
+            `${targetName} was not available to reply live. Your chat was sent to their thread instead.`,
+          );
+        });
+        continue;
+      }
+
+      const mutualIncoming = incoming.find((entry) =>
+        targetPlanned.action === 'chat' && targetPlanned.target === entry.fromAgent,
+      );
+      if (mutualIncoming) {
+        const targetDoc = agentByName.get(targetName);
+        if (targetDoc) {
+          await ctx.runMutation(internal.rocklaw.bridge.createLiveChatScene, {
+            agentA: targetName,
+            agentB: mutualIncoming.fromAgent,
+            location: targetDoc.location,
+            nextSpeaker: mutualIncoming.fromAgent,
+            tick,
+            day,
+          });
+        }
+        deferredChats.delete(targetName);
+        deferredChatReasons.delete(targetName);
+        deferredChats.delete(mutualIncoming.fromAgent);
+        deferredChatReasons.delete(mutualIncoming.fromAgent);
+        engagedAgents.add(targetName);
+        engagedAgents.add(mutualIncoming.fromAgent);
+        incoming
+          .filter((entry) => entry.fromAgent !== mutualIncoming.fromAgent)
+          .forEach((entry) => {
+            deferredChats.add(entry.fromAgent);
+            deferredChatReasons.set(
+              entry.fromAgent,
+              `${targetName} decided to continue a live chat with ${mutualIncoming.fromAgent} instead. Your chat was sent to their thread.`,
+            );
+          });
+        continue;
+      }
+
+      const interruptResult = await ctx.runAction(internal.rocklaw.bridgeNode.resolveChatInterrupt, {
+        agentName: targetName,
+        tick,
+        day,
+        timeOfDay,
+        previousActionJson: JSON.stringify(targetPlanned),
+        incomingJson: JSON.stringify(incoming),
+      });
+
+      if (interruptResult.status === 'rejected') {
+        await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+          agentName: interruptResult.agentName,
+          line: interruptResult.heartbeatLine,
+        });
+        if (interruptResult.pendingNote) {
+          await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
+            agentName: interruptResult.agentName,
+            note: interruptResult.pendingNote,
+          });
+        }
+        incoming.forEach((entry) => {
+          deferredChats.add(entry.fromAgent);
+          deferredChatReasons.set(
+            entry.fromAgent,
+            `${targetName} did not take your live chat this tick. Your chat was sent to their thread instead.`,
+          );
+        });
+        continue;
+      }
+
+      deferredChats.delete(targetName);
+      deferredChatReasons.delete(targetName);
+      finalActions.set(targetName, interruptResult.action);
+      const chosenSender =
+        interruptResult.action.action === 'chat' && typeof interruptResult.action.target === 'string'
+          ? interruptResult.action.target
+          : null;
+      if (chosenSender && incoming.some((entry) => entry.fromAgent === chosenSender)) {
+        const targetDoc = agentByName.get(targetName);
+        if (targetDoc) {
+          await ctx.runMutation(internal.rocklaw.bridge.createLiveChatScene, {
+            agentA: targetName,
+            agentB: chosenSender,
+            location: targetDoc.location,
+            nextSpeaker: chosenSender,
+            tick,
+            day,
+          });
+        }
+        deferredChats.delete(chosenSender);
+        deferredChatReasons.delete(chosenSender);
+        engagedAgents.add(targetName);
+        engagedAgents.add(chosenSender);
+      }
+      incoming
+        .filter((entry) => entry.fromAgent !== chosenSender)
+        .forEach((entry) => {
+          deferredChats.add(entry.fromAgent);
+          deferredChatReasons.set(
+            entry.fromAgent,
+            chosenSender
+              ? `${targetName} decided to continue a live chat with ${chosenSender} instead. Your chat was sent to their thread.`
+              : `${targetName} kept their planned action instead of replying live. Your chat was sent to their thread.`,
+          );
+        });
+    }
+
+    for (const name of agents) {
+      const actionDoc = finalActions.get(name);
+      if (!actionDoc) continue;
+      const isForcedLiveChat =
+        actionDoc.action === 'chat'
+        && typeof actionDoc.target === 'string'
+        && !deferredChats.has(name)
+        && engagedAgents.has(name)
+        && engagedAgents.has(actionDoc.target);
+      const result = await ctx.runMutation(internal.rocklaw.bridge.commitAction, {
+        agentName: name,
+        action: JSON.stringify(actionDoc),
+        tick,
+        day,
+        chatDeliveryOverride:
+          actionDoc.action === 'chat'
+            ? deferredChats.has(name)
+              ? 'deferred'
+              : isForcedLiveChat
+              ? 'live'
+              : undefined
+            : undefined,
+        chatDeferredReason:
+          actionDoc.action === 'chat' && deferredChats.has(name)
+            ? deferredChatReasons.get(name)
+            : undefined,
+      });
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        agentName: name,
+        line: summariseManualAction(actionDoc, day, timeOfDay, result?.outcome, result?.note),
+      });
+      const agentDoc = agentByName.get(name);
+      if (agentDoc) {
+        await ctx.runAction(internal.rocklaw.bridgeNode.appendTickDebugRecord, {
+          workspacePath: agentDoc.workspacePath,
+          recordJson: JSON.stringify({
+            timestamp: new Date().toISOString(),
+            phase: 'completed',
+            agentName: name,
+            tick,
+            day,
+            timeOfDay,
+            parsedAction: actionDoc,
+            validation: {
+              outcome: result?.outcome ?? 'success',
+              note: result?.note ?? null,
+            },
+          }),
+        });
+      }
+    }
+
+    return { tick, day, timeOfDay, agents: allAgents };
   },
 });
+
+function summariseManualAction(
+  action: Record<string, unknown>,
+  day: number,
+  timeOfDay: string,
+  outcome?: string,
+  outcomeNote?: string | null,
+) {
+  const destination = action.location ?? action.target ?? action.item ?? null;
+  const target = destination ? ` → ${String(destination)}` : '';
+  const noteSource = typeof action.message === 'string' ? action.message : typeof action.text === 'string' ? action.text : '';
+  const note = noteSource ? ` (${noteSource.slice(0, 60)})` : '';
+  const failed = outcome === 'failed' ? ' [FAILED]' : '';
+  const warning = outcomeNote ? ` ⚠ ${String(outcomeNote).slice(0, 80)}` : '';
+  return `- Day ${day} ${timeOfDay}: ${String(action.action)}${target}${note}${failed}${warning}`;
+}

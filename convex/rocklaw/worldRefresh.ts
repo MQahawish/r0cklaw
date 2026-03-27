@@ -22,6 +22,10 @@ type TradeOpportunity = {
   likelyBuys: string[];
 };
 
+function createChatThreadKey(agentA: string, agentB: string): string {
+  return [agentA, agentB].sort((a, b) => a.localeCompare(b)).join('::');
+}
+
 function timeOfDayForTick(tick: number): 'morning' | 'afternoon' | 'evening' {
   const mod = tick % 3;
   if (mod === 1) return 'afternoon';
@@ -463,6 +467,18 @@ export const getWorldSnapshot = internalQuery({
       .order('desc')
       .take(5);
 
+    const recentLocalSpeech = await ctx.db
+      .query('rl_actions_log')
+      .withIndex('tick', (q) => q.gt('tick', tick - 3))
+      .filter((q) =>
+        q.and(
+          q.eq(q.field('action'), 'say'),
+          q.eq(q.field('location'), agent.location),
+        ),
+      )
+      .order('desc')
+      .take(5);
+
     // Reputation score for this agent
     const reputation = await ctx.db
       .query('rl_reputation')
@@ -486,12 +502,18 @@ export const getWorldSnapshot = internalQuery({
       .query('rl_interactions')
       .withIndex('sender_status', (q) => q.eq('fromAgent', agentName).eq('status', 'active'))
       .collect();
+    const liveChatScenes = await ctx.db
+      .query('rl_chat_scenes')
+      .withIndex('status_location', (q) => q.eq('status', 'live').eq('location', agent.location))
+      .collect();
+    const currentChatScene = liveChatScenes.find((scene) => scene.agentA === agentName || scene.agentB === agentName) ?? null;
 
     const counterpartNames = Array.from(new Set([
       ...incomingTransactions.map((txn) => txn.fromAgent),
       ...outgoingTransactions.map((txn) => txn.toAgent),
-      ...receivedInteractions.map((interaction) => interaction.fromAgent),
-      ...sentInteractions.map((interaction) => interaction.toAgent),
+      ...receivedInteractions.filter((interaction) => interaction.kind !== 'talk').map((interaction) => interaction.fromAgent),
+      ...sentInteractions.filter((interaction) => interaction.kind !== 'talk').map((interaction) => interaction.toAgent),
+      ...liveChatScenes.flatMap((scene) => [scene.agentA, scene.agentB]),
     ]));
     const proposers = await Promise.all(
       counterpartNames.map((name) =>
@@ -527,6 +549,91 @@ export const getWorldSnapshot = internalQuery({
       .filter((name) => name !== agent.location)
       .sort((a, b) => a.localeCompare(b));
 
+    const socialKnowledge = await ctx.db
+      .query('rl_social_knowledge')
+      .withIndex('observer', (q) => q.eq('observerAgent', agentName))
+      .collect();
+
+    const sentChatMessages = await ctx.db
+      .query('rl_chat_messages')
+      .withIndex('sender_sent', (q) => q.eq('fromAgent', agentName))
+      .collect();
+    const receivedChatMessages = await ctx.db
+      .query('rl_chat_messages')
+      .withIndex('recipient_sent', (q) => q.eq('toAgent', agentName))
+      .collect();
+    const allChatMessages = [...sentChatMessages, ...receivedChatMessages]
+      .sort((a, b) => a.sentDay - b.sentDay || a.sentTick - b.sentTick);
+
+    const knownContactNames = Array.from(new Set([
+      ...socialKnowledge.map((entry) => entry.subjectAgent),
+      ...allChatMessages.map((entry) => (entry.fromAgent === agentName ? entry.toAgent : entry.fromAgent)),
+    ]));
+
+    const knownContacts = await Promise.all(
+      knownContactNames.map(async (name) => {
+        const contactAgent = await ctx.db
+          .query('rl_agents')
+          .withIndex('name', (q) => q.eq('name', name))
+          .unique();
+        const knowledge = socialKnowledge.find((entry) => entry.subjectAgent === name);
+        if (!contactAgent || !knowledge) {
+          return contactAgent
+            ? {
+                name: contactAgent.name,
+                role: contactAgent.role,
+                location: contactAgent.location,
+                knownRole: contactAgent.role,
+              }
+            : null;
+        }
+        return {
+          name: contactAgent.name,
+          role: contactAgent.role,
+          location: contactAgent.location,
+          knownRole: knowledge.knownRole,
+        };
+      }),
+    );
+
+    const chatThreads = knownContacts
+      .filter(Boolean)
+      .map((contact) => {
+        const threadKey = createChatThreadKey(agentName, contact!.name);
+        const threadMessages = allChatMessages.filter((entry) => entry.threadKey === threadKey);
+        const lastMessage = threadMessages[threadMessages.length - 1] ?? null;
+        const unreadCount = threadMessages.filter((entry) =>
+          entry.toAgent === agentName && entry.fromAgent === contact!.name && entry.status === 'unread').length;
+        const liveScene = currentChatScene
+          && (currentChatScene.agentA === contact!.name || currentChatScene.agentB === contact!.name)
+          ? currentChatScene
+          : null;
+        return {
+          name: contact!.name,
+          role: contact!.role,
+          online: contact!.location === agent.location,
+          live: Boolean(liveScene),
+          yourTurn: liveScene ? liveScene.nextSpeaker === agentName : false,
+          unreadCount,
+          preview: lastMessage?.text ?? '(no messages yet)',
+          messages: threadMessages.slice(-10).map((entry) => ({
+            fromAgent: entry.fromAgent,
+            toAgent: entry.toAgent,
+            text: entry.text,
+            deliveryMode: entry.deliveryMode,
+            status: entry.status,
+            sentDay: entry.sentDay,
+            sentTick: entry.sentTick,
+          })),
+        };
+      })
+      .sort((a, b) => {
+        const unreadDelta = b.unreadCount - a.unreadCount;
+        if (unreadDelta !== 0) return unreadDelta;
+        if (a.online !== b.online) return a.online ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+
     return {
       agent,
       nearby: nearbyOthers,
@@ -538,6 +645,7 @@ export const getWorldSnapshot = internalQuery({
       herbPatchesHere,
       recentTrades,
       mentions,
+      recentLocalSpeech,
       reputation,
       incomingTransactions: orderedIncomingTransactions.map((txn, index) => ({
         ...txn,
@@ -548,17 +656,32 @@ export const getWorldSnapshot = internalQuery({
         ...txn,
         recipientLocation: proposerByName.get(txn.toAgent)?.location ?? null,
       })),
-      activeInteractions: [...receivedInteractions, ...sentInteractions].map((interaction) => ({
+      activeInteractions: [...receivedInteractions, ...sentInteractions]
+        .filter((interaction) => interaction.kind !== 'talk')
+        .map((interaction) => ({
         ...interaction,
         counterpart: interaction.fromAgent === agentName ? interaction.toAgent : interaction.fromAgent,
         counterpartLocation: proposerByName.get(
           interaction.fromAgent === agentName ? interaction.toAgent : interaction.fromAgent,
         )?.location ?? null,
       })),
-      socialKnowledge: await ctx.db
-        .query('rl_social_knowledge')
-        .withIndex('observer', (q) => q.eq('observerAgent', agentName))
-        .collect(),
+      localActiveTalks: liveChatScenes.map((scene) => ({
+        fromAgent: scene.agentA,
+        toAgent: scene.agentB,
+        location: scene.location,
+        nextSpeaker: scene.nextSpeaker,
+      })),
+      currentChatScene: currentChatScene
+        ? {
+            sceneId: currentChatScene.sceneId,
+            partner: currentChatScene.agentA === agentName ? currentChatScene.agentB : currentChatScene.agentA,
+            location: currentChatScene.location,
+            nextSpeaker: currentChatScene.nextSpeaker,
+            yourTurn: currentChatScene.nextSpeaker === agentName,
+          }
+        : null,
+      socialKnowledge,
+      chatThreads,
       economicSurface: buildEconomicSurface({
         agent,
         nearby: nearbyOthers,

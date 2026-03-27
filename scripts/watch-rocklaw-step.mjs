@@ -6,6 +6,19 @@ import path from "path";
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const AGENTS = ["elena", "marcus", "finn", "lena", "sera", "aldric", "cora", "rook"];
 
+function readLiveChatScene(agent) {
+  const locationPath = path.join(ROOT, "agents", agent, "workspace", "world", "location.md");
+  if (!fs.existsSync(locationPath)) return null;
+  const content = fs.readFileSync(locationPath, "utf8");
+  const match = content.match(/Your live chat:\n\s*- With (.+?) at (.+?) \[(YOUR TURN|.+?'s turn)\]/m);
+  if (!match) return null;
+  return {
+    partner: match[1],
+    location: match[2],
+    turnLabel: match[3],
+  };
+}
+
 function readLastTerminalRecord(agent) {
   const debugPath = path.join(ROOT, "agents", agent, "workspace", "state", "tick-debug.jsonl");
   if (!fs.existsSync(debugPath)) return null;
@@ -48,14 +61,52 @@ function worldHeader(records) {
   return `Tick ${latest.tick} | Day ${latest.day} | ${latest.timeOfDay}`;
 }
 
-const records = AGENTS.map((agent) => ({ agent, record: readLastTerminalRecord(agent) }));
+function pairKey(left, right) {
+  return [left, right].sort((a, b) => a.localeCompare(b)).join("::");
+}
+
+function sceneEventLabel(entry, latestByName) {
+  const leftRecord = latestByName.get(entry.left)?.record;
+  const rightRecord = latestByName.get(entry.right)?.record;
+  const relevant = [leftRecord, rightRecord].find((record) => {
+    const note = record?.validation?.note;
+    return typeof note === "string" && note.trim() !== "";
+  });
+  return typeof relevant?.validation?.note === "string" ? relevant.validation.note : "";
+}
+
+const records = AGENTS.map((agent) => ({
+  agent,
+  record: readLastTerminalRecord(agent),
+  liveScene: readLiveChatScene(agent),
+}));
+const latestByName = new Map();
+for (const entry of records) {
+  latestByName.set(entry.agent, entry);
+  if (entry.record?.agentName) latestByName.set(entry.record.agentName, entry);
+}
+const sceneMap = new Map();
+for (const entry of records) {
+  if (!entry.liveScene) continue;
+  const agentDisplay = entry.record?.agentName ?? entry.agent;
+  const key = pairKey(agentDisplay, entry.liveScene.partner);
+  if (sceneMap.has(key)) continue;
+  sceneMap.set(key, {
+    left: agentDisplay,
+    right: entry.liveScene.partner,
+    location: entry.liveScene.location,
+    turnLabel: entry.liveScene.turnLabel,
+  });
+}
+const worldActionRecords = records.filter((entry) => !entry.liveScene);
 
 console.log("Rocklaw World Step");
 console.log("------------------------------------------------------------------------------");
 console.log(worldHeader(records.map((entry) => entry.record)));
 console.log("");
 
-for (const { agent, record } of records) {
+console.log("WORLD ACTIONS");
+for (const { agent, record } of worldActionRecords) {
   if (!record) {
     console.log(`${agent.padEnd(8)} no tick record yet`);
     continue;
@@ -67,6 +118,22 @@ for (const { agent, record } of records) {
   console.log(
     `${agent.padEnd(8)} ${formatAction(record).padEnd(28)} ${formatOutcome(record)}${message}`,
   );
+}
+
+if (worldActionRecords.length === 0) {
+  console.log("(none)");
+}
+
+console.log("");
+console.log("LIVE CHAT SCENES");
+if (sceneMap.size === 0) {
+  console.log("(none)");
+} else {
+  for (const scene of sceneMap.values()) {
+    const eventLabel = sceneEventLabel(scene, latestByName);
+    const eventNote = eventLabel ? ` | ${eventLabel}` : "";
+    console.log(`- ${scene.left} <-> ${scene.right} @ ${scene.location} | ${scene.turnLabel}${eventNote}`);
+  }
 }
 
 console.log("");

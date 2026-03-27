@@ -76,7 +76,7 @@ const EFFORT_COSTS: Record<string, number> = {
   play: -10,  // play restores child energy
   run_errand: 8, recall_war: 2,
   // Universal
-  move: 5, talk: 2, buy: 2, sell: 2, pay: 1, give: 1,
+  move: 5, chat: 2, leave_chat: 0, say: 1, message: 2, talk: 2, buy: 2, sell: 2, pay: 1, give: 1,
   trade: 2, accept_transaction: 1, reject_transaction: 1, wait: 0, observe: 1, write: 2, pray: 0,
   recall: 0,
   eat: 0, rest: -40, sleep: -100,
@@ -213,7 +213,7 @@ function normaliseAction(parsed: RocklawAction): RocklawAction {
   if (action === 'move' && !normalized.location && target) {
     normalized.location = target;
   }
-  if ((action === 'talk' || action === 'write' || action === 'pray' || action === 'eavesdrop') && !normalized.text && parsed.message) {
+  if ((action === 'chat' || action === 'say' || action === 'message' || action === 'talk' || action === 'write' || action === 'pray' || action === 'eavesdrop') && !normalized.text && parsed.message) {
     normalized.text = parsed.message;
   }
   if ((action === 'craft' || action === 'repair' || action === 'smelt' || action === 'eat' || action === 'buy' || action === 'sell' || action === 'give') && !normalized.item && target) {
@@ -401,6 +401,163 @@ async function targetAgentAtSameLocation(ctx: any, actorLocation: string, target
   return { ok: true, targetAgent };
 }
 
+function createChatThreadKey(agentA: string, agentB: string): string {
+  return [agentA, agentB].sort((a, b) => a.localeCompare(b)).join('::');
+}
+
+function createChatSceneId(agentA: string, agentB: string, tick: number, day: number): string {
+  const [left, right] = [agentA, agentB].sort((a, b) => a.localeCompare(b));
+  const leftSlug = left.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const rightSlug = right.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  return `chat-${day}-${tick}-${leftSlug}-${rightSlug}-${Date.now()}`;
+}
+
+async function getAgentByName(ctx: any, agentName: string) {
+  return ctx.db
+    .query('rl_agents')
+    .withIndex('name', (q: any) => q.eq('name', agentName))
+    .unique();
+}
+
+async function listLiveChatScenesForAgent(ctx: any, agentName: string) {
+  const [asA, asB] = await Promise.all([
+    ctx.db
+      .query('rl_chat_scenes')
+      .withIndex('agentA_status', (q: any) => q.eq('agentA', agentName).eq('status', 'live'))
+      .collect(),
+    ctx.db
+      .query('rl_chat_scenes')
+      .withIndex('agentB_status', (q: any) => q.eq('agentB', agentName).eq('status', 'live'))
+      .collect(),
+  ]);
+  return [...asA, ...asB];
+}
+
+async function getLiveChatSceneForAgent(ctx: any, agentName: string) {
+  const scenes = await listLiveChatScenesForAgent(ctx, agentName);
+  return scenes[0] ?? null;
+}
+
+function getScenePartner(scene: any, agentName: string) {
+  return scene.agentA === agentName ? scene.agentB : scene.agentA;
+}
+
+async function advanceLiveChatSceneForSpeaker(ctx: any, agentName: string, tick: number, day: number) {
+  const scene = await getLiveChatSceneForAgent(ctx, agentName);
+  if (!scene) return null;
+  await ctx.db.patch(scene._id, {
+    nextSpeaker: getScenePartner(scene, agentName),
+    lastSpeaker: agentName,
+    lastActiveTick: tick,
+    lastActiveDay: day,
+  });
+  return scene;
+}
+
+async function closeLiveChatSceneForAgent(
+  ctx: any,
+  agentName: string,
+  tick: number,
+  day: number,
+  reason?: string,
+) {
+  const scene = await getLiveChatSceneForAgent(ctx, agentName);
+  if (!scene) return null;
+  await ctx.db.patch(scene._id, {
+    status: 'closed',
+    closeReason: reason ?? `${agentName} left the chat.`,
+    closedTick: tick,
+    closedDay: day,
+    lastActiveTick: tick,
+    lastActiveDay: day,
+  });
+  return {
+    scene,
+    partner: getScenePartner(scene, agentName),
+  };
+}
+
+async function hasKnownContact(ctx: any, observerAgent: string, subjectAgent: string) {
+  const existing = await ctx.db
+    .query('rl_social_knowledge')
+    .withIndex('observer_subject', (q: any) => q.eq('observerAgent', observerAgent).eq('subjectAgent', subjectAgent))
+    .unique();
+  return Boolean(existing);
+}
+
+async function markUnreadChatFromContactRead(
+  ctx: any,
+  recipientName: string,
+  fromAgent: string,
+  tick: number,
+  day: number,
+) {
+  const unread = await ctx.db
+    .query('rl_chat_messages')
+    .withIndex('recipient_status', (q: any) => q.eq('toAgent', recipientName).eq('status', 'unread'))
+    .collect();
+  await Promise.all(
+    unread
+      .filter((message: any) => message.fromAgent === fromAgent)
+      .map((message: any) =>
+        ctx.db.patch(message._id, {
+          status: 'read',
+          readTick: tick,
+          readDay: day,
+        })),
+  );
+}
+
+async function createChatMessage(
+  ctx: any,
+  args: {
+    fromAgent: string;
+    toAgent: string;
+    text: string;
+    deliveryMode: 'live' | 'deferred';
+    tick: number;
+    day: number;
+  },
+) {
+  const threadKey = createChatThreadKey(args.fromAgent, args.toAgent);
+  await ctx.db.insert('rl_chat_messages', {
+    threadKey,
+    fromAgent: args.fromAgent,
+    toAgent: args.toAgent,
+    text: args.text,
+    deliveryMode: args.deliveryMode,
+    status: 'unread',
+    sentTick: args.tick,
+    sentDay: args.day,
+  });
+  return threadKey;
+}
+
+async function createLocalSpeechNotes(
+  ctx: any,
+  args: {
+    speaker: string;
+    location: string;
+    text: string;
+    tick: number;
+    day: number;
+  },
+) {
+  const nearby = await ctx.db
+    .query('rl_agents')
+    .withIndex('location', (q: any) => q.eq('location', args.location))
+    .collect();
+  await Promise.all(
+    nearby
+      .filter((agent: any) => agent.name !== args.speaker)
+      .map((agent: any) =>
+        ctx.scheduler.runAfter(0, internal.rocklaw.bridge.setAgentPendingNote, {
+          agentName: agent.name,
+          note: `You heard ${args.speaker} say: "${args.text}"`,
+        })),
+  );
+}
+
 function parseOfferReference(rawTarget: string): number | null {
   const trimmed = rawTarget.trim().toLowerCase();
   const match = trimmed.match(/^offer-(\d+)$/) ?? trimmed.match(/^(\d+)$/);
@@ -486,6 +643,42 @@ async function resolveLocationName(ctx: any, rawLocation: string | null | undefi
 
 async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAction, tick?: number): Promise<WorldValidation> {
   const destination = parsed.location ?? parsed.target ?? null;
+  const activeChatScene = await getLiveChatSceneForAgent(ctx, agentDoc.name);
+
+  if (activeChatScene) {
+    const partner = getScenePartner(activeChatScene, agentDoc.name);
+    if (parsed.action === 'leave_chat') {
+      return { ok: true };
+    }
+    if (parsed.action !== 'chat') {
+      return {
+        ok: false,
+        note: `You are currently in a live chat with ${partner}. Only chat or leave_chat are allowed until you leave that scene.`,
+      };
+    }
+    if (parsed.target !== partner) {
+      return {
+        ok: false,
+        note: `You are currently in a live chat with ${partner}. Continue chatting with them or use leave_chat.`,
+      };
+    }
+    if (typeof tick === 'number' && activeChatScene.openedTick === tick) {
+      if (!(parsed.text ?? parsed.message)) {
+        return { ok: false, note: 'chat requires text.' };
+      }
+      return { ok: true };
+    }
+    if (activeChatScene.nextSpeaker !== agentDoc.name) {
+      return {
+        ok: false,
+        note: `It is ${partner}'s turn in your live chat. Wait for their reply or leave_chat.`,
+      };
+    }
+    if (!(parsed.text ?? parsed.message)) {
+      return { ok: false, note: 'chat requires text.' };
+    }
+    return { ok: true };
+  }
 
   if (Array.isArray(parsed.consumes) && parsed.consumes.length > 0) {
     const consumesForShortfall = parsed.consumes.filter((entry: any) => {
@@ -511,6 +704,27 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
       if (locationDoc.name === agentDoc.location) return { ok: false, note: `You are already at ${locationDoc.name}.` };
       return { ok: true, resolvedLocation: locationDoc.name };
     }
+    case 'chat': {
+      if (!parsed.target) {
+        return { ok: false, note: 'chat requires a target agent. Use a known person from CHAT.md. Chats are one-to-one only.' };
+      }
+      if (parsed.target === agentDoc.name) return { ok: false, note: 'chat requires another agent, not yourself.' };
+      const targetAgent = await getAgentByName(ctx, parsed.target);
+      if (!targetAgent) return { ok: false, note: `Target agent not found: ${parsed.target}.` };
+      const knownAlready = await hasKnownContact(ctx, agentDoc.name, parsed.target);
+      const visibleNow = targetAgent.location === agentDoc.location;
+      if (!knownAlready && !visibleNow) {
+        return { ok: false, note: `You can only chat known contacts from CHAT.md. You have not met ${parsed.target} yet.` };
+      }
+      if (!(parsed.text ?? parsed.message)) {
+        return { ok: false, note: 'chat requires text.' };
+      }
+      return { ok: true };
+    }
+    case 'say':
+      if (parsed.target) return { ok: false, note: 'say is local speech and does not take a target. Use chat for one-to-one communication.' };
+      if (!(parsed.text ?? parsed.message)) return { ok: false, note: 'say requires text.' };
+      return { ok: true };
     case 'talk':
     case 'pay':
     case 'buy':
@@ -697,10 +911,10 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
         }
       }
       return { ok: true };
+    case 'leave_chat':
+      return { ok: false, note: 'You are not in a live chat right now.' };
     case 'wait':
-      return await agentHasLiveWaitScene(ctx, agentDoc)
-        ? { ok: true }
-        : { ok: false, note: 'wait is only valid when you are holding a live local conversation or offer scene open.' };
+      return { ok: false, note: 'There is no wait action in your current contract.' };
     case 'rest':
       return agentDoc.energy < 60
         ? { ok: true }
@@ -750,6 +964,7 @@ async function recordFailedAction(
     agentName,
     action: parsed.action,
     target: parsed.target ?? parsed.location ?? parsed.item ?? undefined,
+    location: agentDoc.location,
     message: parsed.text ?? parsed.message,
     tick,
     day,
@@ -830,6 +1045,11 @@ async function markTalkInteractionResponded(
   });
 }
 
+async function agentHasActiveTalk(ctx: any, agentName: string) {
+  const scene = await getLiveChatSceneForAgent(ctx, agentName);
+  return Boolean(scene);
+}
+
 async function findReciprocalSameTickTalk(
   ctx: any,
   fromAgent: string,
@@ -851,24 +1071,15 @@ async function findReciprocalSameTickTalk(
   ) ?? null;
 }
 
-async function agentHasActiveTalk(ctx: any, agentName: string) {
-  const received = await ctx.db
-    .query('rl_interactions')
-    .withIndex('recipient_status', (q: any) => q.eq('toAgent', agentName).eq('status', 'active'))
-    .collect();
-  if (received.some((interaction: any) => interaction.kind === 'talk')) return true;
-
-  const sent = await ctx.db
-    .query('rl_interactions')
-    .withIndex('sender_status', (q: any) => q.eq('fromAgent', agentName).eq('status', 'active'))
-    .collect();
-  return sent.some((interaction: any) => interaction.kind === 'talk');
+async function getActiveTalkPartnersForAgent(ctx: any, agentName: string) {
+  const scenes = await listLiveChatScenesForAgent(ctx, agentName);
+  return scenes.map((scene: any) => getScenePartner(scene, agentName));
 }
 
 async function agentHasLivePendingTransactionScene(ctx: any, agentDoc: any) {
   const incoming = await ctx.db
     .query('rl_transactions')
-    .withIndex('to_status', (q: any) => q.eq('toAgent', agentDoc.name).eq('status', 'pending'))
+    .withIndex('recipient_status', (q: any) => q.eq('toAgent', agentDoc.name).eq('status', 'pending'))
     .collect();
   for (const txn of incoming) {
     const counterparty = await ctx.db
@@ -880,7 +1091,7 @@ async function agentHasLivePendingTransactionScene(ctx: any, agentDoc: any) {
 
   const outgoing = await ctx.db
     .query('rl_transactions')
-    .withIndex('from_status', (q: any) => q.eq('fromAgent', agentDoc.name).eq('status', 'pending'))
+    .withIndex('sender_status', (q: any) => q.eq('fromAgent', agentDoc.name).eq('status', 'pending'))
     .collect();
   for (const txn of outgoing) {
     const counterparty = await ctx.db
@@ -1027,6 +1238,7 @@ async function createTalkInteraction(
       agentName: agentDoc.name,
       action: parsed.action,
       target: parsed.target ?? undefined,
+      location: agentDoc.location,
       message: text,
       tick,
       day,
@@ -1071,6 +1283,7 @@ async function createTalkInteraction(
     agentName: agentDoc.name,
     action: parsed.action,
     target: parsed.target ?? undefined,
+    location: agentDoc.location,
     message: text,
     tick,
     day,
@@ -1090,6 +1303,93 @@ async function createTalkInteraction(
     outcome: 'success',
     note: `Interaction ${interactionId} created for ${parsed.target}.`,
     interactionId,
+  };
+}
+
+async function sendChatAction(
+  ctx: any,
+  agentDoc: any,
+  parsed: RocklawAction,
+  tick: number,
+  day: number,
+  newEnergy: number,
+  newHealth: number,
+  finalHunger: number,
+  deliveryOverride?: 'live' | 'deferred',
+  deferredReason?: string,
+) {
+  const text = parsed.text ?? parsed.message ?? '';
+  const targetAgent = await getAgentByName(ctx, parsed.target!);
+  if (!targetAgent) {
+    return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, `Target agent not found: ${parsed.target}.`);
+  }
+
+  await markUnreadChatFromContactRead(ctx, agentDoc.name, parsed.target!, tick, day);
+  const targetActivePartners = await getActiveTalkPartnersForAgent(ctx, parsed.target!);
+  const targetAlreadyChattingWithOther = targetActivePartners.some((partner: string) => partner !== agentDoc.name);
+  const deliveryMode: 'live' | 'deferred' = deliveryOverride
+    ?? ((targetAgent.location === agentDoc.location && !targetAlreadyChattingWithOther) ? 'live' : 'deferred');
+  await createChatMessage(ctx, {
+    fromAgent: agentDoc.name,
+    toAgent: parsed.target!,
+    text,
+    deliveryMode,
+    tick,
+    day,
+  });
+
+  if (deliveryMode === 'live') {
+    await ctx.db.insert('rl_actions_log', {
+      agentName: agentDoc.name,
+      action: parsed.action,
+      target: parsed.target ?? undefined,
+      location: agentDoc.location,
+      message: text,
+      tick,
+      day,
+      outcome: 'success',
+      outcomeNote: `Live chat message sent to ${parsed.target}.`,
+    });
+
+    await ctx.db.patch(agentDoc._id, {
+      energy: newEnergy,
+      health: newHealth,
+      hunger: finalHunger,
+      busy: false,
+      busyUntilTick: undefined,
+    });
+
+    return {
+      note: `Live chat sent to ${parsed.target}.`,
+      outcome: 'success',
+    };
+  }
+
+  await ctx.db.insert('rl_actions_log', {
+    agentName: agentDoc.name,
+    action: parsed.action,
+    target: parsed.target ?? undefined,
+    location: agentDoc.location,
+    message: text,
+    tick,
+    day,
+    outcome: 'success',
+    outcomeNote: deferredReason ?? `Deferred chat sent to ${parsed.target}.`,
+  });
+
+  await ctx.db.patch(agentDoc._id, {
+    energy: newEnergy,
+    health: newHealth,
+    hunger: finalHunger,
+    busy: false,
+    busyUntilTick: undefined,
+  });
+
+  await appendPendingNote(ctx, parsed.target!, `New chat from ${agentDoc.name}. Check CHAT.md.`);
+
+  return {
+    outcome: 'success',
+    note: deferredReason ?? `${parsed.target} is not here. Your chat was sent to their thread.`,
   };
 }
 
@@ -1137,6 +1437,7 @@ async function createPendingTransaction(
     agentName: agentDoc.name,
     action: parsed.action,
     target: parsed.target ?? undefined,
+    location: agentDoc.location,
     message: parsed.text ?? parsed.message,
     tick,
     day,
@@ -1259,6 +1560,7 @@ async function resolveTransactionResponse(
       agentName: agentDoc.name,
       action: parsed.action,
       target: txn.txnId,
+      location: agentDoc.location,
       message: parsed.message,
       tick,
       day,
@@ -1434,6 +1736,7 @@ async function resolveTransactionResponse(
     agentName: proposer.name,
     action: txn.kind,
     target: agentDoc.name,
+    location: proposer.location,
     message: txn.message,
     tick,
     day,
@@ -1444,6 +1747,7 @@ async function resolveTransactionResponse(
     agentName: agentDoc.name,
     action: parsed.action,
     target: txn.txnId,
+    location: agentDoc.location,
     message: parsed.message,
     tick,
     day,
@@ -1474,6 +1778,98 @@ export const getAgent = internalQuery({
   args: { agentName: v.string() },
   handler: async (ctx, { agentName }) => {
     return ctx.db.query('rl_agents').withIndex('name', (q) => q.eq('name', agentName)).unique();
+  },
+});
+
+export const getActiveTalkPartners = internalQuery({
+  args: { agentName: v.string() },
+  handler: async (ctx, { agentName }) => {
+    const scenes = await listLiveChatScenesForAgent(ctx, agentName);
+    return Array.from(new Set(scenes.map((scene: any) => getScenePartner(scene, agentName))));
+  },
+});
+
+export const getLiveChatScene = internalQuery({
+  args: { agentName: v.string() },
+  handler: async (ctx, { agentName }) => {
+    const scene = await getLiveChatSceneForAgent(ctx, agentName);
+    if (!scene) return null;
+    return {
+      ...scene,
+      partner: getScenePartner(scene, agentName),
+    };
+  },
+});
+
+export const listLiveChatScenes = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const scenes = await ctx.db
+      .query('rl_chat_scenes')
+      .withIndex('status_location', (q: any) => q.eq('status', 'live'))
+      .collect();
+    return scenes;
+  },
+});
+
+export const createLiveChatScene = internalMutation({
+  args: {
+    agentA: v.string(),
+    agentB: v.string(),
+    location: v.string(),
+    nextSpeaker: v.string(),
+    tick: v.number(),
+    day: v.number(),
+  },
+  handler: async (ctx, { agentA, agentB, location, nextSpeaker, tick, day }) => {
+    const existingA = await getLiveChatSceneForAgent(ctx, agentA);
+    if (existingA) return existingA.sceneId;
+    const existingB = await getLiveChatSceneForAgent(ctx, agentB);
+    if (existingB) return existingB.sceneId;
+    const sceneId = createChatSceneId(agentA, agentB, tick, day);
+    await ctx.db.insert('rl_chat_scenes', {
+      sceneId,
+      agentA,
+      agentB,
+      location,
+      status: 'live',
+      nextSpeaker,
+      openedTick: tick,
+      openedDay: day,
+      lastActiveTick: tick,
+      lastActiveDay: day,
+    });
+    return sceneId;
+  },
+});
+
+export const advanceLiveChatScene = internalMutation({
+  args: {
+    agentName: v.string(),
+    tick: v.number(),
+    day: v.number(),
+  },
+  handler: async (ctx, { agentName, tick, day }) => {
+    const scene = await advanceLiveChatSceneForSpeaker(ctx, agentName, tick, day);
+    return scene?.sceneId ?? null;
+  },
+});
+
+export const closeLiveChatScene = internalMutation({
+  args: {
+    agentName: v.string(),
+    tick: v.number(),
+    day: v.number(),
+    reason: v.optional(v.string()),
+  },
+  handler: async (ctx, { agentName, tick, day, reason }) => {
+    const closed = await closeLiveChatSceneForAgent(ctx, agentName, tick, day, reason);
+    return closed
+      ? {
+          sceneId: closed.scene.sceneId,
+          partner: closed.partner,
+        }
+      : null;
   },
 });
 
@@ -1602,8 +1998,10 @@ export const commitAction = internalMutation({
     action: v.string(),  // JSON-stringified RocklawAction
     tick: v.number(),
     day: v.number(),
+    chatDeliveryOverride: v.optional(v.union(v.literal('live'), v.literal('deferred'))),
+    chatDeferredReason: v.optional(v.string()),
   },
-  handler: async (ctx, { agentName, action, tick, day }) => {
+  handler: async (ctx, { agentName, action, tick, day, chatDeliveryOverride, chatDeferredReason }) => {
     const parsed: RocklawAction = normaliseAction(JSON.parse(action) as RocklawAction);
     const agentDoc = await ctx.db
       .query('rl_agents')
@@ -1668,6 +2066,7 @@ export const commitAction = internalMutation({
         agentName,
         action: parsed.action,
         target: parsed.target ?? parsed.location ?? parsed.item ?? undefined,
+        location: agentDoc.location,
         message: parsed.text ?? parsed.message,
         tick,
         day,
@@ -1778,6 +2177,61 @@ export const commitAction = internalMutation({
       );
     }
 
+    if (parsed.action === 'leave_chat') {
+      const closed = await closeLiveChatSceneForAgent(ctx, agentName, tick, day, `${agentName} left the live chat.`);
+      const closingText = parsed.text ?? parsed.message ?? '';
+      if (closed?.partner && closingText.trim() !== '') {
+        await markUnreadChatFromContactRead(ctx, agentDoc.name, closed.partner, tick, day);
+        await createChatMessage(ctx, {
+          fromAgent: agentDoc.name,
+          toAgent: closed.partner,
+          text: closingText,
+          deliveryMode: 'live',
+          tick,
+          day,
+        });
+      }
+      await ctx.db.insert('rl_actions_log', {
+        agentName,
+        action: parsed.action,
+        target: closed?.partner ?? undefined,
+        location: agentDoc.location,
+        message: closingText || undefined,
+        tick,
+        day,
+        outcome: 'success',
+        outcomeNote: closed?.partner
+          ? closingText.trim() !== ''
+            ? `Left live chat with ${closed.partner} after saying goodbye.`
+            : `Left live chat with ${closed.partner}.`
+          : 'Left live chat.',
+      });
+      await ctx.db.patch(agentDoc._id, {
+        energy: newEnergy,
+        health: newHealth,
+        hunger: finalHunger,
+        busy: false,
+        busyUntilTick: undefined,
+      });
+      if (closed?.partner) {
+        await appendPendingNote(
+          ctx,
+          closed.partner,
+          closingText.trim() !== ''
+            ? `${agentName} closed the live chat after saying: "${closingText}"`
+            : `${agentName} left your live chat.`,
+        );
+      }
+      return {
+        outcome: 'success',
+        note: closed?.partner
+          ? closingText.trim() !== ''
+            ? `You said goodbye and left the live chat with ${closed.partner}.`
+            : `You left the live chat with ${closed.partner}.`
+          : 'You left the live chat.',
+      };
+    }
+
     if (parsed.action === 'accept_transaction' || parsed.action === 'reject_transaction') {
       return resolveTransactionResponse(
         ctx,
@@ -1789,6 +2243,44 @@ export const commitAction = internalMutation({
         newHealth,
         finalHunger,
       );
+    }
+
+    if (parsed.action === 'chat') {
+      const result = await sendChatAction(
+        ctx,
+        agentDoc,
+        parsed,
+        tick,
+        day,
+        newEnergy,
+        newHealth,
+        finalHunger,
+        chatDeliveryOverride,
+        chatDeferredReason,
+      );
+      if ((chatDeliveryOverride === 'live') && result?.outcome === 'success') {
+        const scene = await getLiveChatSceneForAgent(ctx, agentName);
+        if (scene) {
+          await ctx.db.patch(scene._id, {
+            nextSpeaker: getScenePartner(scene, agentName),
+            lastSpeaker: agentName,
+            lastActiveTick: tick,
+            lastActiveDay: day,
+          });
+        }
+      }
+      return result;
+    }
+
+    if (parsed.action === 'say') {
+      const speech = parsed.text ?? parsed.message ?? '';
+      await createLocalSpeechNotes(ctx, {
+        speaker: agentDoc.name,
+        location: agentDoc.location,
+        text: speech,
+        tick,
+        day,
+      });
     }
 
     if (parsed.action === 'pay' || parsed.action === 'give') {
@@ -1900,6 +2392,7 @@ export const commitAction = internalMutation({
       agentName,
       action: parsed.action,
       target: parsed.target ?? parsed.location ?? parsed.item ?? undefined,
+      location: newLocation,
       message: parsed.text ?? parsed.message,
       tick,
       day,

@@ -49,7 +49,7 @@ export const rocklawTables = {
     lastUpdated: v.number(),
   }).index('item', ['item']),
 
-  // Asynchronous letter system. Delivered by location or via Cora.
+  // Legacy location-based messaging system. Kept for migration/backfill only.
   rl_messages: defineTable({
     fromAgent: v.string(),
     toAgent: v.string(),
@@ -67,6 +67,58 @@ export const rocklawTables = {
   })
     .index('toAgent', ['toAgent', 'status'])
     .index('fromAgent', ['fromAgent', 'daySent']),
+
+  // Unified chat messages. Same-location contacts are treated as live; others
+  // receive deferred unread messages in their thread.
+  rl_chat_messages: defineTable({
+    threadKey: v.string(),
+    fromAgent: v.string(),
+    toAgent: v.string(),
+    text: v.string(),
+    deliveryMode: v.union(
+      v.literal('live'),
+      v.literal('deferred'),
+    ),
+    status: v.union(
+      v.literal('unread'),
+      v.literal('read'),
+    ),
+    sentTick: v.number(),
+    sentDay: v.number(),
+    readTick: v.optional(v.number()),
+    readDay: v.optional(v.number()),
+  })
+    .index('thread_sent', ['threadKey', 'sentDay', 'sentTick'])
+    .index('recipient_status', ['toAgent', 'status', 'sentDay', 'sentTick'])
+    .index('recipient_sent', ['toAgent', 'sentDay', 'sentTick'])
+    .index('sender_sent', ['fromAgent', 'sentDay', 'sentTick']),
+
+  // First-class live chat scenes. These replace rl_interactions.kind === 'talk'
+  // as the source of truth for ongoing synchronous conversation.
+  rl_chat_scenes: defineTable({
+    sceneId: v.string(),
+    agentA: v.string(),
+    agentB: v.string(),
+    location: v.string(),
+    status: v.union(
+      v.literal('pending'),
+      v.literal('live'),
+      v.literal('closed'),
+    ),
+    nextSpeaker: v.string(),
+    lastSpeaker: v.optional(v.string()),
+    openedTick: v.number(),
+    openedDay: v.number(),
+    lastActiveTick: v.number(),
+    lastActiveDay: v.number(),
+    closeReason: v.optional(v.string()),
+    closedTick: v.optional(v.number()),
+    closedDay: v.optional(v.number()),
+  })
+    .index('sceneId', ['sceneId'])
+    .index('agentA_status', ['agentA', 'status'])
+    .index('agentB_status', ['agentB', 'status'])
+    .index('status_location', ['status', 'location']),
 
   // In-person commerce offers. Created by buy/sell/trade and settled later on explicit acceptance.
   rl_transactions: defineTable({
@@ -199,6 +251,7 @@ export const rocklawTables = {
     agentName: v.string(),
     action: v.string(),
     target: v.optional(v.string()),
+    location: v.optional(v.string()),
     message: v.optional(v.string()),
     tick: v.number(),
     day: v.number(),

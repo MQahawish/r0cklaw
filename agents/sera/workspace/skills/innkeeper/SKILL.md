@@ -13,7 +13,7 @@ Do not invent actions like `innkeeper`.
   Example JSON: `{"action":"sell","target":"Marcus Hale","item":"bread","quantity":2,"amount":6,"duration_ticks":1,"thought":"Move fresh stock while people are here."}`
 - `pay` / `give`: settle small obligations directly.
   Example JSON: `{"action":"pay","target":"Cora","amount":2,"duration_ticks":1}`
-- `talk`: pass along lodging or meeting information.
+- `chat`: send a direct one-person update to someone you already know. Do not broadcast to the whole village.
 
 ## Working style
 

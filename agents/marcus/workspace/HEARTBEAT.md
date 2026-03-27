@@ -1,10 +1,10 @@
 # HEARTBEAT -- Marcus Hale
 
 ## Recent Activity
-- Day 1 evening: first saw Old Rook (Retired Soldier) at market.
-- Day 1 evening: move → forge (I'm heading to the forge to see if I can find iron ore there)
-- Day 2 morning: first saw Elena Voss (Blacksmith) at forge.
-- Day 2 morning: first saw Cora (Child) at forge.
-- Day 2 morning: talk → Elena Voss (Good morning, Elena. I'm looking for iron ore. Do you have a) ⚠ Interaction ix-2-3-talk-marcus-hale-elena-voss-1774550660479 created for Elena V
-- Day 2 afternoon: wait
-- Day 2 evening: talk → Cora (Hello, Cora. I am doing well, thank you. Just looking for so) ⚠ Interaction ix-2-5-talk-marcus-hale-cora-1774550680932 created for Cora.
+- Day 1 evening: first saw Elena Voss (Blacksmith) at forge.
+- Day 1 evening: buy → Elena Voss (Elena, I'm interested in acquiring some iron ore. I can offe) ⚠ Offer txn-1-2-buy-marcus-hale-1774582740772 created for Elena Voss.
+- Day 2 morning: attempted wait (Waiting for Elena Voss's response to my offer.) [FAILED] ⚠ There is no wait action in your current contract. If nothing urgent is happening
+- Day 2 afternoon: Elena Voss rejected your buy offer [FAILED]
+- Day 2 afternoon: buy → Elena Voss (Elena, I'm still interested in acquiring some iron ore. My o) ⚠ Offer txn-2-4-buy-marcus-hale-1774582773045 created for Elena Voss.
+- Day 2 evening: sleep
+- Day 3 morning: say (Good morning, Elena. Have you had a chance to consider my of)

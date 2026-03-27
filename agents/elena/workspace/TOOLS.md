@@ -47,25 +47,40 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 ## Economic actions right now
 
 ### Available now
+- `reject_transaction`: Recipient-only. Use the short pending offer reference from "Pending offers awaiting your decision", such as `offer-1`.
+- `accept_transaction`: Recipient-only. Use the short pending offer reference from "Pending offers awaiting your decision", such as `offer-1`.
 - `buy`: Available now because a trade partner is here.
 - `sell`: Available now because a trade partner is here.
 - `trade`: Available now because a trade partner is here.
-- `craft:horseshoe`: Available now at forge; horseshoe is priced around 37c.
-- `craft:tools`: Available now at forge; tools is priced around 45c.
-- `craft:knife`: Available now at forge; knife is priced around 26c.
-- `smelt:tools`: Available now at forge; tools is priced around 45c.
 
 ### Unavailable here
-  (none)
+- `craft:horseshoe`: Unavailable now. You lack the inputs to craft horseshoe.
+- `craft:tools`: Unavailable now. You lack the inputs to craft tools.
+- `craft:knife`: Unavailable now. You lack the inputs to craft knife.
+- `smelt:tools`: Unavailable now. You lack the inputs to smelt tools.
 ## Act in the world
 
+- `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread
+  Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1}`
 
-- `move`: use `location` and choose only from `Reachable places now` in `world/location.md`
+
+
+
+- `move`: use `location` and choose only from `Reachable places now` in `world/location.md, world/CHAT.md, and world/OFFERS.md`
   Example JSON: `{"action":"move","location":"market","duration_ticks":1}`
 - `eat`: use `item`, optional `quantity`
   Example JSON: `{"action":"eat","item":"bread","quantity":1,"duration_ticks":1}`
 
+
+## Temporary actions available now
+
+- `rest`: take a short break to recover.
+  Example JSON: `{"action":"rest","duration_ticks":1,"thought":"A short break will help me recover before harder work."}`
+
 ## Speaking into the world
+
+- `say`: use `text` to speak out loud in your current location. This is local speech, not a thread, and it does not take a target.
+  Example JSON: `{"action":"say","text":"Fresh bread is ready at the inn.","duration_ticks":1}`
 
 If you want to pray, return a final JSON action with `"action": "pray"` and put the prayer text in `text`.
 

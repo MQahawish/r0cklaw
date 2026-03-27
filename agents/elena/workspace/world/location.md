@@ -1,4 +1,4 @@
-# Location -- Elena Voss -- Day 2, evening
+# Location -- Elena Voss -- Day 3, morning
 
 Current: forge
 
@@ -9,25 +9,29 @@ Economic stations and resources here:
 ## Live Now
 Possible trade partners here:
   - Marcus Hale (Merchant): likely sells grain, coal; likely buys iron_ore, horseshoe, tools, knife, medicine
-  - Cora (Child): likely sells nothing obvious right now; likely buys bread
 
 Nearby:
   - Marcus Hale (Merchant)
-  - Cora (Child)
 
 Message board:
   (none)
 
 Pending offers awaiting your decision:
-  (none)
+  - offer-1: Marcus Hale buys with you: offers 80 coin for 8 iron_ore -- "Elena, I'm still interested in acquiring some iron ore. My offer of 80 coin for 8 units stands."
   Respond to these with `accept_transaction` or `reject_transaction` only if the other person is still here.
 
 Your outgoing offers:
   (none)
-  These are your offers. Do not accept or reject them yourself. Wait, talk, or make a different offer instead.
+  These are your offers. Do not accept or reject them yourself. Chat, move, or make a different offer instead.
 
 Active interactions here:
-  - Marcus Hale is addressing Elena Voss: "Good morning, Elena. I'm looking for iron ore. Do you have any to sell?"
+  - Marcus Hale buys Elena Voss: offers 80 coin for 8 iron_ore -- "Elena, I'm still interested in acquiring some iron ore. My offer of 80 coin for 8 units stands."
+
+People chatting here:
+  (none)
+
+Recent local speech:
+  (none)
 
 First seen here:
   (none)
