@@ -172,173 +172,64 @@ function buildLocationMd(
   day: number,
   timeOfDay: string,
   data: any,
-  firstSeenContacts: Array<{ name: string; role: string; location: string }> = [],
+  _firstSeenContacts: Array<{ name: string; role: string; location: string }> = [],
 ): string {
-  const localActiveTalks = Array.isArray(data.localActiveTalks) ? data.localActiveTalks : [];
   const chattingNames = new Set<string>();
+  const localActiveTalks = Array.isArray(data.localActiveTalks) ? data.localActiveTalks : [];
   for (const interaction of localActiveTalks) {
     chattingNames.add(interaction.fromAgent);
     chattingNames.add(interaction.toAgent);
   }
-  const nearbyLines = data.nearby.length === 0
-    ? '  (nobody nearby)'
-    : data.nearby.map((a: any) => `  - ${a.name} (${a.role})${chattingNames.has(a.name) ? ' [CHATTING]' : ''}`).join('\n');
-
-  const board = data.locationDoc?.messageBoard
-    ? JSON.parse(data.locationDoc.messageBoard) as string[]
-    : [];
-  const boardLines = board.length === 0
-    ? '  (none)'
-    : board.map((m: string) => `  - ${m}`).join('\n');
-
+  const nearbyLines = Array.isArray(data.nearby) && data.nearby.length > 0
+    ? data.nearby.map((a: any) => `- ${a.name} (${a.role})${chattingNames.has(a.name) ? ' [CHATTING]' : ''}`).join('\n')
+    : '';
   const sections = [
     `# Location -- ${agentName} -- Day ${day}, ${timeOfDay}`,
     '',
-    `Current: ${data.agent.location}`,
-    '',
-    '## Place',
-    'Economic stations and resources here:',
-    buildEconomicLocationState(data),
-    '',
-    '## Live Now',
-    'Possible trade partners here:',
-    buildTradeOpportunitiesSection(data),
-    '',
-    'Nearby:',
-    nearbyLines,
-    '',
-    'Message board:',
-    boardLines,
-    '',
+    `- current: ${data.agent.location}`,
   ];
 
-  const incomingOffers = Array.isArray(data.incomingTransactions) ? data.incomingTransactions : [];
-  const incomingOfferLines = incomingOffers.length === 0
-    ? '  (none)'
-    : incomingOffers.map((txn: any) => {
-        const offer = JSON.parse(txn.offerJson) as Array<{ item: string; quantity: number }>;
-        const request = JSON.parse(txn.requestJson) as Array<{ item: string; quantity: number }>;
-        const offerText = offer.length === 0 ? 'nothing' : offer.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
-        const requestText = request.length === 0 ? 'nothing' : request.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
-        const locationNote = txn.proposerLocation === data.agent.location
-          ? ''
-          : ` [${txn.fromAgent} is no longer here]`;
-        const messageNote = txn.message ? ` -- "${txn.message}"` : '';
-        return `  - ${txn.responseRef}: ${txn.fromAgent} ${txn.kind}s with you: offers ${offerText} for ${requestText}${locationNote}${messageNote}`;
-      }).join('\n');
-  sections.push('Pending offers awaiting your decision:');
-  sections.push(incomingOfferLines);
-  sections.push('  Respond to these with `chat` plus `intent:"accept_transaction"` or `intent:"reject_transaction"` only while you are already in a live chat with the offer sender and they are still here.');
-  sections.push('');
+  if (nearbyLines) {
+    sections.push('');
+    sections.push('## nearby');
+    sections.push(nearbyLines);
+  }
 
-  const outgoingOffers = Array.isArray(data.outgoingTransactions) ? data.outgoingTransactions : [];
-  const outgoingOfferLines = outgoingOffers.length === 0
-    ? '  (none)'
-    : outgoingOffers.map((txn: any) => {
-        const offer = JSON.parse(txn.offerJson) as Array<{ item: string; quantity: number }>;
-        const request = JSON.parse(txn.requestJson) as Array<{ item: string; quantity: number }>;
-        const offerText = offer.length === 0 ? 'nothing' : offer.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
-        const requestText = request.length === 0 ? 'nothing' : request.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
-        const locationNote = txn.recipientLocation === data.agent.location
-          ? ''
-          : ` [${txn.toAgent} is no longer here]`;
-        const messageNote = txn.message ? ` -- "${txn.message}"` : '';
-        return `  - ${txn.txnId}: you ${txn.kind} ${txn.toAgent}: offers ${offerText} for ${requestText}${locationNote}${messageNote}`;
-      }).join('\n');
-  sections.push('Your outgoing offers:');
-  sections.push(outgoingOfferLines);
-  sections.push('  These are your offers. Do not accept or reject them yourself. Chat, move, or make a different offer instead.');
-  sections.push('');
-
-  const activeInteractions = Array.isArray(data.activeInteractions) ? data.activeInteractions : [];
-  const interactionLines = activeInteractions.length === 0
-    ? '  (none)'
-    : activeInteractions.map((interaction: any) => {
-        const payload = interaction.payloadJson
-          ? JSON.parse(interaction.payloadJson) as {
-              text?: string;
-              message?: string;
-              offer?: Array<{ item: string; quantity: number }>;
-              request?: Array<{ item: string; quantity: number }>;
-              deferredReplyText?: string;
-              deferredReplyFrom?: string;
-            }
-          : {};
-        const locationNote = interaction.counterpartLocation === data.agent.location
-          ? ''
-          : ` [${interaction.counterpart} is no longer here]`;
-        if (interaction.kind === 'talk') {
-          const text = payload.text ?? payload.message ?? '(no text)';
-          const deferredNote =
-            interaction.toAgent === data.agent.name && payload.deferredReplyText && payload.deferredReplyFrom === data.agent.name
-              ? ` | Your deferred opener: "${payload.deferredReplyText}"`
-              : '';
-          return `  - ${interaction.fromAgent} is addressing ${interaction.toAgent}: "${text}"${locationNote}${deferredNote}`;
-        }
-        const offer = Array.isArray(payload.offer) ? payload.offer : [];
-        const request = Array.isArray(payload.request) ? payload.request : [];
-        const offerText = offer.length === 0 ? 'nothing' : offer.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
-        const requestText = request.length === 0 ? 'nothing' : request.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
-        const messageNote = payload.message ? ` -- "${payload.message}"` : '';
-        return `  - ${interaction.fromAgent} ${interaction.kind}s ${interaction.toAgent}: offers ${offerText} for ${requestText}${locationNote}${messageNote}`;
-      }).join('\n');
-
-  sections.push('Active interactions here:');
-  sections.push(interactionLines);
-  sections.push('');
-
-  const liveChatLines = localActiveTalks.length === 0
-    ? '  (none)'
-    : localActiveTalks.map((interaction: any) => `  - ${interaction.fromAgent} and ${interaction.toAgent} are chatting.`).join('\n');
-  sections.push('People chatting here:');
-  sections.push(liveChatLines);
-  sections.push('');
+  const reachableLines = Array.isArray(data.reachableLocations) && data.reachableLocations.length > 0
+    ? data.reachableLocations.map((name: string) => `- ${name}`).join('\n')
+    : '';
+  if (reachableLines) {
+    sections.push('');
+    sections.push('## reachable');
+    sections.push(reachableLines);
+  }
 
   if (data.currentChatScene) {
-    sections.push('Your live chat:');
-    sections.push(`  - With ${data.currentChatScene.partner} at ${data.currentChatScene.location} [${data.currentChatScene.yourTurn ? 'YOUR TURN' : `${data.currentChatScene.partner}'s turn`}]`);
-    if (data.currentChatScene.interruptionContext) {
-      sections.push(`  - You were about to say: "${data.currentChatScene.interruptionContext.interruptedText}"`);
-      sections.push(`  - But ${data.currentChatScene.interruptionContext.openingSpeaker} spoke first: "${data.currentChatScene.interruptionContext.openingText}"`);
-    }
+    const partnerSlug = slugifyAgentName(data.currentChatScene.partner);
     sections.push('');
+    sections.push('## live_chat');
+    sections.push(`- with: ${data.currentChatScene.partner}`);
+    sections.push(`- chat_file: world/chat/${partnerSlug}/CHAT.md`);
   }
-
-  const recentLocalSpeech = Array.isArray(data.recentLocalSpeech) ? data.recentLocalSpeech : [];
-  const localSpeechLines = recentLocalSpeech.length === 0
-    ? '  (none)'
-    : recentLocalSpeech.map((entry: any) => `  - ${entry.agentName}: "${entry.message ?? '(no text)'}"`).join('\n');
-  sections.push('Recent local speech:');
-  sections.push(localSpeechLines);
-  sections.push('');
-
-  const firstSeenLines = firstSeenContacts.length === 0
-    ? '  (none)'
-    : firstSeenContacts.map((contact) => `  - You notice someone here for the first time: ${contact.name} (${contact.role}).`).join('\n');
-  sections.push('First seen here:');
-  sections.push(firstSeenLines);
-  sections.push('');
-
-  if (data.agent.pendingNote) {
-    sections.push('Recent changes:');
-    sections.push(`  ${data.agent.pendingNote}`);
-    sections.push('');
-  }
-
-  sections.push('## Navigation');
-  sections.push('Reachable places now:');
-  sections.push(
-    Array.isArray(data.reachableLocations) && data.reachableLocations.length > 0
-      ? data.reachableLocations.map((name: string) => `  - ${name}`).join('\n')
-      : '  (none)',
-  );
-  sections.push('');
 
   return sections.join('\n');
 }
 
 function slugifyAgentName(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function normalizeLegacyChatTerminology(content: string): string {
+  return content
+    .replace(/`talk`/g, '`chat`')
+    .replace(/`message`/g, '`chat`')
+    .replace(/ talk /g, ' chat ')
+    .replace(/ message /g, ' chat ')
+    .replace(/Use talk for direct communication\./g, 'Use chat for one-to-one communication.')
+    .replace(/Use message for direct communication\./g, 'Use chat for one-to-one communication.')
+    .replace(/Use talk/g, 'Use chat')
+    .replace(/Use message/g, 'Use chat')
+    .replace(/active local interaction/g, 'live chat');
 }
 
 function buildChatMd(data: any): string {
@@ -408,22 +299,28 @@ function buildOffersMd(data: any): string {
   };
 
   const incomingLines = incomingOffers.length === 0
-    ? '- (none)'
+    ? ''
     : incomingOffers.map((txn: any) => formatOffer(txn, txn.responseRef)).join('\n');
   const outgoingLines = outgoingOffers.length === 0
-    ? '- (none)'
+    ? ''
     : outgoingOffers.map((txn: any) => formatOffer(txn, txn.txnId)).join('\n');
 
-  return [
-    '# Offers',
-    '',
-    'INCOMING',
-    incomingLines,
-    '',
-    'OUTGOING',
-    outgoingLines,
-    '',
-  ].join('\n');
+  const sections = ['# Offers', ''];
+  if (incomingLines) {
+    sections.push('INCOMING');
+    sections.push(incomingLines);
+    sections.push('');
+  }
+  if (outgoingLines) {
+    sections.push('OUTGOING');
+    sections.push(outgoingLines);
+    sections.push('');
+  }
+  if (!incomingLines && !outgoingLines) {
+    sections.push('No pending offers.');
+    sections.push('');
+  }
+  return sections.join('\n');
 }
 
 function buildEconomicLocationState(data: any): string {
@@ -455,7 +352,7 @@ function buildEconomicLocationState(data: any): string {
 
 function buildTradeOpportunitiesSection(data: any): string {
   const opportunities = Array.isArray(data.tradeOpportunities) ? data.tradeOpportunities : [];
-  if (opportunities.length === 0) return '  (none)';
+  if (opportunities.length === 0) return '';
 
   return opportunities
     .map((entry: any) => {
@@ -472,22 +369,28 @@ function buildTradeOpportunitiesSection(data: any): string {
 
 function buildVillageNewsMd(day: number, data: any): string {
   const eventLines = data.events.length === 0
-    ? '  Nothing unusual to report.'
+    ? ''
     : data.events.map((e: any) => `  - ${e.description}`).join('\n');
 
   const mentionLines = data.mentions.length === 0
-    ? '  - Nothing yet.'
+    ? ''
     : data.mentions.map((m: any) => `  - ${m.agentName} ${m.action}${m.target ? ` → ${m.target}` : ''}${m.message ? `: "${m.message}"` : ''}`).join('\n');
-
-  return [
-    `# Village News -- Day ${day}`,
-    '',
-    eventLines,
-    '',
-    'You were mentioned:',
-    mentionLines,
-    '',
-  ].join('\n');
+  const sections = [`# Village News -- Day ${day}`, ''];
+  if (eventLines) {
+    sections.push('Events:');
+    sections.push(eventLines);
+    sections.push('');
+  }
+  if (mentionLines) {
+    sections.push('You were mentioned:');
+    sections.push(mentionLines);
+    sections.push('');
+  }
+  if (!eventLines && !mentionLines) {
+    sections.push('No notable village updates right now.');
+    sections.push('');
+  }
+  return sections.join('\n');
 }
 
 function buildMarketPricesMd(day: number, data: any): string {
@@ -501,15 +404,26 @@ function buildMarketPricesMd(day: number, data: any): string {
 
   const alerts = prices.filter((p: any) => p.shortageLevel !== 'none');
   const alertLines = alerts.length === 0
-    ? '  (none)'
+    ? ''
     : alerts.map((p: any) => `  ! ${p.item}: ${p.shortageLevel.toUpperCase()}`).join('\n');
 
   const tradeLogs = data.recentTrades as any[];
   const tradeLines = tradeLogs.length === 0
-    ? '  (none yet)'
+    ? ''
     : tradeLogs.map((t: any) => `  - ${t.agentName} ${t.action} ${t.target ?? ''} (Day ${t.day})`).join('\n');
 
-  return [header, rows.join('\n'), '', 'Shortage alerts:', alertLines, '', 'Recent trades:', tradeLines, ''].join('\n');
+  const sections = [header, rows.join('\n'), ''];
+  if (alertLines) {
+    sections.push('Shortage alerts:');
+    sections.push(alertLines);
+    sections.push('');
+  }
+  if (tradeLines) {
+    sections.push('Recent trades:');
+    sections.push(tradeLines);
+    sections.push('');
+  }
+  return sections.join('\n');
 }
 
 function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: any): string {
@@ -544,28 +458,10 @@ function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: 
     ? '\n  ! Low reputation: you pay 10% more at market. Help others to improve your standing.'
     : '';
 
-  const affordances: string[] = [];
-  if (data.currentChatScene) {
-    affordances.push(`  - chat: continue your live chat with ${data.currentChatScene.partner}.`);
-    affordances.push(`  - chat intent: if you want to buy, sell, trade, give, pay, accept, or reject inside this scene, keep action:"chat" and add intent plus the relevant fields.`);
-    if (Array.isArray(data.incomingTransactions) && data.incomingTransactions.some((txn: any) => txn.fromAgent === data.currentChatScene.partner)) {
-      affordances.push(`  - offer_ref: use it on chat intent:"accept_transaction" or intent:"reject_transaction" while you remain in this live chat.`);
-    }
-    affordances.push('  - leave_chat: leave the live chat and return to the world on the next tick.');
-  } else {
-    if (energy < 60) {
-      affordances.push(`  - rest: available now because your energy is ${energy}/100.`);
-    }
-    if (timeOfDay === 'evening') {
-      affordances.push('  - sleep: available now because it is evening.');
-    } else if (energy < 20) {
-      affordances.push(`  - sleep: available now because your energy is critically low (${energy}/100).`);
-    }
-  }
-  const affordanceLines = affordances.length === 0 ? '  (none)' : affordances.join('\n');
   const economicNeeds = buildEconomicNeeds(data);
+  const hasEconomicNeeds = economicNeeds !== '  (no urgent economic pressure right now)';
 
-  return [
+  const sections = [
     `# Status -- ${agentName} -- Day ${day}, ${timeOfDay}`,
     '',
     `Energy:     ${energy}/100  ${energyLabel}`,
@@ -575,13 +471,13 @@ function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: 
     '',
     `Conditions: ${conditionLine}`,
     '',
-    'Economic pressure:',
-    economicNeeds,
-    '',
-    'Action affordances:',
-    affordanceLines,
-    '',
-  ].join('\n');
+  ];
+  if (hasEconomicNeeds) {
+    sections.push('Economic pressure:');
+    sections.push(economicNeeds);
+    sections.push('');
+  }
+  return sections.join('\n');
 }
 
 function buildEconomicNeeds(data: any): string {
@@ -687,102 +583,134 @@ function buildEconomicActionsSection(data: any): string {
   }
 
   const entries = Array.isArray(data.economicSurface) ? data.economicSurface : [];
-  const incomingOffers = Array.isArray(data.incomingTransactions) ? data.incomingTransactions : [];
   const available = entries.filter((entry: any) => entry.status === 'available');
-  const unavailable = entries.filter((entry: any) => entry.status === 'unavailable');
-
-  if (incomingOffers.length > 0) {
-    unavailable.unshift({
-      action: 'chat + intent:"accept_transaction"',
-      detail: 'Unavailable here. Open a live chat with the offer sender first, then respond inside that scene.',
-    });
-    unavailable.unshift({
-      action: 'chat + intent:"reject_transaction"',
-      detail: 'Unavailable here. Open a live chat with the offer sender first, then respond inside that scene.',
-    });
-  }
-
-  const formatLines = (list: any[]) =>
-    list.length === 0
-      ? '  (none)'
-      : list.map((entry: any) => `- \`${entry.action}\`: ${entry.detail}`).join('\n');
+  const formatLines = (list: any[]) => list.map((entry: any) => `- \`${entry.action}\`: ${entry.detail}`).join('\n');
+  if (available.length === 0) return '';
 
   return [
     '## Economic actions right now',
     '',
-    '### Available now',
+    '### Available actions',
     formatLines(available),
-    '',
-    '### Unavailable here',
-    formatLines(unavailable),
     '',
   ].join('\n');
 }
 
 async function refreshRuntimeToolsMd(workspaceDir: string, timeOfDay: string, data: any): Promise<void> {
-  const backupPath = path.join(workspaceDir, 'state', 'seeded_docs', 'TOOLS.md');
   const runtimePath = path.join(workspaceDir, 'TOOLS.md');
-
-  let template = '';
-  try {
-    template = await fs.readFile(backupPath, 'utf8');
-  } catch {
-    template = await fs.readFile(runtimePath, 'utf8');
-  }
-
-  const temporarySection = buildTemporaryActionsSection(timeOfDay, data);
-  const economicSection = buildEconomicActionsSection(data);
-  const canChatNow = Array.isArray(data.nearby) && data.nearby.length > 0;
+  const actions: Array<{ name: string; meaning: string; example: string }> = [];
   const inLiveChat = Boolean(data.currentChatScene);
-  const chatBlock = canChatNow
-    ? [
-        '- `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread',
-        '  Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1}`',
-      ].join('\n')
-    : '';
-  const sayBlock = [
-    '- `say`: use `text` to speak out loud in your current location. This is local speech, not a thread, and it does not take a target.',
-    '  Example JSON: `{"action":"say","text":"Fresh bread is ready at the inn.","duration_ticks":1}`',
-  ].join('\n');
-  const moveBlock = [
-    '- `move`: use `location` and choose only from `Reachable places now` in `world/location.md`',
-    '  Example JSON: `{"action":"move","location":"market","duration_ticks":1}`',
-  ].join('\n');
-  let content = template
-    .replace(/- `talk`: use `target` and `text`; this creates an active local interaction if the other person is here\n\s*Example JSON: `\{"action":"talk","target":"Marcus Hale","text":"I need coal by Day 9\.","duration_ticks":1\}`/, chatBlock)
-    .replace(/- `message`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred message in their CHAT thread\n\s*Example JSON: `\{"action":"message","target":"Marcus Hale","text":"I need coal by Day 9\.","duration_ticks":1\}`/, chatBlock)
-    .replace(/- `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread\n\s*Example JSON: `\{"action":"chat","target":"Marcus Hale","text":"I need coal by Day 9\.","duration_ticks":1\}`/, chatBlock)
-    .replace('- `move`: use `location`\n  Example JSON: `{"action":"move","location":"market","duration_ticks":1}`', moveBlock)
-    .replace(/## Economic actions[\s\S]*?## Act in the world\n\n/, `${economicSection}## Act in the world\n\n`)
-    .replace(/## Innkeeper skills[\s\S]*$/m, `## Innkeeper skills\n\n- Use \`chat\` first to open a live conversation with a guest. Structured commerce is only valid while that live chat is active.\n\n- There is no separate \`craft\` action for meals. Meal service happens through \`chat\` with \`intent:"sell"\` and \`item:"meal"\` while you are already chatting live with the guest.\n\n- Example JSON: \`{"action":"chat","target":"Old Rook","text":"A hot meal is ready if you want one.","intent":"sell","item":"meal","quantity":1,"amount":8,"duration_ticks":1}\`\n`)
-    .replace(/## Priest skills[\s\S]*?(?=\n## |\n$)/m, `## Priest skills\n\n- Use \`chat\` to offer blessings, guidance, or comfort directly to one person.\n  Example JSON: \`{"action":"chat","target":"Lena Marsh","text":"May peace and health be upon you, child.","duration_ticks":1,"thought":"Offer a blessing through direct chat."}\`\n\n- Use \`pray\` for prayers spoken into the world.\n  Example JSON: \`{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1,"thought":"Offer a prayer for the village."}\`\n\n- If you want to hand supplies to someone, open a live chat first. \`give\` is only valid inside that chat scene.\n`)
-    .replace(/## Merchant skills[\s\S]*$/m, `## Merchant skills\n\n- Use \`chat\` first to open a live conversation. Direct commerce is only valid while you are already in a live chat with that same person.\n\n- Once the live chat is open, use \`chat\` with \`intent:"buy"\` to make an in-person offer for stock.\n  Example JSON: \`{"action":"chat","target":"Finn","text":"I can offer 24 coin for four grain.","intent":"buy","item":"grain","quantity":4,"amount":24,"duration_ticks":1}\`\n\n- Use \`chat\` with \`intent:"sell"\` to move inventory directly while that live chat is active.\n  Example JSON: \`{"action":"chat","target":"Elena Voss","text":"I can sell you three coal for 12 coin.","intent":"sell","item":"coal","quantity":3,"amount":12,"duration_ticks":1}\`\n\n- Use \`chat\` with \`intent:"trade"\` when a direct swap will close faster than coin.\n  Example JSON: \`{"action":"chat","target":"Finn","text":"I can swap two coal for four grain.","intent":"trade","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}],"duration_ticks":1}\`\n`);
-  content = content
-    .replace(/`talk`/g, '`chat`')
-    .replace(/`message`/g, '`chat`')
-    .replace(/ talk /g, ' chat ')
-    .replace(/ message /g, ' chat ')
-    .replace(/Talk/gs, 'Chat')
-    .replace(/world\/location\.md, world\/CHAT\.md, and world\/OFFERS\.md, world\/CHAT\.md, and world\/OFFERS\.md/g, 'world/location.md, world/CHAT.md, and world/OFFERS.md');
-  content = content.replace(/\n## Temporary actions available now[\s\S]*?(?=\n## |\n$)/g, '\n');
-  if (temporarySection) {
-    content = content.replace(/(## Act in the world\n\n[\s\S]*?)(\n## Speaking into the world)/, `$1\n${temporarySection}$2`);
-  }
+  const canChatNow = Array.isArray(data.nearby) && data.nearby.length > 0;
+  const role = data.agent?.role as string;
+  const inv = JSON.parse(data.agent.inventory ?? '{}') as Record<string, number>;
+
   if (inLiveChat) {
     const partner = data.currentChatScene.partner;
-    const incomingFromPartner = Array.isArray(data.incomingTransactions)
-      && data.incomingTransactions.some((txn: any) => txn.fromAgent === partner);
-    const sceneAcceptBlock = incomingFromPartner
-      ? `- \`chat\` with \`intent:"accept_transaction"\` or \`intent:"reject_transaction"\`: respond to ${partner}'s pending offers while you remain in this live chat.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"Agreed.","intent":"accept_transaction","offer_ref":"offer-1","duration_ticks":1,"thought":"The offer is fair."}\`\n\n`
-      : '';
-    content = content.replace(/## Act in the world[\s\S]*?\n## Speaking into the world/m, `## Act in the world\n\n- \`chat\`: continue your live chat with ${partner}. Use the same target until you leave the scene.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"I understand.","duration_ticks":1}\`\n\n- \`chat\` with \`intent\`: buy, sell, trade, give, pay, accept, or reject through the same spoken turn.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1}\`\n\n${sceneAcceptBlock}- \`leave_chat\`: leave the live chat. You may include \`text\` for a final goodbye line.\n  Example JSON: \`{"action":"leave_chat","text":"Goodbye for now.","duration_ticks":1,"thought":"I need to end this conversation now."}\`\n\n- Each live-chat turn must make progress: answer the partner's last question, ask one direct question, make one concrete offer, respond to a pending offer with the exact structured fields, or leave the chat.\n- Do not repeat the same point, do not restate the same offer twice, and never output filler like \`...\` or \`waiting for your response\`.\n\n## Speaking into the world`);
+    actions.push({
+      name: 'chat',
+      meaning: `Continue speaking with ${partner}.`,
+      example: `{"action":"chat","target":"${partner}","text":"I hear you.","duration_ticks":1}`,
+    });
+    actions.push({
+      name: 'chat + intent',
+      meaning: 'Run in-chat commerce (buy/sell/trade/give/pay) with the same partner.',
+      example: `{"action":"chat","target":"${partner}","text":"I can sell one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1}`,
+    });
+    if (Array.isArray(data.incomingTransactions) && data.incomingTransactions.some((txn: any) => txn.fromAgent === partner)) {
+      actions.push({
+        name: 'chat + intent accept/reject',
+        meaning: 'Accept or reject a pending offer from the current chat partner.',
+        example: `{"action":"chat","target":"${partner}","text":"Agreed.","intent":"accept_transaction","offer_ref":"offer-1","duration_ticks":1}`,
+      });
+    }
+    actions.push({
+      name: 'leave_chat',
+      meaning: 'Leave the current live chat scene.',
+      example: `{"action":"leave_chat","text":"Goodbye for now.","duration_ticks":1}`,
+    });
+  } else {
+    actions.push({
+      name: 'move',
+      meaning: 'Move to a reachable location listed in world/location.md.',
+      example: `{"action":"move","location":"market","duration_ticks":1}`,
+    });
+    actions.push({
+      name: 'say',
+      meaning: 'Speak locally at your current location.',
+      example: `{"action":"say","text":"Fresh bread is ready.","duration_ticks":1}`,
+    });
+    if (canChatNow) {
+      actions.push({
+        name: 'chat',
+        meaning: 'Start one-to-one chat with someone nearby.',
+        example: `{"action":"chat","target":"Marcus Hale","text":"Need coal by Day 9.","duration_ticks":1}`,
+      });
+    }
+    if (Object.keys(inv).some((item) => ['bread', 'meal', 'ale', 'grain', 'vegetables'].includes(item) && (inv[item] ?? 0) > 0)) {
+      actions.push({
+        name: 'eat',
+        meaning: 'Consume edible inventory to reduce hunger.',
+        example: `{"action":"eat","item":"bread","quantity":1,"duration_ticks":1}`,
+      });
+    }
+    if (data.agent.energy < 60) {
+      actions.push({
+        name: 'rest',
+        meaning: 'Recover energy with a short break.',
+        example: `{"action":"rest","duration_ticks":1}`,
+      });
+    }
+    if (timeOfDay === 'evening' || data.agent.energy < 20) {
+      actions.push({
+        name: 'sleep',
+        meaning: 'Recover deeply through sleep.',
+        example: `{"action":"sleep","duration_ticks":1}`,
+      });
+    }
+    const availableEconomic = Array.isArray(data.economicSurface)
+      ? data.economicSurface.filter((entry: any) => entry.status === 'available')
+      : [];
+    for (const entry of availableEconomic) {
+      const actionName = String(entry.action ?? '').trim();
+      if (!actionName || actionName.startsWith('chat +')) continue;
+      actions.push({
+        name: actionName,
+        meaning: String(entry.detail ?? 'Economic action available now.'),
+        example: `{"action":"${actionName}","duration_ticks":1}`,
+      });
+    }
+    if (role === 'Priest') {
+      actions.push({
+        name: 'pray',
+        meaning: 'Offer a spoken prayer into the world.',
+        example: `{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1}`,
+      });
+    }
+    if (role === 'Child') {
+      actions.push({
+        name: 'play',
+        meaning: 'Play to spend the tick as a child role action.',
+        example: `{"action":"play","duration_ticks":1}`,
+      });
+    }
   }
-  if (!inLiveChat && chatBlock && !content.includes('`chat`: use `target` and `text`')) {
-    content = content.replace('## Act in the world\n\n', `## Act in the world\n\n${chatBlock}\n`);
-  }
-  if (!inLiveChat && !content.includes('`say`: use `text` to speak out loud')) {
-    content = content.replace('## Speaking into the world\n\n', `## Speaking into the world\n\n${sayBlock}\n\n`);
-  }
+
+  const deduped = new Set<string>();
+  const actionLines = actions
+    .filter((entry) => {
+      const key = entry.name.toLowerCase();
+      if (deduped.has(key)) return false;
+      deduped.add(key);
+      return true;
+    })
+    .map((entry) => [
+      `- \`${entry.name}\``,
+      `  meaning: ${entry.meaning}`,
+      `  example: \`${entry.example}\``,
+    ].join('\n'))
+    .join('\n\n');
+
+  const content = ['# Actions', '', actionLines, ''].join('\n');
   await fs.writeFile(runtimePath, content, 'utf8');
 }
 
@@ -799,8 +727,7 @@ async function refreshRuntimeAgentsMd(workspaceDir: string, data: any): Promise<
   }
 
   let content = template;
-  const incomingOffers = Array.isArray(data.incomingTransactions) ? data.incomingTransactions : [];
-  const actionProfile = buildRuntimeAgentActionProfile(data, canChatNow, incomingOffers.length > 0);
+  const actionProfile = buildRuntimeAgentActionProfile(data, canChatNow);
   content = content.replace(
     /For local scenes:[^\n]*/,
     actionProfile.localScenesLine,
@@ -813,99 +740,33 @@ async function refreshRuntimeAgentsMd(workspaceDir: string, data: any): Promise<
     /Valid actions:[\s\S]*?Check TOOLS\.md for the actions available to you right now\./,
     `${actionProfile.validActions}\n\nCheck TOOLS.md for the actions available to you right now.`,
   );
-  content = content
-    .replace(/`talk`/g, '`chat`')
-    .replace(/`message`/g, '`chat`')
-    .replace(/ talk /g, ' chat ')
-    .replace(/ message /g, ' chat ')
-    .replace(/Use talk/g, 'Use chat')
-    .replace(/Use message/g, 'Use chat')
+  content = normalizeLegacyChatTerminology(content)
     .replace(/Check world\/location\.md -- it also lists any letters waiting for you here\.\n/g, '')
     .replace(/self\/messages\/\s+-- your correspondence\n/g, 'world/CHAT.md                 -- your chat threads and unread messages\nworld/OFFERS.md               -- your incoming and outgoing offers\n');
 
   await fs.writeFile(runtimePath, content, 'utf8');
 }
 
-function buildRuntimeAgentActionProfile(data: any, canChatNow: boolean, canRespondToOffers: boolean) {
+function buildRuntimeAgentActionProfile(data: any, canChatNow: boolean) {
   if (data.currentChatScene) {
     const partner = data.currentChatScene.partner;
-    const incomingFromPartner = Array.isArray(data.incomingTransactions)
-      && data.incomingTransactions.some((txn: any) => txn.fromAgent === partner);
     return {
-      localScenesLine: `You are currently in a live chat scene with ${partner}. Until you leave it, your only valid actions are \`chat\` and \`leave_chat\`. If you want to buy, sell, trade, give, pay, accept, or reject, do it through \`chat\` with \`intent\` and the relevant fields.`,
+      localScenesLine: `You are currently in a live chat scene with ${partner}. Refer to TOOLS.md for what you can do right now and the exact JSON fields.`,
       examples: [
-        `- chat: \`{"action":"chat","target":"${partner}","text":"I hear you.","duration_ticks":1,"thought":"Continue the live conversation."}\``,
-        `- chat with intent: \`{"action":"chat","target":"${partner}","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1}\``,
-        `- chat with intent: \`{"action":"chat","target":"${partner}","text":"I can swap two coal for four grain.","intent":"trade","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}],"duration_ticks":1}\``,
-        ...(incomingFromPartner
-          ? ['- chat with intent: `{"action":"chat","target":"' + partner + '","text":"Agreed.","intent":"accept_transaction","offer_ref":"offer-1","duration_ticks":1,"thought":"The offer is fair and we are already talking."}`']
-          : []),
-        '- leave_chat: `{"action":"leave_chat","text":"Goodbye for now.","duration_ticks":1,"thought":"End the conversation and return to the world."}`',
+        '- Use TOOLS.md as the source of truth for currently valid actions and JSON examples.',
       ],
-      validActions: 'Valid actions: chat, leave_chat',
+      validActions: 'Valid actions are listed in TOOLS.md for this tick.',
     };
   }
 
-  const role = data.agent.role;
-  const hasTradePartners = Array.isArray(data.nearby) && data.nearby.length > 0;
-  const roleSpecificActionsByRole: Record<string, string[]> = {
-    Blacksmith: ['craft', 'smelt'],
-    Merchant: [],
-    Farmer: ['check_field', 'plant', 'water', 'harvest'],
-    Herbalist: ['gather', 'brew'],
-    Priest: ['pray'],
-    Innkeeper: [],
-    Child: ['play'],
-    'Retired Soldier': [],
-  };
-  const roleExamplesByRole: Record<string, string[]> = {
-    Blacksmith: [
-      '- craft: `{"action":"craft","item":"horseshoe","quantity":2,"duration_ticks":1,"consumes":[{"item":"iron_ore","quantity":4},{"item":"coal","quantity":2}],"produces":[{"item":"horseshoe","quantity":2}],"thought":"Market demand is severe and I have the materials."}`',
-    ],
-    Merchant: [],
-    Farmer: [
-      '- check_field: `{"action":"check_field","duration_ticks":1,"thought":"I need to see what the field needs before committing labor."}`',
-      '- harvest: `{"action":"harvest","duration_ticks":1,"thought":"A field is ready and food is needed."}`',
-    ],
-    Herbalist: [
-      '- gather: `{"action":"gather","duration_ticks":1,"thought":"Herbs are available here and medicine stock matters."}`',
-      '- brew: `{"action":"brew","item":"medicine","quantity":1,"duration_ticks":1,"consumes":[{"item":"herbs","quantity":2}],"produces":[{"item":"medicine","quantity":1}],"thought":"Medicine is needed and I have the herbs."}`',
-    ],
-    Priest: [
-      '- pray: `{"action":"pray","text":"May this village be kept in peace.","duration_ticks":1,"thought":"Offer a prayer for the village."}`',
-    ],
-    Innkeeper: [],
-    Child: [
-      '- play: `{"action":"play","duration_ticks":1,"thought":"Nothing urgent presses right now."}`',
-    ],
-    'Retired Soldier': [],
-  };
-
-  const examples = [
-    '- move: `{"action":"move","location":"market","duration_ticks":1,"thought":"Need supplies before work stalls.","message":"Going to the market."}`',
-    ...(canChatNow ? ['- chat: `{"action":"chat","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1,"thought":"I should contact him directly. If he is here this becomes a live chat."}`'] : []),
-    '- say: `{"action":"say","text":"Fresh bread is ready at the inn.","duration_ticks":1,"thought":"This is local speech for people who are here."}`',
-    ...(roleExamplesByRole[role] ?? []),
-  ];
-
-  const validActions = [
-    'chat',
-    'say',
-    'move',
-    'eat',
-    ...(roleSpecificActionsByRole[role] ?? []),
-  ];
-
-  if (role === 'Priest' && !validActions.includes('pray')) validActions.push('pray');
-
   const localScenesLine = canChatNow
-    ? 'For local scenes: use `chat` for one-to-one communication. If the other person is here, it becomes a live chat. If they are elsewhere, it becomes a deferred chat in CHAT. Use `say` for local speech in your current location; it is not a thread and does not take a target. During a live chat, use `chat` with `intent` if you want to buy, sell, trade, give, pay, accept, or reject.'
-    : 'For local scenes: use `chat` for one-to-one communication. If the other person is here, it becomes a live chat. If they are elsewhere, it becomes a deferred chat in CHAT. Use `say` for local speech in your current location; it is not a thread and does not take a target. During a live chat, use `chat` with `intent` if you want to buy, sell, trade, give, pay, accept, or reject.';
+    ? 'Use chat for one-to-one communication when someone is nearby. Refer to TOOLS.md for currently valid actions and exact JSON.'
+    : 'No one is nearby for live chat right now. Refer to TOOLS.md for currently valid actions and exact JSON.';
 
   return {
     localScenesLine,
-    examples,
-    validActions: `Valid actions: ${validActions.join(', ')}`,
+    examples: ['- Use TOOLS.md as the source of truth for currently valid actions and JSON examples.'],
+    validActions: 'Valid actions are listed in TOOLS.md for this tick.',
   };
 }
 
@@ -926,14 +787,7 @@ async function refreshRuntimeSkillMds(workspaceDir: string, data: any): Promise<
     const runtimePath = path.join(skillsRoot, rel);
     let content = await fs.readFile(backupPath, 'utf8');
 
-    content = content
-      .replace(/`talk`/g, '`chat`')
-      .replace(/`message`/g, '`chat`')
-      .replace(/ talk /g, ' chat ')
-      .replace(/ message /g, ' chat ')
-      .replace(/Use talk for direct communication\./g, 'Use chat for one-to-one communication.')
-      .replace(/Use message for direct communication\./g, 'Use chat for one-to-one communication.')
-      .replace(/active local interaction/g, 'live chat')
+    content = normalizeLegacyChatTerminology(content)
       .replace(/message-passing/g, 'direct one-person messaging')
       .replace(/pass along lodging or meeting information\./g, 'send a direct one-person update to someone you already know. Do not broadcast to the whole village.')
       .replace(/leave terms when someone is away\./g, 'send direct one-person trade terms to a known contact when they are away.')

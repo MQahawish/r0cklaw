@@ -50,7 +50,7 @@ Rocklaw currently uses:
 - strict JSON final actions from agents
 - world-owned validation and commitment in Convex
 - per-agent workspaces with generated world files and rolling heartbeat
-- local interaction handling for `talk` and in-person commerce
+- local interaction handling for `chat` (live/deferred) and in-person commerce via chat intents
 - dynamic runtime docs so only currently relevant actions are surfaced
 - `--blank-self` mode for minimal starting self-state and world-driven first contact
 
