@@ -90,21 +90,21 @@ Important boundaries:
 
 Current contract rules include:
 - `move` uses only currently reachable places
-- `talk` appears only when someone is present to talk to
+- `chat` appears in runtime docs for one-to-one communication (live if present, deferred if away)
 - `wait`, `rest`, and `sleep` are surfaced dynamically when currently appropriate
 - world validation still rejects misuse even if the model drifts
 
 For content fields:
-- `text` holds the actual spoken or written content for actions like `talk`, `pray`, `leave_message`, and `eavesdrop`
+- `text` holds the actual spoken or written content for actions like `chat`, `say`, `pray`, and `eavesdrop`
 - `message` is optional visible framing only when distinct from `text`
 
 ## Interaction Model
 
 Rocklaw currently supports:
-- colocated `talk`
+- colocated/live `chat` scenes
 - in-person `buy`, `sell`, and `trade` offers
 - short-handle references like `offer-1` for transaction follow-up
-- same-tick reciprocal talk collapsing into one opener plus deferred intent
+- same-tick reciprocal chat opening with interruption context carried into the scene
 - heartbeat continuity when scenes stay open or lapse
 
 ## Blank-Self Mode
@@ -123,7 +123,7 @@ From there:
 Rocklaw intentionally uses dynamic runtime docs so the agent sees a narrower, cleaner action surface.
 
 Examples:
-- `talk` disappears when nobody is nearby
+- live-chat affordances are constrained by who is nearby
 - `move` is constrained to `Reachable places now`
 - `wait`, `rest`, and `sleep` only appear when currently available
 - skill docs can be trimmed at runtime so static role wording does not fight current context
