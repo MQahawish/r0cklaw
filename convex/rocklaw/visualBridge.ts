@@ -28,6 +28,9 @@ export const LOCATION_TILES: Record<string, { x: number; y: number }> = {
   shrine: { x: 8,  y: 24 },
   gate:   { x: 22, y: 28 },
   square: { x: 22, y: 13 },
+  mine:   { x: 40, y: 28 },
+  bakery: { x: 28, y: 14 },
+  warehouse: { x: 25, y: 18 },
 };
 
 // Fallback for unknown locations
@@ -41,9 +44,6 @@ const AGENT_SPRITES: Record<string, string> = {
   'Finn':           'f3',
   'Lena Marsh':     'f4',
   'Sera':           'f5',
-  'Brother Aldric': 'f6',
-  'Cora':           'f7',
-  'Old Rook':       'f8',
 };
 
 // ── Action → emoji map ───────────────────────────────────────────────────────
@@ -58,6 +58,7 @@ const ACTION_EMOJI: Record<string, string> = {
   bless: '✨', counsel: '🙏', preach: '📣', officiate: '🎗️',
   play: '🎮', run_errand: '📦',
   talk: '💬', chat: '💬', say: '📣', buy: '💰', sell: '💰', trade: '🤝',
+  buy_place: '🛒', sell_place: '📦', deliver_place: '🏬',
   give: '🎁', pay: '💸',
   move: '🚶', observe: '👁️', write: '✍️', pray: '🙏',
   leave_message: '✉️', recall: '💭',

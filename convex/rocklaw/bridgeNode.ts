@@ -21,7 +21,7 @@ type RocklawAction = {
   amount?: number | null;
   offer?: unknown[];
   request?: unknown[];
-  duration_ticks: number;
+  duration_ticks?: number;
   thought?: string;
   message?: string;
   consumes?: unknown[];
@@ -71,6 +71,7 @@ const VALID_ACTIONS = new Set([
   'craft', 'smelt',
   'harvest', 'plant', 'water', 'check_field',
   'gather', 'brew',
+  'buy_place', 'sell_place', 'deliver_place',
   'play',
 ]);
 
@@ -94,7 +95,7 @@ export const tickAgent = internalAction({
     }
 
     const { tick, day, timeOfDay } = worldState;
-    const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
+    let agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
     if (!agent) {
       console.error(`[bridge] Agent not found: ${agentName}`);
       return;
@@ -104,12 +105,32 @@ export const tickAgent = internalAction({
       return;
     }
     if (agent.busy) {
-      const waitMs = TICK_INTERVAL_MS / 2;
-      if (!_manual) {
-        await ctx.scheduler.runAfter(waitMs, internal.rocklaw.bridgeNode.tickAgent, { agentName });
+      if (agent.busyUntilTick !== undefined && agent.busyUntilTick <= tick) {
+        const completion = await ctx.runMutation(internal.rocklaw.bridge.completePendingAction, {
+          agentName,
+          tick,
+          day,
+        });
+        if (completion && 'action' in completion) {
+          await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+            agentName,
+            line: summariseAction(completion.action, day, timeOfDay, completion.outcome, completion.note),
+          });
+        }
+        agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
+        if (!agent) {
+          console.error(`[bridge] Agent disappeared during completion: ${agentName}`);
+          return;
+        }
       }
-      console.log(`[bridge] ${agentName} still busy, retrying in ${waitMs}ms`);
-      return;
+      if (agent.busy) {
+        const waitMs = TICK_INTERVAL_MS / 2;
+        if (!_manual) {
+          await ctx.scheduler.runAfter(waitMs, internal.rocklaw.bridgeNode.tickAgent, { agentName });
+        }
+        console.log(`[bridge] ${agentName} still busy, retrying in ${waitMs}ms`);
+        return;
+      }
     }
 
     await ctx.runAction(internal.rocklaw.worldRefreshNode.refreshWorldFiles, {
@@ -127,6 +148,7 @@ export const tickAgent = internalAction({
       day,
       timeOfDay,
       tick,
+      agent.location,
       lastHeartbeatLine ?? undefined,
     );
     const sessionId = buildSessionId(agentName);
@@ -275,7 +297,7 @@ export const tickAgent = internalAction({
 
     await appendTickDebug(agent.workspacePath, debugRecord);
 
-    const durationTicks = Math.max(1, action.duration_ticks ?? 1);
+    const durationTicks = Math.max(1, result && 'durationTicks' in result ? result.durationTicks ?? 1 : 1);
     const nextMs = durationTicks * TICK_INTERVAL_MS;
 
     console.log(
@@ -331,6 +353,7 @@ export const planAgentAction = internalAction({
       day,
       timeOfDay,
       tick,
+      agent.location,
       lastHeartbeatLine ?? undefined,
       promptPrefix ?? undefined,
     );
@@ -493,45 +516,60 @@ function buildTickMessage(
   day: number,
   timeOfDay: string,
   tick: number,
+  location: string,
   lastHeartbeatLine?: string,
   promptPrefix?: string,
 ): string {
   const sections = [
     `It is ${timeOfDay}, Day ${day}, tick ${tick} in Rocklaw.`,
+    `You are in ${location}.`,
     `Last tick: ${lastHeartbeatLine ?? 'none yet'}`,
     ...(promptPrefix ? ['', promptPrefix] : []),
     'Use your files and tools only to understand the situation and decide.',
     'Anchor yourself in HEARTBEAT.md first so your next action follows from what you already did.',
-    'Think silently. Read only the minimum files needed. In most ticks, 3-5 reads are enough.',
+    'Read TURN.md and HEARTBEAT.md first. In an ordinary tick, do not read more than 2 additional files after those.',
+    'If TURN.md already shows an obvious valid action, do not keep exploring. Take the action immediately.',
+    'Do not reread the same file in the same tick unless the first read clearly failed.',
+    'Do not inspect extra files just to double-check. If you are still uncertain after minimal reads, choose the safest valid action visible in TURN.md and return it.',
+    'In a live chat scene, do not read extra files unless you need a specific offer_ref or thread detail that is missing from TURN.md.',
     'Do observation, inspection, memory recall, and private note-writing inside your tool use, not as the final world action.',
     'Use only actions currently listed in TOOLS.md. Temporary actions like rest and sleep appear there only when they are currently available.',
-    'For move, choose only from Reachable places now in world/location.md.',
-    'When you know what to do, stop using tools and return the final answer immediately.',
+    'For move, choose only from Reachable places now in TURN.md.',
+    'For buy_place, sell_place, and deliver_place, target a place listed in TURN.md and include item plus quantity.',
+    'Return a final JSON action quickly. On ordinary ticks, stop after a small number of reads instead of stalling in tool use.',
     'Return exactly one JSON object and nothing else.',
     'The first character must be { and the last character must be }.',
     'No prose before or after the JSON object.',
     'Do not ask clarifying questions. Do not emit tool_code. Do not execute shell commands for world actions.',
-    'Check world/CHAT.md for who is online, unread chats, and active threads.',
-    'If you need more context with someone, read their thread file under world/chat/<name>/CHAT.md.',
-    'Check world/OFFERS.md for incoming and outgoing offers.',
+    'Check TURN.md for your current state, nearby people, offers, market/news context, and chat summaries.',
+    'Check SELF.md for your current goals, beliefs, plans, secrets, desires, and relevant relationships.',
+    'If you need more context with someone, read their thread file under chat/<name>/CHAT.md.',
     'If an active interaction directly addresses you, respond to it before starting unrelated work unless you have a clear reason not to.',
     'Direct person-to-person commerce is expressed through action:"chat" with a spoken "text" plus a structured "intent" field while you are already in a live chat with that same person.',
     'Valid chat intents are: buy, sell, trade, give, pay, accept_transaction, reject_transaction.',
     'For chat intents, target a person you are actively chatting with. Never target a place like market, inn, forge, or square.',
+    'For intent:"trade", natural-language barter text is not enough. You must include both offer:[{"item":"...","quantity":N}] and request:[{"item":"...","quantity":N}].',
+    'Speak like a present-day person. Prefer short, casual, modern phrasing like "hi", "hey", "okay", "sounds good", or "what\'s up" when natural.',
+    'Do not sound posh, ceremonial, lofty, or old-fashioned. Avoid lines like "A pleasure to see you", "It is kind of you", or "May your work continue..." unless there is an exceptional reason.',
     'If you want to explain why, put it in "thought".',
     'For chat, say, pray, and leave_chat, put the actual visible content in "text". Use "message" only for optional visible framing when it is distinct.',
     'Use "memory_note" for the private takeaway.',
     '',
+    'Each action takes 1 tick to finish.',
     'Final response schema:',
-    '{"action":"...","duration_ticks":1,"target":"optional","location":"optional","text":"optional","intent":"optional","offer_ref":"optional","topic":"optional","item":"optional","quantity":1,"amount":0,"consumes":[],"produces":[],"offer":[],"request":[],"thought":"optional","message":"optional","memory_note":"optional"}',
+    '{"action":"...","target":"optional","location":"optional","text":"optional","intent":"optional","offer_ref":"optional","topic":"optional","item":"optional","quantity":1,"amount":0,"consumes":[],"produces":[],"offer":[],"request":[],"thought":"optional","message":"optional","memory_note":"optional"}',
     '',
     'Examples:',
-    '{"action":"move","location":"market","duration_ticks":1,"thought":"Need supplies before work stalls.","message":"Going to the market."}',
-    '{"action":"chat","target":"Marcus Hale","text":"Do you still have coal available?","duration_ticks":1,"thought":"I should contact him directly before making an offer."}',
-    '{"action":"say","text":"Fresh bread at the inn this morning.","duration_ticks":1,"thought":"People nearby may hear a local greeting or announcement."}',
-    '{"action":"chat","target":"Marcus Hale","text":"I can pay 12 coin for three coal.","intent":"buy","item":"coal","quantity":3,"amount":12,"duration_ticks":1,"thought":"I am already in a live chat with Marcus and want to make an offer."}',
-    '{"action":"chat","target":"Marcus Hale","text":"Agreed.","intent":"accept_transaction","offer_ref":"offer-1","duration_ticks":1,"thought":"I am already in a live chat with the other person and the offer is fair."}',
-    '{"action":"craft","item":"horseshoe","quantity":2,"duration_ticks":1,"consumes":[{"item":"iron_ore","quantity":4},{"item":"coal","quantity":2}],"produces":[{"item":"horseshoe","quantity":2}],"thought":"Market demand is severe and I have the materials.","message":"Crafting two horseshoes."}',
+    '{"action":"move","location":"market","thought":"Need supplies before work stalls.","message":"Going to the market."}',
+    '{"action":"buy_place","target":"market","item":"coal","quantity":3,"thought":"I need more fuel and the market has stock."}',
+    '{"action":"sell_place","target":"bakery","item":"grain","quantity":4,"thought":"The bakery buys grain and I can turn this into coin."}',
+    '{"action":"chat","target":"Marcus Hale","text":"Hey, do you still have coal?","thought":"I should contact him directly before making an offer."}',
+    '{"action":"say","text":"Hi, fresh bread at the inn if anyone wants some.","thought":"People nearby may hear a local greeting or announcement."}',
+    '{"action":"chat","target":"Marcus Hale","text":"I can pay 12 coin for three coal.","intent":"buy","item":"coal","quantity":3,"amount":12,"thought":"I am already in a live chat with Marcus and want to make an offer."}',
+    '{"action":"chat","target":"Lena Marsh","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}],"thought":"I want a barter trade, so I must provide both offer and request arrays."}',
+    '{"action":"chat","target":"Marcus Hale","text":"Okay, deal.","intent":"accept_transaction","offer_ref":"offer-1","thought":"I am already in a live chat with the other person and the offer is fair."}',
+    '{"action":"chat","target":"Marcus Hale","text":"I can do that if you make it four coal instead of three.","intent":"trade","offer":[{"item":"horseshoe","quantity":1}],"request":[{"item":"coal","quantity":4}],"thought":"I want to haggle, so I should answer with a concrete counteroffer instead of vague negotiation."}',
+    '{"action":"craft","item":"horseshoe","quantity":2,"consumes":[{"item":"iron_ore","quantity":4},{"item":"coal","quantity":2}],"produces":[{"item":"horseshoe","quantity":2}],"thought":"Market demand is severe and I have the materials.","message":"Crafting two horseshoes."}',
   ];
 
   return sections.join('\n');
@@ -729,7 +767,6 @@ function extractJsonObjects(text: string): string[] {
 
 function validateAction(action: RocklawAction): boolean {
   if (typeof action.action !== 'string' || !VALID_ACTIONS.has(action.action)) return false;
-  if (typeof action.duration_ticks !== 'number' || action.duration_ticks < 1) return false;
   if (action.consumes !== undefined && !Array.isArray(action.consumes)) return false;
   if (action.produces !== undefined && !Array.isArray(action.produces)) return false;
 
@@ -754,6 +791,10 @@ function validateAction(action: RocklawAction): boolean {
   switch (action.action) {
     case 'move':
       return typeof (action.location ?? action.target) === 'string';
+    case 'buy_place':
+    case 'sell_place':
+    case 'deliver_place':
+      return typeof action.target === 'string' && typeof action.item === 'string';
     case 'chat':
       if (typeof (action.text ?? action.message) !== 'string') return false;
       if (action.intent === undefined || action.intent === null || action.intent === '') return true;
@@ -847,12 +888,34 @@ function summariseRejectedAttempt(
   timeOfDay: string,
   detail?: string | null,
 ): string {
-  const destination = action.location ?? action.target ?? action.item ?? null;
-  const target = destination ? ` → ${destination}` : '';
-  const quantity = typeof action.quantity === 'number' && action.quantity > 1 ? ` x${action.quantity}` : '';
-  const note = (action.message ?? action.text) ? ` (${(action.message ?? action.text ?? '').slice(0, 60)})` : '';
+  let narrative = action.action;
+  switch (action.action) {
+    case 'move': narrative = `go to ${action.location}`; break;
+    case 'chat': narrative = `chat with ${action.target}${action.intent ? ` (intent: ${action.intent})` : ''}`; break;
+    case 'say': narrative = `speak to the room`; break;
+    case 'rest': narrative = `take a rest`; break;
+    case 'sleep': narrative = `go to sleep`; break;
+    case 'eat': narrative = `eat ${action.item}`; break;
+    case 'pray': narrative = `offer a prayer`; break;
+    case 'craft': narrative = `craft ${action.quantity || 1} ${action.item}`; break;
+    case 'smelt': narrative = `smelt ${action.quantity || 1} ${action.item}`; break;
+    case 'harvest': narrative = `harvest crops`; break;
+    case 'plant': narrative = `plant crops`; break;
+    case 'water': narrative = `water the fields`; break;
+    case 'check_field': narrative = `check the fields`; break;
+    case 'gather': narrative = `gather herbs`; break;
+    case 'brew': narrative = `brew ${action.quantity || 1} ${action.item}`; break;
+    case 'play': narrative = `play`; break;
+    case 'leave_chat': narrative = `leave the conversation`; break;
+    default:
+      const destination = action.location ?? action.target ?? action.item ?? null;
+      narrative = `use ${action.action}${destination ? ` on ${destination}` : ''}`;
+  }
+
+  const noteSource = action.message ?? action.text ?? '';
+  const note = noteSource ? ` ("${noteSource.slice(0, 60)}")` : '';
   const warning = detail ? ` ⚠ ${detail.slice(0, 80)}` : '';
-  return `- Day ${day} ${timeOfDay}: attempted ${action.action}${target}${quantity}${note} [FAILED]${warning}`;
+  return `- Day ${day} ${timeOfDay}: You attempted to ${narrative}${note} [FAILED]${warning}`;
 }
 
 async function appendTickDebug(workspacePath: string, record: Record<string, unknown>) {

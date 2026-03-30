@@ -5,7 +5,7 @@ import path from "path";
 import { execFileSync } from "child_process";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
-const AGENTS = ["elena", "marcus", "finn", "lena", "sera", "aldric", "cora", "rook"];
+const AGENTS = ["elena", "marcus", "finn", "lena", "sera"];
 
 function readLastTerminalRecord(agent) {
   const debugPath = path.join(ROOT, "agents", agent, "workspace", "state", "tick-debug.jsonl");
@@ -43,14 +43,19 @@ function formatOutcome(record) {
   return `${outcome}${note}`;
 }
 
+function formatBusyState(agentState) {
+  if (!agentState?.busy) return null;
+  return `busy${agentState.busyLabel ? ` | ${agentState.busyLabel}` : ""}`;
+}
+
 function pairKey(left, right) {
   return [left, right].sort((a, b) => a.localeCompare(b)).join("::");
 }
 
 function readLiveChatSceneFallback(agent) {
-  const locationPath = path.join(ROOT, "agents", agent, "workspace", "world", "location.md");
-  if (!fs.existsSync(locationPath)) return null;
-  const content = fs.readFileSync(locationPath, "utf8");
+  const turnPath = path.join(ROOT, "agents", agent, "workspace", "TURN.md");
+  if (!fs.existsSync(turnPath)) return null;
+  const content = fs.readFileSync(turnPath, "utf8");
   const match = content.match(/Your live chat:\n\s*- With (.+?) at (.+?) \[(YOUR TURN|.+?'s turn)\]/m);
   if (!match) return null;
   return {
@@ -69,7 +74,6 @@ function readChatThreadFallback(agent, partner) {
     "agents",
     agent,
     "workspace",
-    "world",
     "chat",
     slugifyAgentName(partner),
     "CHAT.md",
@@ -162,6 +166,9 @@ const records = AGENTS.map((agent) => ({
 }));
 
 const summary = readStepSummaryFromConvex();
+const agentStateByName = new Map(
+  Array.isArray(summary?.agents) ? summary.agents.map((agent) => [agent.name, agent]) : [],
+);
 const liveScenes = Array.isArray(summary?.liveScenes)
   ? summary.liveScenes
   : buildFallbackSceneSummaries(records);
@@ -172,10 +179,7 @@ for (const scene of liveScenes) {
   sceneParticipantNames.add(scene.right);
 }
 
-const worldActionRecords = records.filter((entry) => {
-  const agentDisplay = entry.record?.agentName ?? entry.agent;
-  return !sceneParticipantNames.has(agentDisplay);
-});
+const worldActionRecords = records;
 
 const headerRecord = records.map((entry) => entry.record).find(Boolean);
 const header = summary
@@ -191,6 +195,26 @@ console.log("");
 
 console.log("WORLD ACTIONS");
 for (const { agent, record } of worldActionRecords) {
+  const agentName = record?.agentName ?? agent;
+  const agentState = agentStateByName.get(agentName) ?? agentStateByName.get(agent);
+  const recordTick = typeof record?.tick === "number" ? record.tick : null;
+  const summaryTick = typeof summary?.tick === "number" ? summary.tick : null;
+  const staleRecord = summaryTick !== null && recordTick !== null ? recordTick < summaryTick : false;
+  const busyStatus = formatBusyState(agentState);
+  const liveSceneStatus = sceneParticipantNames.has(agentName) ? "in live scene" : null;
+
+  if (busyStatus && (!record || staleRecord)) {
+    const extras = [busyStatus, liveSceneStatus].filter(Boolean).join(" | ");
+    console.log(`${agent.padEnd(8)} ${"(in progress)".padEnd(28)} ${extras}`);
+    continue;
+  }
+
+  if (staleRecord) {
+    const extras = ["idle", liveSceneStatus].filter(Boolean).join(" | ");
+    console.log(`${agent.padEnd(8)} ${"(no action this tick)".padEnd(28)} ${extras}`);
+    continue;
+  }
+
   if (!record) {
     console.log(`${agent.padEnd(8)} no tick record yet`);
     continue;
@@ -199,8 +223,12 @@ for (const { agent, record } of worldActionRecords) {
   const message = typeof outward === "string" && outward.trim() !== ""
     ? ` | ${outward}`
     : "";
+  const statusNotes = [];
+  if (busyStatus && recordTick === summaryTick) statusNotes.push(busyStatus);
+  if (liveSceneStatus) statusNotes.push(liveSceneStatus);
+  const busyNote = statusNotes.length > 0 ? ` | ${statusNotes.join(" | ")}` : "";
   console.log(
-    `${agent.padEnd(8)} ${formatAction(record).padEnd(28)} ${formatOutcome(record)}${message}`,
+    `${agent.padEnd(8)} ${formatAction(record).padEnd(28)} ${formatOutcome(record)}${message}${busyNote}`,
   );
 }
 

@@ -1,10 +1,10 @@
 # HEARTBEAT -- Sera
 
 ## Recent Activity
-- Day 1 morning: [awaiting first tick]
-- Day 1 afternoon: say (Fresh bread and ale are available at the inn!)
-- Day 1 evening: sleep
-- Day 2 morning: first saw Marcus Hale (Merchant) at inn.
-- Day 2 morning: chat → Marcus Hale (Good morning, Marcus. What brings you to the inn so early?) ⚠ Live chat sent to Marcus Hale.
-- Day 2 evening: leave_chat (Well, I hope you find what you're looking for, Marcus.) ⚠ You said goodbye and left the live chat with Marcus Hale.
-- Day 3 morning: chat → Marcus Hale (Good morning, Marcus. Always a pleasure. I was just thinking) ⚠ Live chat sent to Marcus Hale.
+- Day 2 midday: first saw Lena Marsh (Herbalist) at market.
+- Day 2 midday: You chatted with Marcus Hale (intent: sell) ("Marcus. Good to see a new face. You look like you've had a l") ⚠ Marcus Hale decided to continue a live chat with Lena Marsh instead. Your chat w
+- Day 2 afternoon: first saw Elena Voss (Blacksmith) at market.
+- Day 2 afternoon: You left the conversation ("I'll let you get to it. See you around.") ⚠ You left the live chat.
+- Day 2 evening: You spoke to the room ("Getting dark. If anyone's hungry, I've got hot food and a wa")
+- Day 2 night: agent turn failed before a final action [FAILED] ⚠ ws://host.docker.internal:42621/ws/chat?session_id=rocklaw-sera&name=Rocklaw%20S
+- Day 3 dawn: agent turn failed before a final action [FAILED] ⚠ ws://host.docker.internal:42621/ws/chat?session_id=rocklaw-sera&name=Rocklaw%20S

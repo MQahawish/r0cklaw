@@ -9,9 +9,6 @@ agent_slug_to_name() {
     finn) echo "Finn" ;;
     lena) echo "Lena Marsh" ;;
     sera) echo "Sera" ;;
-    aldric) echo "Brother Aldric" ;;
-    cora) echo "Cora" ;;
-    rook) echo "Old Rook" ;;
     *)
       echo "Error: unknown agent slug '$1'" >&2
       exit 1

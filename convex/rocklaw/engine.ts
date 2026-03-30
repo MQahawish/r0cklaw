@@ -8,7 +8,7 @@
  *
  * Agents are NO LONGER fired by the global loop.
  * Each agent self-schedules its own next tick from bridgeNode.tickAgent,
- * waiting duration_ticks * TICK_INTERVAL_MS before waking again.
+ * waiting the engine-owned action duration before waking again.
  *
  * startRocklaw() starts the world clock AND fires the first tick for every agent.
  * stopRocklaw() sets isRunning = false; the clock exits after the next tick.
@@ -17,9 +17,10 @@
 import { v } from 'convex/values';
 import { action, mutation, internalAction, internalMutation, internalQuery } from '../_generated/server';
 import { internal } from '../_generated/api';
+import { DayPeriod } from './dayCycle';
 
-// Base tick duration in ms.  1 tick = one time-of-day period (morning / afternoon / evening).
-// 30 s per period = ~90 s per simulated day.  Easy to watch in dev.
+// Base tick duration in ms. 1 tick = one time-of-day period in the 6-period day cycle.
+// 30 s per period = ~180 s per simulated day. Easy to watch in dev.
 export const TICK_INTERVAL_MS = 30_000;
 
 // How often compaction runs (in ticks).
@@ -101,8 +102,18 @@ export const clearStaleBusy = internalMutation({
   handler: async (ctx, { tick }) => {
     const allAgents = await ctx.db.query('rl_agents').collect();
     for (const agent of allAgents) {
-      if (agent.busy && agent.busyUntilTick !== undefined && agent.busyUntilTick <= tick) {
-        await ctx.db.patch(agent._id, { busy: false, busyUntilTick: undefined });
+      if (
+        agent.busy
+        && agent.busyUntilTick !== undefined
+        && agent.busyUntilTick <= tick
+        && !agent.pendingActionJson
+      ) {
+        await ctx.db.patch(agent._id, {
+          busy: false,
+          busyUntilTick: undefined,
+          pendingActionStartedTick: undefined,
+          pendingActionStartedDay: undefined,
+        });
       }
     }
   },
@@ -170,7 +181,7 @@ export const manualTick = action({
   handler: async (ctx, { agentName }): Promise<{
     tick: number;
     day: number;
-    timeOfDay: 'morning' | 'afternoon' | 'evening';
+    timeOfDay: DayPeriod;
     agents: string[];
   }> => {
     const state = await ctx.runQuery(internal.rocklaw.engine.getWorldState);
@@ -178,7 +189,7 @@ export const manualTick = action({
 
     // Advance time
     const next:
-      | { tick: number; day: number; timeOfDay: 'morning' | 'afternoon' | 'evening' }
+      | { tick: number; day: number; timeOfDay: DayPeriod }
       | null = await ctx.runMutation(internal.rocklaw.init.advanceTick, {});
     if (!next) throw new Error('[engine] advanceTick failed');
 
@@ -196,7 +207,28 @@ export const manualTick = action({
       return { tick, day, timeOfDay, agents: [agentName] };
     }
 
-    const allAgents = await ctx.runQuery(internal.rocklaw.engine.getNonBusyAgents, { tick });
+    const candidateAgents = await ctx.runQuery(internal.rocklaw.engine.getNonBusyAgents, { tick });
+    const allAgents: string[] = [];
+    for (const name of candidateAgents) {
+      const agentDoc = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName: name });
+      if (agentDoc?.busy && agentDoc.pendingActionJson && agentDoc.busyUntilTick !== undefined && agentDoc.busyUntilTick <= tick) {
+        const completion = await ctx.runMutation(internal.rocklaw.bridge.completePendingAction, {
+          agentName: name,
+          tick,
+          day,
+        });
+        if (completion && 'action' in completion) {
+          await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+            agentName: name,
+            line: summariseManualAction(completion.action, day, timeOfDay, completion.outcome, completion.note),
+          });
+        }
+      }
+      const refreshed = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName: name });
+      if (refreshed && !refreshed.busy) {
+        allAgents.push(name);
+      }
+    }
 
     // Process existing live chat scenes first. Participants do not take normal
     // world actions while the scene is active.
@@ -208,12 +240,12 @@ export const manualTick = action({
     }
 
     for (const scene of liveScenes) {
+      const speaker = scene.nextSpeaker;
       const currentScene = await ctx.runQuery(internal.rocklaw.bridge.getLiveChatScene, {
-        agentName: scene.agentA,
+        agentName: speaker,
       });
       if (!currentScene) continue;
 
-      const speaker = currentScene.nextSpeaker;
       const partner = currentScene.partner;
       let interruptedDraftContext: string | null = null;
       if (currentScene.interruptedContextPending && currentScene.interruptedSpeaker === speaker && currentScene.interruptedActionJson) {
@@ -636,11 +668,33 @@ function summariseManualAction(
   outcome?: string,
   outcomeNote?: string | null,
 ) {
-  const destination = action.location ?? action.target ?? action.item ?? null;
-  const target = destination ? ` → ${String(destination)}` : '';
+  let narrative = String(action.action);
+  switch (action.action) {
+    case 'move': narrative = `You decided to go to ${action.location}`; break;
+    case 'chat': narrative = `You chatted with ${action.target}${action.intent ? ` (intent: ${action.intent})` : ''}`; break;
+    case 'say': narrative = `You spoke to the room`; break;
+    case 'rest': narrative = `You took a rest`; break;
+    case 'sleep': narrative = `You went to sleep`; break;
+    case 'eat': narrative = `You ate ${action.item}`; break;
+    case 'pray': narrative = `You offered a prayer`; break;
+    case 'craft': narrative = `You crafted ${action.quantity || 1} ${action.item}`; break;
+    case 'smelt': narrative = `You smelted ${action.quantity || 1} ${action.item}`; break;
+    case 'harvest': narrative = `You harvested crops`; break;
+    case 'plant': narrative = `You planted crops`; break;
+    case 'water': narrative = `You watered the fields`; break;
+    case 'check_field': narrative = `You checked the fields`; break;
+    case 'gather': narrative = `You gathered herbs`; break;
+    case 'brew': narrative = `You brewed ${action.quantity || 1} ${action.item}`; break;
+    case 'play': narrative = `You played`; break;
+    case 'leave_chat': narrative = `You left the conversation`; break;
+    default:
+      const destination = action.location ?? action.target ?? action.item ?? null;
+      narrative = `You used ${String(action.action)}${destination ? ` on ${destination}` : ''}`;
+  }
+
   const noteSource = typeof action.message === 'string' ? action.message : typeof action.text === 'string' ? action.text : '';
-  const note = noteSource ? ` (${noteSource.slice(0, 60)})` : '';
+  const note = noteSource ? ` ("${noteSource.slice(0, 60)}")` : '';
   const failed = outcome === 'failed' ? ' [FAILED]' : '';
   const warning = outcomeNote ? ` ⚠ ${String(outcomeNote).slice(0, 80)}` : '';
-  return `- Day ${day} ${timeOfDay}: ${String(action.action)}${target}${note}${failed}${warning}`;
+  return `- Day ${day} ${timeOfDay}: ${narrative}${note}${failed}${warning}`;
 }

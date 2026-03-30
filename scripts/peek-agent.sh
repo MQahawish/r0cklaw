@@ -17,11 +17,11 @@ TRACE="$WORKSPACE/state/runtime-trace.jsonl"
 TICK_DEBUG="$WORKSPACE/state/tick-debug.jsonl"
 LOG="/tmp/zeroclaw-$AGENT.log"
 
-echo "=== $AGENT: world/status.md ==="
-sed -n '1,120p' "$WORKSPACE/world/status.md" 2>/dev/null || echo "(missing)"
+echo "=== $AGENT: TURN.md ==="
+sed -n '1,220p' "$WORKSPACE/TURN.md" 2>/dev/null || echo "(missing)"
 echo
-echo "=== $AGENT: world/location.md ==="
-sed -n '1,160p' "$WORKSPACE/world/location.md" 2>/dev/null || echo "(missing)"
+echo "=== $AGENT: SELF.md ==="
+sed -n '1,220p' "$WORKSPACE/SELF.md" 2>/dev/null || echo "(missing)"
 echo
 echo "=== $AGENT: last tick debug entries ==="
 tail -n 10 "$TICK_DEBUG" 2>/dev/null || echo "(no tick debug entries yet)"

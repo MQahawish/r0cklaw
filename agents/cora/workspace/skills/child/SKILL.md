@@ -8,7 +8,7 @@ Do not invent actions like `child`.
 ## Current role actions
 
 - `play`: spend time as a child rather than as a worker.
-  Example JSON: `{"action":"play","duration_ticks":1,"thought":"A little play keeps me sharp and lively."}`
+  Example JSON: `{"action":"play","thought":"A little play keeps me sharp and lively."}`
 
 ## Working style
 

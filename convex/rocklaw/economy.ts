@@ -2,7 +2,7 @@ import { internalMutation } from '../_generated/server';
 import { v } from 'convex/values';
 
 export type ItemCategory = 'raw' | 'food' | 'crafted' | 'medicine' | 'material' | 'service';
-export type StationType = 'forge' | 'farm' | 'shrine' | 'inn' | 'market';
+export type StationType = 'forge' | 'farm' | 'inn' | 'market' | 'mine' | 'bakery' | 'warehouse';
 export type FieldStage = 'fallow' | 'growing' | 'ready';
 
 export type ItemDef = {
@@ -30,6 +30,25 @@ export type ServiceDef = {
   note: string;
 };
 
+export type PlaceStockSeed = {
+  placeName: string;
+  item: string;
+  quantity: number;
+  capacity?: number;
+  buys: boolean;
+  sells: boolean;
+  bidPrice?: number;
+  askPrice?: number;
+};
+
+export type PlaceMarketSeed = {
+  placeName: string;
+  treasury: number;
+  buySpreadPct: number;
+  sellSpreadPct: number;
+  targetStockRatio: number;
+};
+
 export type TradeProfile = {
   likelySells: string[];
   likelyBuys: string[];
@@ -44,6 +63,7 @@ export const ITEM_CATALOGUE: Record<string, ItemDef> = {
   ale: { id: 'ale', category: 'food', edible: true, hungerRestore: 10 },
   herbs: { id: 'herbs', category: 'raw' },
   medicine: { id: 'medicine', category: 'medicine' },
+  flour: { id: 'flour', category: 'material' },
   horseshoe: { id: 'horseshoe', category: 'crafted' },
   tools: { id: 'tools', category: 'crafted' },
   knife: { id: 'knife', category: 'crafted' },
@@ -125,9 +145,6 @@ export const ROLE_ECONOMIC_ACTIONS: Record<string, string[]> = {
   Herbalist: ['gather', 'brew'],
   Innkeeper: [],
   Merchant: [],
-  Priest: [],
-  Child: [],
-  'Retired Soldier': [],
 };
 
 export const ROLE_TRADE_PROFILES: Record<string, TradeProfile> = {
@@ -149,19 +166,7 @@ export const ROLE_TRADE_PROFILES: Record<string, TradeProfile> = {
   },
   Merchant: {
     likelySells: ['grain', 'coal'],
-    likelyBuys: ['iron_ore', 'horseshoe', 'tools', 'knife', 'medicine'],
-  },
-  Priest: {
-    likelySells: [],
-    likelyBuys: ['bread', 'medicine', 'herbs'],
-  },
-  Child: {
-    likelySells: [],
-    likelyBuys: ['bread'],
-  },
-  'Retired Soldier': {
-    likelySells: [],
-    likelyBuys: ['bread', 'meal', 'knife'],
+    likelyBuys: ['iron_ore', 'horseshoe', 'tools', 'knife', 'medicine', 'bread'],
   },
 };
 
@@ -171,8 +176,31 @@ export const SEEDED_FIELDS = [
 ];
 
 export const SEEDED_HERB_PATCHES = [
-  { patchKey: 'shrine_patch', location: 'shrine', herbItem: 'herbs', available: 6, maxAvailable: 6, regenPerDay: 2, lastRegenDay: 1 },
+  { patchKey: 'shrine_patch', location: 'shrine', herbItem: 'herbs', available: 2, maxAvailable: 3, regenPerDay: 1, lastRegenDay: 1 },
   { patchKey: 'gate_patch', location: 'gate', herbItem: 'herbs', available: 3, maxAvailable: 4, regenPerDay: 1, lastRegenDay: 1 },
+  { patchKey: 'market_patch', location: 'market', herbItem: 'herbs', available: 2, maxAvailable: 3, regenPerDay: 1, lastRegenDay: 1 },
+];
+
+export const SEEDED_PLACE_STOCKS: PlaceStockSeed[] = [
+  { placeName: 'market', item: 'bread', quantity: 4, capacity: 20, buys: true, sells: true, bidPrice: 4, askPrice: 6 },
+  { placeName: 'market', item: 'tools', quantity: 1, capacity: 10, buys: true, sells: true, bidPrice: 18, askPrice: 24 },
+  { placeName: 'market', item: 'horseshoe', quantity: 0, capacity: 12, buys: true, sells: true, bidPrice: 16, askPrice: 22 },
+  { placeName: 'market', item: 'medicine', quantity: 1, capacity: 12, buys: true, sells: true, bidPrice: 11, askPrice: 16 },
+  { placeName: 'mine', item: 'iron_ore', quantity: 12, capacity: 30, buys: false, sells: true, askPrice: 10 },
+  { placeName: 'mine', item: 'coal', quantity: 10, capacity: 30, buys: false, sells: true, askPrice: 6 },
+  { placeName: 'bakery', item: 'grain', quantity: 6, capacity: 20, buys: true, sells: false, bidPrice: 8 },
+  { placeName: 'bakery', item: 'bread', quantity: 10, capacity: 30, buys: false, sells: true, askPrice: 6 },
+  { placeName: 'warehouse', item: 'iron_ore', quantity: 4, capacity: 50, buys: true, sells: true, bidPrice: 8, askPrice: 11 },
+  { placeName: 'warehouse', item: 'coal', quantity: 6, capacity: 50, buys: true, sells: true, bidPrice: 4, askPrice: 6 },
+  { placeName: 'warehouse', item: 'grain', quantity: 6, capacity: 50, buys: true, sells: true, bidPrice: 7, askPrice: 10 },
+  { placeName: 'warehouse', item: 'herbs', quantity: 2, capacity: 30, buys: true, sells: true, bidPrice: 5, askPrice: 8 },
+];
+
+export const SEEDED_PLACE_MARKETS: PlaceMarketSeed[] = [
+  { placeName: 'market', treasury: 220, buySpreadPct: 0.18, sellSpreadPct: 0.2, targetStockRatio: 0.55 },
+  { placeName: 'mine', treasury: 40, buySpreadPct: 0.12, sellSpreadPct: 0.1, targetStockRatio: 0.7 },
+  { placeName: 'bakery', treasury: 120, buySpreadPct: 0.08, sellSpreadPct: 0.18, targetStockRatio: 0.6 },
+  { placeName: 'warehouse', treasury: 180, buySpreadPct: 0.1, sellSpreadPct: 0.12, targetStockRatio: 0.75 },
 ];
 
 export function getRecipe(action: string, output: string | null | undefined): RecipeDef | null {

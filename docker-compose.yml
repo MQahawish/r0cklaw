@@ -1,8 +1,11 @@
-version: '3.8'
-
 services:
   frontend:
     build: .
+    command:
+      - /root/.nvm/versions/node/v18.0.0/bin/node
+      - /usr/src/app/node_modules/vite/bin/vite.js
+      - --host
+      - 0.0.0.0
     ports:
       - '5173:5173'
     volumes:

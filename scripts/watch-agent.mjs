@@ -16,9 +16,7 @@ const workspace = path.join(rootDir, "agents", agent, "workspace");
 const tickDebugPath = path.join(workspace, "state", "tick-debug.jsonl");
 const tracePath = path.join(workspace, "state", "runtime-trace.jsonl");
 const logPath = path.join("/tmp", `zeroclaw-${agent}.log`);
-const statusPath = path.join(workspace, "world", "status.md");
-const locationPath = path.join(workspace, "world", "location.md");
-const inventoryPath = path.join(workspace, "world", "inventory.md");
+const turnPath = path.join(workspace, "TURN.md");
 const zeroClawPromptFiles = [
   "IDENTITY.md",
   "SOUL.md",
@@ -141,7 +139,7 @@ function parseActionSummary(action) {
   if (action.thought) extras.push(`thought=${truncate(action.thought, 80)}`);
   const message = (action.message ?? action.text) ? ` | ${action.message ?? action.text}` : "";
   const extraSuffix = extras.length > 0 ? ` | ${extras.join(" ")}` : "";
-  return `${action.action} -> ${focus} | duration=${action.duration_ticks}${extraSuffix}${message}`;
+  return `${action.action} -> ${focus}${extraSuffix}${message}`;
 }
 
 function summarizeTrace() {
@@ -244,7 +242,6 @@ function formatParsedAction(action, validation) {
   if (!action) return ["(no parsed action)"];
   const lines = [
     `action=${action.action}`,
-    `duration_ticks=${action.duration_ticks}`,
   ];
   if (action.location != null) lines.push(`location=${action.location}`);
   if (action.target != null) lines.push(`target=${action.target}`);
@@ -284,9 +281,7 @@ function render() {
   ) ?? null;
 
   const promptText = terminal?.prompt ?? started?.prompt ?? "(no prompt recorded)";
-  const statusLines = compactMarkdown(readFileSafe(statusPath).trim());
-  const locationLines = compactMarkdown(readFileSafe(locationPath).trim());
-  const inventoryLines = compactMarkdown(readFileSafe(inventoryPath).trim());
+  const turnLines = compactMarkdown(readFileSafe(turnPath).trim());
   const eventStream = terminal?.events ?? started?.events ?? [];
   const resumed = eventStream.find((event) => event.type === "session_start")?.resumed ?? false;
   const messageCount = eventStream.find((event) => event.type === "session_start")?.message_count ?? 0;
@@ -333,12 +328,9 @@ function render() {
     `Workspace  : ${workspace}`,
   ];
 
-  const stateOverviewEntries = [
-    ...parseNamedStats(statusLines),
-    ...parseNamedStats(locationLines.filter((line) => ["Current", "Nearby", "Message board", "Letters waiting for you here"].some((prefix) => line.startsWith(`${prefix}:`)))),
-  ];
+  const stateOverviewEntries = parseNamedStats(turnLines);
   const stateOverview = section("State Overview", formatKeyValues(stateOverviewEntries));
-  const inventory = section("Inventory", inventoryLines.slice(1));
+  const worldSnapshot = section("World Snapshot", turnLines);
   const prompt = section(
     "Tick Prompt",
     promptText.split("\n").map((line) => truncate(line, 140)),
@@ -359,7 +351,7 @@ function render() {
     "",
     stateOverview,
     "",
-    inventory,
+    worldSnapshot,
     "",
     zeroClawContext,
     "",

@@ -54,9 +54,14 @@ agents/*/workspace/MEMORY.md
 agents/*/workspace/memory/
 agents/*/workspace/sessions/
 agents/*/workspace/state/
+agents/*/workspace/TURN.md
+agents/*/workspace/SELF.md
+agents/*/workspace/chat/
 agents/*/workspace/self/messages/inbox/
 agents/*/workspace/self/messages/outbox/
 agents/*/workspace/self/messages/inbox.stale.*/
 agents/*/workspace/self/messages/outbox.stale.*/
+agents/*/.secret_key
+agents/*/auth-profiles.json
 /tmp/zeroclaw-*.log
 /tmp/zeroclaw-*.pid

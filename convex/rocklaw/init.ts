@@ -6,7 +6,8 @@
 import { mutation, internalMutation } from '../_generated/server';
 import { internal } from '../_generated/api';
 import { v } from 'convex/values';
-import { SEEDED_FIELDS, SEEDED_HERB_PATCHES } from './economy';
+import { SEEDED_FIELDS, SEEDED_HERB_PATCHES, SEEDED_PLACE_MARKETS, SEEDED_PLACE_STOCKS } from './economy';
+import { DayPeriod, nextDayPeriod } from './dayCycle';
 
 // Agent roster with initial state
 const AGENT_ROSTER = [
@@ -55,33 +56,6 @@ const AGENT_ROSTER = [
     gatewayPort: 42621,
     workspacePath: 'agents/sera/workspace',
   },
-  {
-    name: 'Brother Aldric',
-    role: 'Priest',
-    location: 'shrine',
-    inventory: JSON.stringify({ bread: 3 }),
-    coin: 10,
-    gatewayPort: 42622,
-    workspacePath: 'agents/aldric/workspace',
-  },
-  {
-    name: 'Cora',
-    role: 'Child',
-    location: 'square',
-    inventory: JSON.stringify({ bread: 1 }),
-    coin: 2,
-    gatewayPort: 42623,
-    workspacePath: 'agents/cora/workspace',
-  },
-  {
-    name: 'Old Rook',
-    role: 'Retired Soldier',
-    location: 'square',
-    inventory: JSON.stringify({ medicine: 2, bread: 1 }),
-    coin: 12,
-    gatewayPort: 42624,
-    workspacePath: 'agents/rook/workspace',
-  },
 ];
 
 const LOCATIONS = [
@@ -92,6 +66,9 @@ const LOCATIONS = [
   { name: 'shrine', type: 'social',   capacity: 15 },
   { name: 'gate',   type: 'transit',  capacity: 10 },
   { name: 'square', type: 'social',   capacity: 50 },
+  { name: 'mine',   type: 'work',      capacity: 6, tags: ['extractive', 'commerce'] },
+  { name: 'bakery', type: 'workshop',  capacity: 8, tags: ['food', 'commerce'] },
+  { name: 'warehouse', type: 'commerce', capacity: 12, tags: ['storage', 'commerce'] },
 ];
 
 export const initRocklaw = mutation({
@@ -111,9 +88,9 @@ export const initRocklaw = mutation({
     // World state
     const worldState = await ctx.db.query('rl_world_state').first();
     if (worldState) {
-      await ctx.db.patch(worldState._id, { tick: 0, day: 1, timeOfDay: 'morning', isRunning: false });
+      await ctx.db.patch(worldState._id, { tick: 0, day: 1, timeOfDay: 'dawn', isRunning: false });
     } else {
-      await ctx.db.insert('rl_world_state', { tick: 0, day: 1, timeOfDay: 'morning', isRunning: false });
+      await ctx.db.insert('rl_world_state', { tick: 0, day: 1, timeOfDay: 'dawn', isRunning: false });
     }
 
     // Locations
@@ -123,9 +100,9 @@ export const initRocklaw = mutation({
         .withIndex('name', (q) => q.eq('name', loc.name))
         .unique();
       if (existingLoc) {
-        await ctx.db.patch(existingLoc._id, { ...loc, presentAgents: '[]', messageBoard: '[]' });
+        await ctx.db.patch(existingLoc._id, { ...loc, tags: (loc as any).tags ?? undefined, presentAgents: '[]', messageBoard: '[]' });
       } else {
-        await ctx.db.insert('rl_locations', { ...loc, presentAgents: '[]', messageBoard: '[]' });
+        await ctx.db.insert('rl_locations', { ...loc, tags: (loc as any).tags ?? undefined, presentAgents: '[]', messageBoard: '[]' });
       }
     }
 
@@ -151,6 +128,30 @@ export const initRocklaw = mutation({
         await ctx.db.patch(existingPatch._id, patch);
       } else {
         await ctx.db.insert('rl_herb_patches', patch);
+      }
+    }
+
+    for (const stock of SEEDED_PLACE_STOCKS) {
+      const existingStock = await ctx.db
+        .query('rl_place_stocks')
+        .withIndex('place_item', (q) => q.eq('placeName', stock.placeName).eq('item', stock.item))
+        .unique();
+      if (existingStock) {
+        await ctx.db.patch(existingStock._id, stock);
+      } else {
+        await ctx.db.insert('rl_place_stocks', stock);
+      }
+    }
+
+    for (const market of SEEDED_PLACE_MARKETS) {
+      const existingMarket = await ctx.db
+        .query('rl_place_markets')
+        .withIndex('placeName', (q) => q.eq('placeName', market.placeName))
+        .unique();
+      if (existingMarket) {
+        await ctx.db.patch(existingMarket._id, market);
+      } else {
+        await ctx.db.insert('rl_place_markets', market);
       }
     }
 
@@ -201,7 +202,7 @@ export const initRocklaw = mutation({
     // Register Rocklaw agents in the AI Town visual layer (1s delay for world to be ready)
     await ctx.scheduler.runAfter(1000, internal.rocklaw.visualBridge.initVisualAgents, {});
 
-    console.log('[init] Rocklaw initialised. 8 villagers, 7 locations, market prices seeded.');
+    console.log('[init] Rocklaw initialised. 5 villagers, 10 locations, market prices seeded.');
     return { status: 'ok', agents: AGENT_ROSTER.length, locations: LOCATIONS.length };
   },
 });
@@ -220,6 +221,8 @@ async function clearRocklawTables(ctx: any) {
   await deleteAll(ctx, 'rl_world_events');
   await deleteAll(ctx, 'rl_price_history');
   await deleteAll(ctx, 'rl_market_prices');
+  await deleteAll(ctx, 'rl_place_markets');
+  await deleteAll(ctx, 'rl_place_stocks');
   await deleteAll(ctx, 'rl_reputation');
   await deleteAll(ctx, 'rl_locations');
   await deleteAll(ctx, 'rl_agents');
@@ -278,26 +281,16 @@ export const setAgentBlankProfile = mutation({
   },
 });
 
-// Convenience: tick the simulation forward by one step (morning → afternoon → evening → next day morning)
+// Convenience: tick the simulation forward by one step in the shared 6-period day cycle.
 export const advanceTick = internalMutation({
   args: {},
   handler: async (ctx) => {
     const state = await ctx.db.query('rl_world_state').unique();
     if (!state) return;
 
-    const timeOrder = ['morning', 'afternoon', 'evening'] as const;
-    const currentIdx = timeOrder.indexOf(state.timeOfDay as any);
-
     let nextTick = state.tick + 1;
-    let nextDay = state.day;
-    let nextTime: 'morning' | 'afternoon' | 'evening';
-
-    if (currentIdx === 2) {
-      nextTime = 'morning';
-      nextDay = state.day + 1;
-    } else {
-      nextTime = timeOrder[currentIdx + 1];
-    }
+    const { nextTime, dayDelta } = nextDayPeriod(state.timeOfDay as DayPeriod);
+    const nextDay = state.day + dayDelta;
 
     await ctx.db.patch(state._id, { tick: nextTick, day: nextDay, timeOfDay: nextTime });
     return { tick: nextTick, day: nextDay, timeOfDay: nextTime };

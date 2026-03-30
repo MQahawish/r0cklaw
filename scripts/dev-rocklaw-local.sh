@@ -40,6 +40,8 @@ require_cmd npx
 "$SCRIPT_DIR/ensure-agent-workspace-perms.sh"
 
 cd "$ROOT_DIR"
+export HOST_UID="${HOST_UID:-$(id -u)}"
+export HOST_GID="${HOST_GID:-$(id -g)}"
 
 RESET_MODE="continue"
 if [[ "${1:-}" == "--fresh" ]]; then

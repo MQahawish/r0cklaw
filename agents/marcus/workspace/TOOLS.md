@@ -26,7 +26,6 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 ```json
 {
   "action": "...",
-  "duration_ticks": 1,
   "target": "optional agent name",
   "location": "optional location name",
   "text": "optional spoken or written content",
@@ -44,42 +43,30 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 }
 ```
 
-## Economic actions right now
-
-### Available now
-  (none)
-
-### Unavailable here
-  (none)
 ## Act in the world
 
-- `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread
-  Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1}`
-- `chat`: continue your live chat with Finn. Use the same target until you leave the scene.
-  Example JSON: `{"action":"chat","target":"Finn","text":"I understand.","duration_ticks":1}`
+
+- For `intent:"trade"`, natural-language text alone is invalid. You must include both `offer` and `request` arrays.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}`
+- For `intent:"trade"`, natural-language text alone is invalid. You must include both `offer` and `request` arrays.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}`
+- For `intent:"trade"`, natural-language text alone is invalid. You must include both `offer` and `request` arrays.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}`
+- For `intent:"trade"`, natural-language text alone is invalid. You must include both `offer` and `request` arrays.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}`
+- For `intent:"trade"`, natural-language text alone is invalid. You must include both `offer` and `request` arrays.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}`
+- For `intent:"trade"`, natural-language text alone is invalid. You must include both `offer` and `request` arrays.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}`
+
+- `chat`: continue your live chat with Elena Voss. Use the same target until you leave the scene.
+  Example JSON: `{"action":"chat","target":"Elena Voss","text":"Makes sense."}`
 
 - `chat` with `intent`: buy, sell, trade, give, pay, accept, or reject through the same spoken turn.
-  Example JSON: `{"action":"chat","target":"Finn","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1}`
+  Example JSON: `{"action":"chat","target":"Elena Voss","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35}`
 
 - `leave_chat`: leave the live chat. You may include `text` for a final goodbye line.
-  Example JSON: `{"action":"leave_chat","text":"Goodbye for now.","duration_ticks":1,"thought":"I need to end this conversation now."}`
+  Example JSON: `{"action":"leave_chat","text":"All right, chat later.","thought":"I need to end this conversation now."}`
 
-## Speaking into the world
-
-- `say`: use `text` to speak out loud in your current location. This is local speech, not a thread, and it does not take a target.
-  Example JSON: `{"action":"say","text":"Fresh bread is ready at the inn.","duration_ticks":1}`
-
-If you want to pray, return a final JSON action with `"action": "pray"` and put the prayer text in `text`.
-
-## Merchant skills
-
-- Use `chat` first to open a live conversation. Direct commerce is only valid while you are already in a live chat with that same person.
-
-- Once the live chat is open, use `chat` with `intent:"buy"` to make an in-person offer for stock.
-  Example JSON: `{"action":"chat","target":"Finn","text":"I can offer 24 coin for four grain.","intent":"buy","item":"grain","quantity":4,"amount":24,"duration_ticks":1}`
-
-- Use `chat` with `intent:"sell"` to move inventory directly while that live chat is active.
-  Example JSON: `{"action":"chat","target":"Elena Voss","text":"I can sell you three coal for 12 coin.","intent":"sell","item":"coal","quantity":3,"amount":12,"duration_ticks":1}`
-
-- Use `chat` with `intent:"trade"` when a direct swap will close faster than coin.
-  Example JSON: `{"action":"chat","target":"Finn","text":"I can swap two coal for four grain.","intent":"trade","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}],"duration_ticks":1}`
+- Each live-chat turn must make progress: answer the partner's last question, ask one direct question, make one concrete offer, respond to a pending offer with the exact structured fields, or leave the chat.
+- Do not repeat the same point, do not restate the same offer twice, and never output filler like `...` or `waiting for your response`.

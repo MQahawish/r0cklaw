@@ -10,17 +10,8 @@ const INSPECTOR_FILES = [
   { label: 'Soul', file: 'SOUL.md' },
   { label: 'Memory', file: 'MEMORY.md' },
   { label: 'Heartbeat', file: 'HEARTBEAT.md' },
-  { label: 'Beliefs', file: 'self/beliefs.md' },
-  { label: 'Goals', file: 'self/goals.md' },
-  { label: 'Plans', file: 'self/plans.md' },
-  { label: 'Secrets', file: 'self/secrets.md' },
-  { label: 'Desires', file: 'self/desires.md' },
-  { label: 'Status', file: 'world/status.md' },
-  { label: 'Inventory', file: 'world/inventory.md' },
-  { label: 'Location', file: 'world/location.md' },
-  { label: 'Chat', file: 'world/CHAT.md' },
-  { label: 'Offers', file: 'world/OFFERS.md' },
-  { label: 'News', file: 'world/village_news.md' },
+  { label: 'Self', file: 'SELF.md' },
+  { label: 'Turn', file: 'TURN.md' },
 ];
 
 export type AgentFileEntry = {
@@ -54,23 +45,7 @@ export const getAgentFiles = action({
       }),
     );
 
-    const social: SocialFileEntry[] = [];
-    const socialDir = path.join(absPath, 'self', 'social');
-    try {
-      const entries = await fs.readdir(socialDir);
-      for (const entry of entries) {
-        try {
-          const content = await fs.readFile(path.join(socialDir, entry, 'private.md'), 'utf8');
-          social.push({ otherAgent: entry, content });
-        } catch {
-          // no private.md yet
-        }
-      }
-    } catch {
-      // no social dir yet
-    }
-
-    return { files, social };
+    return { files, social: [] };
   },
 });
 

@@ -84,6 +84,8 @@ if ! provider_credentials_ok "$CONFIG_PATH"; then
 fi
 
 cd "$ROOT_DIR"
+export HOST_UID="${HOST_UID:-$(id -u)}"
+export HOST_GID="${HOST_GID:-$(id -g)}"
 
 echo "[1/5] Starting self-hosted Convex backend..."
 docker compose up -d backend dashboard

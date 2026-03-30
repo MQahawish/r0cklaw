@@ -242,7 +242,7 @@ export const suggestEvents = action({
           'X-Title': 'Rocklaw God Mode',
         },
         body: JSON.stringify({
-          model: 'google/gemini-flash-1.5',
+          model: 'google/gemini-3.1-flash-lite-preview',
           messages: [{ role: 'user', content: prompt }],
           temperature: 0.9,
           max_tokens: 600,

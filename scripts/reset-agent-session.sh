@@ -34,16 +34,13 @@ PY
 )"
 
 mkdir -p \
-  "$WORKSPACE/self/messages/inbox" \
-  "$WORKSPACE/self/messages/outbox" \
-  "$WORKSPACE/world" \
   "$WORKSPACE/state" \
   "$WORKSPACE/state/seeded_docs" \
   "$WORKSPACE/state/seeded_skills" \
   "$WORKSPACE/memory" \
   "$WORKSPACE/sessions"
 
-chmod -R a+rwX "$WORKSPACE/self" "$WORKSPACE/world" "$WORKSPACE/state" "$WORKSPACE/memory" "$WORKSPACE/sessions" 2>/dev/null || true
+chmod -R a+rwX "$WORKSPACE" "$WORKSPACE/state" "$WORKSPACE/memory" "$WORKSPACE/sessions" 2>/dev/null || true
 
 backup_seeded_doc() {
   local file_name=$1
@@ -71,15 +68,6 @@ rotate_dir() {
   fi
 }
 
-rotate_dir "$WORKSPACE/self/messages/inbox"
-rotate_dir "$WORKSPACE/self/messages/outbox"
-
-find "$WORKSPACE/self/messages" -maxdepth 1 \( -name 'inbox.stale.*' -o -name 'outbox.stale.*' \) -exec rm -rf {} + 2>/dev/null || true
-
-mkdir -p \
-  "$WORKSPACE/self/messages/inbox" \
-  "$WORKSPACE/self/messages/outbox"
-
 rm -f \
   "$WORKSPACE/sessions/sessions.db" \
   "$WORKSPACE/sessions/sessions.db-shm" \
@@ -90,12 +78,23 @@ rm -f \
   "$WORKSPACE/state/runtime-trace.jsonl" \
   "$WORKSPACE/state/tick-debug.jsonl" \
   "$WORKSPACE/state/memory_hygiene_state.json" \
+  "$WORKSPACE/TURN.md" \
+  "$WORKSPACE/SELF.md" \
   "$WORKSPACE/world/inventory.md" \
   "$WORKSPACE/world/location.md" \
+  "$WORKSPACE/world/CHAT.md" \
+  "$WORKSPACE/world/OFFERS.md" \
   "$WORKSPACE/world/market_prices.md" \
   "$WORKSPACE/world/status.md" \
   "$WORKSPACE/world/village_news.md" \
   "/tmp/zeroclaw-$AGENT.log"
+
+rm -rf \
+  "$WORKSPACE/chat" \
+  "$WORKSPACE/world/chat" \
+  "$WORKSPACE/world" \
+  "$WORKSPACE/self" \
+  "$WORKSPACE/self/messages"
 
 backup_seeded_doc "IDENTITY.md"
 backup_seeded_doc "SOUL.md"
@@ -124,9 +123,7 @@ cat > "$WORKSPACE/HEARTBEAT.md" <<EOF
 EOF
 
 if [[ "$PROFILE" == "--blank-self" ]]; then
-  find "$WORKSPACE/self" -type f \
-    ! -path "$WORKSPACE/self/messages/inbox/README.md" \
-    -delete 2>/dev/null || true
+  find "$WORKSPACE/self" -type f -delete 2>/dev/null || true
 
   cat > "$WORKSPACE/MEMORY.md" <<EOF
 # Memory -- $AGENT_NAME
@@ -144,20 +141,6 @@ if [[ "$PROFILE" == "--blank-self" ]]; then
 - None yet.
 EOF
 
-  cat > "$WORKSPACE/self/goals.md" <<EOF
-# Goals -- $AGENT_NAME
-
-What I am working toward this week:
-  - Nothing defined yet.
-EOF
-
-  cat > "$WORKSPACE/self/plans.md" <<EOF
-# Plans -- $AGENT_NAME
-
-Specific upcoming intentions:
-  - Nothing defined yet.
-EOF
-
   python3 - <<'PY' "$WORKSPACE" "$AGENT_NAME"
 import pathlib
 import re
@@ -172,9 +155,6 @@ aliases = {
     "Finn": ["Finn"],
     "Lena Marsh": ["Lena Marsh", "Lena"],
     "Sera": ["Sera"],
-    "Brother Aldric": ["Brother Aldric", "Aldric"],
-    "Cora": ["Cora"],
-    "Old Rook": ["Old Rook", "Rook"],
 }
 
 other_patterns = []
@@ -206,15 +186,130 @@ fi
 restore_seeded_doc "AGENTS.md"
 restore_seeded_doc "TOOLS.md"
 
-cat > "$WORKSPACE/self/messages/sent_log.md" <<'EOF'
-# Sent Messages Log
+python3 - <<'PY' "$WORKSPACE" "$AGENT_NAME" "$PROFILE"
+import pathlib
+import shutil
+import sys
 
-No sent messages yet.
-EOF
+workspace = pathlib.Path(sys.argv[1])
+agent_name = sys.argv[2]
+profile = sys.argv[3]
+self_dir = workspace / "self"
+self_path = workspace / "SELF.md"
 
-cat > "$WORKSPACE/self/messages/inbox/README.md" <<'EOF'
-# Inbox
+def read_section(filename: str) -> str:
+    path = self_dir / filename
+    if not path.exists():
+        return ""
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return ""
+    lines = text.splitlines()
+    idx = 0
+    while idx < len(lines) and not lines[idx].strip():
+        idx += 1
+    if idx < len(lines) and lines[idx].startswith("# "):
+        idx += 1
+    while idx < len(lines) and not lines[idx].strip():
+        idx += 1
+    return "\n".join(lines[idx:]).strip()
 
-Incoming letters are reflected in world/location.md under "Letters waiting for you here".
-Use this folder only as your personal correspondence archive when needed.
-EOF
+def build_relationships() -> str:
+    social_dir = self_dir / "social"
+    if not social_dir.exists():
+        return "- None yet."
+    lines = []
+    for entry in sorted([p for p in social_dir.iterdir() if p.is_dir()], key=lambda p: p.name):
+        notes = []
+        for name in ("private.md", "public.md"):
+          file_path = entry / name
+          if not file_path.exists():
+              continue
+          content = file_path.read_text(encoding="utf-8").strip()
+          if not content:
+              continue
+          split = content.splitlines()
+          idx = 0
+          while idx < len(split) and not split[idx].strip():
+              idx += 1
+          if idx < len(split) and split[idx].startswith("# "):
+              idx += 1
+          while idx < len(split) and not split[idx].strip():
+              idx += 1
+          body = " ".join(line.strip() for line in split[idx:] if line.strip())
+          if body:
+              notes.append(body)
+        if notes:
+            lines.append(f"- {entry.name}: {' '.join(notes)}")
+    return "\n".join(lines) if lines else "- None yet."
+
+if profile == "--blank-self":
+    content = "\n".join([
+        f"# Self Context -- {agent_name}",
+        "",
+        "## Goals",
+        "What I am working toward this week:",
+        "  - Survive and stay functional.",
+        "",
+        "## Plans",
+        "Specific upcoming intentions:",
+        "  - Nothing defined yet.",
+        "",
+        "## Beliefs",
+        "- None yet.",
+        "",
+        "## Desires",
+        "- None yet.",
+        "",
+        "## Secrets",
+        "- None yet.",
+        "",
+        "## Relevant Relationships",
+        "- None yet.",
+        "",
+    ])
+    self_path.write_text(content, encoding="utf-8")
+else:
+    if not self_path.exists():
+        goals = read_section("goals.md") or "What I am working toward this week:\n  - Nothing defined yet."
+        plans = read_section("plans.md") or "Specific upcoming intentions:\n  - Nothing defined yet."
+        beliefs = read_section("beliefs.md") or "- None yet."
+        desires = read_section("desires.md") or "- None yet."
+        secrets = read_section("secrets.md") or "- None yet."
+        relationships = build_relationships()
+        content = "\n".join([
+            f"# Self Context -- {agent_name}",
+            "",
+            "## Goals",
+            goals,
+            "",
+            "## Plans",
+            plans,
+            "",
+            "## Beliefs",
+            beliefs,
+            "",
+            "## Desires",
+            desires,
+            "",
+            "## Secrets",
+            secrets,
+            "",
+            "## Relevant Relationships",
+            relationships,
+            "",
+        ])
+        self_path.write_text(content, encoding="utf-8")
+
+for legacy_name in ("goals.md", "plans.md", "beliefs.md", "desires.md", "secrets.md"):
+    try:
+        (self_dir / legacy_name).unlink()
+    except FileNotFoundError:
+        pass
+
+social_dir = self_dir / "social"
+if social_dir.exists():
+    shutil.rmtree(social_dir, ignore_errors=True)
+if self_dir.exists():
+    shutil.rmtree(self_dir, ignore_errors=True)
+PY

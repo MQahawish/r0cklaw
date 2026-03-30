@@ -8,6 +8,9 @@
 import { v } from 'convex/values';
 import { internalMutation, internalQuery } from '../_generated/server';
 import { RECIPE_CATALOGUE, ROLE_ECONOMIC_ACTIONS, ROLE_TRADE_PROFILES, SERVICE_CATALOGUE } from './economy';
+import { describeBusyStatus } from './actionTiming';
+import { timeOfDayForTick } from './dayCycle';
+import { derivePlaceQuote } from './placeMarkets';
 
 type EconomicSurfaceEntry = {
   action: string;
@@ -22,15 +25,25 @@ type TradeOpportunity = {
   likelyBuys: string[];
 };
 
-function createChatThreadKey(agentA: string, agentB: string): string {
-  return [agentA, agentB].sort((a, b) => a.localeCompare(b)).join('::');
+function getBusySnapshot(agent: any) {
+  let pendingAction: Record<string, unknown> | null = null;
+  if (typeof agent?.pendingActionJson === 'string') {
+    try {
+      pendingAction = JSON.parse(agent.pendingActionJson) as Record<string, unknown>;
+    } catch {
+      pendingAction = null;
+    }
+  }
+  const busy = Boolean(agent?.busy);
+  return {
+    busy,
+    busyUntilTick: typeof agent?.busyUntilTick === 'number' ? agent.busyUntilTick : null,
+    busyLabel: busy ? describeBusyStatus(pendingAction, agent?.busyUntilTick) : null,
+  };
 }
 
-function timeOfDayForTick(tick: number): 'morning' | 'afternoon' | 'evening' {
-  const mod = tick % 3;
-  if (mod === 1) return 'afternoon';
-  if (mod === 2) return 'evening';
-  return 'morning';
+function createChatThreadKey(agentA: string, agentB: string): string {
+  return [agentA, agentB].sort((a, b) => a.localeCompare(b)).join('::');
 }
 
 function findPrimaryTradeLocation(agentLocation: string): string {
@@ -62,17 +75,53 @@ function buildTradeOpportunities(args: { agent: any; nearby: any[] }): TradeOppo
 function buildEconomicSurface(args: {
   agent: any;
   nearby: any[];
+  nearbyPlaceStocks: any[];
   fieldsHere: any[];
   herbPatchesHere: any[];
   prices: any[];
   reachableLocations: string[];
 }): EconomicSurfaceEntry[] {
-  const { agent, nearby, fieldsHere, herbPatchesHere, prices, reachableLocations } = args;
+  const { agent, nearby, nearbyPlaceStocks, fieldsHere, herbPatchesHere, prices, reachableLocations } = args;
   const inv = JSON.parse(agent.inventory) as Record<string, number>;
   const roleActions = ROLE_ECONOMIC_ACTIONS[agent.role] ?? [];
   const entries: EconomicSurfaceEntry[] = [];
   const nearbyTradePartners = nearby.filter((other) => other.name !== agent.name);
   const primaryTradeLocation = findPrimaryTradeLocation(agent.location);
+
+  for (const stock of nearbyPlaceStocks) {
+    if (stock.sells) {
+      entries.push({
+        action: `buy_place:${stock.placeName}:${stock.item}`,
+        status: stock.canCurrentlySell ? 'available' : 'unavailable',
+        detail: stock.canCurrentlySell
+          ? `Available now at ${stock.placeName}: ${stock.quantity} ${stock.item} in stock for ${stock.askPrice ?? '?'}c each.`
+          : `${stock.placeName} is out of ${stock.item} right now.`,
+      });
+    }
+    if (stock.buys) {
+      const quantityOnHand = inv[stock.item] ?? 0;
+      entries.push({
+        action: `sell_place:${stock.placeName}:${stock.item}`,
+        status: quantityOnHand > 0 && stock.canCurrentlyBuy ? 'available' : 'unavailable',
+        detail: quantityOnHand > 0
+          ? stock.canCurrentlyBuy
+            ? `${stock.placeName} is buying ${stock.item} for ${stock.bidPrice ?? '?'}c each.`
+            : `${stock.placeName} wants ${stock.item} but cannot currently pay for more.`
+          : `You do not have ${stock.item} to sell into ${stock.placeName}.`,
+      });
+    }
+    const quantityOnHand = inv[stock.item] ?? 0;
+    if (quantityOnHand > 0) {
+      const hasCapacity = stock.remainingCapacity === null || stock.remainingCapacity > 0;
+      entries.push({
+        action: `deliver_place:${stock.placeName}:${stock.item}`,
+        status: hasCapacity ? 'available' : 'unavailable',
+        detail: hasCapacity
+          ? `You can deliver ${stock.item} into ${stock.placeName} for storage or supply without immediate payment.`
+          : `${stock.placeName} cannot currently store more ${stock.item}.`,
+      });
+    }
+  }
 
   if (roleActions.includes('buy')) {
     if (nearbyTradePartners.length > 0) {
@@ -206,7 +255,7 @@ function buildEconomicSurface(args: {
 
 /**
  * Finds unread letters addressed to agentName at their current location,
- * marks them as read, and returns the letter objects for inclusion in location.md.
+ * marks them as read, and returns the letter objects for inclusion in TURN.md.
  */
 export const deliverLetters = internalMutation({
   args: {
@@ -436,6 +485,14 @@ export const getWorldSnapshot = internalQuery({
       .withIndex('name', (q) => q.eq('name', agent.location))
       .unique();
     const allLocations = await ctx.db.query('rl_locations').collect();
+    const nearbyPlaceStocks = await ctx.db
+      .query('rl_place_stocks')
+      .withIndex('place', (q) => q.eq('placeName', agent.location))
+      .collect();
+    const nearbyPlaceMarket = await ctx.db
+      .query('rl_place_markets')
+      .withIndex('placeName', (q) => q.eq('placeName', agent.location))
+      .unique();
     const fieldsHere = await ctx.db
       .query('rl_fields')
       .withIndex('location', (q) => q.eq('location', agent.location))
@@ -454,6 +511,9 @@ export const getWorldSnapshot = internalQuery({
           q.eq(q.field('action'), 'buy'),
           q.eq(q.field('action'), 'sell'),
           q.eq(q.field('action'), 'trade'),
+          q.eq(q.field('action'), 'buy_place'),
+          q.eq(q.field('action'), 'sell_place'),
+          q.eq(q.field('action'), 'deliver_place'),
         ),
       )
       .order('desc')
@@ -533,21 +593,55 @@ export const getWorldSnapshot = internalQuery({
           || a[counterpartField].localeCompare(b[counterpartField]),
         );
 
-    const actionableIncomingTransactions = incomingTransactions.filter((txn) =>
-      proposerByName.get(txn.fromAgent)?.location === agent.location,
-    );
-    const actionableOutgoingTransactions = outgoingTransactions.filter((txn) =>
-      proposerByName.get(txn.toAgent)?.location === agent.location,
-    );
+    const currentScenePartner = currentChatScene
+      ? (currentChatScene.agentA === agentName ? currentChatScene.agentB : currentChatScene.agentA)
+      : null;
+    const actionableIncomingTransactions = currentScenePartner
+      ? incomingTransactions.filter((txn) =>
+          txn.fromAgent === currentScenePartner && proposerByName.get(txn.fromAgent)?.location === agent.location,
+        )
+      : [];
+    const actionableOutgoingTransactions = currentScenePartner
+      ? outgoingTransactions.filter((txn) =>
+          txn.toAgent === currentScenePartner && proposerByName.get(txn.toAgent)?.location === agent.location,
+        )
+      : [];
 
     const orderedIncomingTransactions = orderTransactions(actionableIncomingTransactions, 'fromAgent');
     const orderedOutgoingTransactions = orderTransactions(actionableOutgoingTransactions, 'toAgent');
 
-    const nearbyOthers = nearby.filter((a) => a.name !== agentName);
+    const nearbyOthers = nearby
+      .filter((a) => a.name !== agentName)
+      .map((other) => ({
+        ...other,
+        ...getBusySnapshot(other),
+      }));
     const reachableLocations = allLocations
       .map((entry) => entry.name)
       .filter((name) => name !== agent.location)
       .sort((a, b) => a.localeCompare(b));
+
+    const priceByItem = new Map(prices.map((price: any) => [price.item, price.price]));
+    const enrichedNearbyPlaceStocks = nearbyPlaceStocks.map((stock: any) => {
+      const market = nearbyPlaceMarket ?? {
+        placeName: stock.placeName,
+        treasury: 0,
+        buySpreadPct: 0.15,
+        sellSpreadPct: 0.15,
+        targetStockRatio: 0.5,
+      };
+      const quote = derivePlaceQuote(stock, market, priceByItem.get(stock.item));
+      return {
+        ...stock,
+        treasury: market.treasury,
+        bidPrice: quote.bidPrice,
+        askPrice: quote.askPrice,
+        maxAffordableQuantity: quote.maxAffordableQuantity,
+        remainingCapacity: quote.remainingCapacity,
+        canCurrentlyBuy: quote.canCurrentlyBuy,
+        canCurrentlySell: quote.canCurrentlySell,
+      };
+    });
 
     const socialKnowledge = await ctx.db
       .query('rl_social_knowledge')
@@ -565,13 +659,15 @@ export const getWorldSnapshot = internalQuery({
     const allChatMessages = [...sentChatMessages, ...receivedChatMessages]
       .sort((a, b) => a.sentDay - b.sentDay || a.sentTick - b.sentTick);
 
-    const knownContactNames = Array.from(new Set([
-      ...socialKnowledge.map((entry) => entry.subjectAgent),
+    const threadedContactNames = Array.from(new Set([
       ...allChatMessages.map((entry) => (entry.fromAgent === agentName ? entry.toAgent : entry.fromAgent)),
+      ...liveChatScenes
+        .filter((scene) => scene.agentA === agentName || scene.agentB === agentName)
+        .map((scene) => (scene.agentA === agentName ? scene.agentB : scene.agentA)),
     ]));
 
     const knownContacts = await Promise.all(
-      knownContactNames.map(async (name) => {
+      threadedContactNames.map(async (name) => {
         const contactAgent = await ctx.db
           .query('rl_agents')
           .withIndex('name', (q) => q.eq('name', name))
@@ -584,6 +680,7 @@ export const getWorldSnapshot = internalQuery({
                 role: contactAgent.role,
                 location: contactAgent.location,
                 knownRole: contactAgent.role,
+                ...getBusySnapshot(contactAgent),
               }
             : null;
         }
@@ -592,6 +689,7 @@ export const getWorldSnapshot = internalQuery({
           role: contactAgent.role,
           location: contactAgent.location,
           knownRole: knowledge.knownRole,
+          ...getBusySnapshot(contactAgent),
         };
       }),
     );
@@ -613,6 +711,9 @@ export const getWorldSnapshot = internalQuery({
           role: contact!.role,
           online: contact!.location === agent.location,
           live: Boolean(liveScene),
+          busy: Boolean(contact!.busy),
+          busyUntilTick: contact!.busyUntilTick ?? null,
+          busyLabel: contact!.busyLabel ?? null,
           yourTurn: liveScene ? liveScene.nextSpeaker === agentName : false,
           interruptionContext:
             liveScene
@@ -652,6 +753,7 @@ export const getWorldSnapshot = internalQuery({
       prices,
       events,
       locationDoc: location,
+      nearbyPlaceStocks: enrichedNearbyPlaceStocks,
       fieldsHere,
       herbPatchesHere,
       recentTrades,
@@ -704,6 +806,7 @@ export const getWorldSnapshot = internalQuery({
       economicSurface: buildEconomicSurface({
         agent,
         nearby: nearbyOthers,
+        nearbyPlaceStocks: enrichedNearbyPlaceStocks,
         fieldsHere,
         herbPatchesHere,
         prices,

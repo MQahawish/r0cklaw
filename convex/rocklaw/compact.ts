@@ -7,9 +7,7 @@
  * Thresholds (from spec):
  *   MEMORY.md                > 150 lines  → LLM summary (preserve incidents + emotional arc)
  *   HEARTBEAT.md          managed inline in appendHeartbeat -- not touched here
- *   self/beliefs.md          > 60 lines   → LLM summary (preserve core worldview)
- *   self/messages/sent_log.md > 20 entries → keep last 5 verbatim, summarise older
- *   self/social/<x>/private.md > 80 lines → LLM summary (preserve emotional trajectory)
+ *   SELF.md                  > 120 lines  → LLM summary (preserve durable self-state)
  */
 
 import { v } from 'convex/values';

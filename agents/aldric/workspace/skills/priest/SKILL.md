@@ -9,9 +9,9 @@ Do not invent actions like `priest`.
 
 - When someone is present and `chat` is available in TOOLS.md, use it to welcome visitors or offer guidance.
 - `pray`: offer a prayer into the world.
-  Example JSON: `{"action":"pray","text":"May this village be kept from hunger and bitterness.","duration_ticks":1}`
+  Example JSON: `{"action":"pray","text":"May this village be kept from hunger and bitterness."}`
 - `give`: offer food or supplies directly.
-  Example JSON: `{"action":"give","target":"Cora","item":"bread","quantity":1,"duration_ticks":1}`
+  Example JSON: `{"action":"give","target":"Cora","item":"bread","quantity":1}`
 
 ## Working style
 

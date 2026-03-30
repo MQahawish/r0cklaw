@@ -9,6 +9,7 @@
 
 import { v } from 'convex/values';
 import { query } from '../_generated/server';
+import { describeBusyStatus } from './actionTiming';
 
 export type AgentFileEntry = {
   label: string;
@@ -45,6 +46,7 @@ export const getStepSummary = query({
   args: {},
   handler: async (ctx) => {
     const worldState = await ctx.db.query('rl_world_state').unique();
+    const agentDocs = await ctx.db.query('rl_agents').collect();
     const scenes = await ctx.db
       .query('rl_chat_scenes')
       .withIndex('status_location', (q) => q.eq('status', 'live'))
@@ -85,10 +87,30 @@ export const getStepSummary = query({
       }),
     );
 
+    const agents = agentDocs.map((agent) => {
+      let pendingAction: Record<string, unknown> | null = null;
+      if (typeof agent.pendingActionJson === 'string') {
+        try {
+          pendingAction = JSON.parse(agent.pendingActionJson) as Record<string, unknown>;
+        } catch {
+          pendingAction = null;
+        }
+      }
+      return {
+        name: agent.name,
+        busy: agent.busy,
+        busyUntilTick: agent.busyUntilTick ?? null,
+        busyLabel: agent.busy
+          ? describeBusyStatus(pendingAction, agent.busyUntilTick)
+          : null,
+      };
+    });
+
     return {
       tick: worldState?.tick ?? 0,
       day: worldState?.day ?? 1,
       timeOfDay: worldState?.timeOfDay ?? 'morning',
+      agents,
       liveScenes: sceneSummaries,
     };
   },

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start all 8 Rocklaw ZeroClaw gateways in the background.
+# Start all active Rocklaw ZeroClaw gateways in the background.
 #
 # Usage:
 #   ./scripts/start-all-agents.sh
@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-AGENTS=(elena marcus finn lena sera aldric cora rook)
+AGENTS=(elena marcus finn lena sera)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/load-local-env.sh"

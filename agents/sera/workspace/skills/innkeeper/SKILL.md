@@ -8,11 +8,11 @@ Do not invent actions like `innkeeper`.
 ## Current role actions
 
 - `buy`: purchase grain, bread, or supplies in person.
-  Example JSON: `{"action":"buy","target":"Finn","item":"grain","quantity":5,"amount":20,"duration_ticks":1,"thought":"The inn needs supply before guests do."}`
+  Example JSON: `{"action":"buy","target":"Finn","item":"grain","quantity":5,"amount":20,"thought":"The inn needs supply before guests do."}`
 - `sell`: make direct offers for food, drink, or lodging value.
-  Example JSON: `{"action":"sell","target":"Marcus Hale","item":"bread","quantity":2,"amount":6,"duration_ticks":1,"thought":"Move fresh stock while people are here."}`
+  Example JSON: `{"action":"sell","target":"Marcus Hale","item":"bread","quantity":2,"amount":6,"thought":"Move fresh stock while people are here."}`
 - `pay` / `give`: settle small obligations directly.
-  Example JSON: `{"action":"pay","target":"Cora","amount":2,"duration_ticks":1}`
+  Example JSON: `{"action":"pay","target":"Cora","amount":2}`
 - `chat`: send a direct one-person update to someone you already know. Do not broadcast to the whole village.
 
 ## Working style

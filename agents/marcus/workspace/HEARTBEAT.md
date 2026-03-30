@@ -1,10 +1,10 @@
 # HEARTBEAT -- Marcus Hale
 
 ## Recent Activity
-- Day 1 afternoon: say (A quiet afternoon at the market.)
-- Day 1 evening: move → inn (Heading to the inn for the evening.)
-- Day 2 morning: first saw Sera (Innkeeper) at inn.
-- Day 2 morning: live chat opened with Sera (your opener was interrupted and saved for context)
-- Day 2 afternoon: chat → Sera (Good morning, Sera. Always a pleasure to see you. I was just) ⚠ Live chat sent to Sera.
-- Day 2 afternoon: chatting with Sera (waiting)
-- Day 3 morning: chat → Sera (Speaking of business, Sera, I'm always looking for opportuni) ⚠ Live chat sent to Sera.
+- Day 2 midday: first saw Lena Marsh (Herbalist) at market.
+- Day 2 midday: first saw Sera (Innkeeper) at market.
+- Day 2 midday: You chatted with Lena Marsh ("Lena, good to see you. I'm listening. What's your price?") ⚠ Live chat sent to Lena Marsh.
+- Day 2 afternoon: You chatted with Lena Marsh (intent: trade) ("I have a set of tools. They're in high demand right now. I'd") ⚠ Offer txn-2-9-trade-marcus-hale-1774847555348 created for Lena Marsh.
+- Day 2 evening: chatting with Lena Marsh (waiting)
+- Day 2 night: You chatted with Lena Marsh (intent: trade) ("Lena, I appreciate the offer, but I'm more interested in a d") ⚠ Offer txn-2-11-trade-marcus-hale-1774847647093 created for Lena Marsh.
+- Day 3 dawn: chatting with Lena Marsh (waiting)

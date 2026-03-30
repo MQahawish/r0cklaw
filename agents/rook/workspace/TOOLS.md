@@ -26,7 +26,6 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 ```json
 {
   "action": "...",
-  "duration_ticks": 1,
   "target": "optional agent name",
   "location": "optional location name",
   "text": "optional spoken or written content",
@@ -53,24 +52,29 @@ Return one JSON object when you are ready to act. Use only the fields that matte
   (none)
 ## Act in the world
 
-- `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread
-  Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I need coal by Day 9.","duration_ticks":1}`
+
+- For `intent:"trade"`, natural-language text alone is invalid. You must include both `offer` and `request` arrays.
+  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}`
+
 - `chat`: continue your live chat with Sera. Use the same target until you leave the scene.
-  Example JSON: `{"action":"chat","target":"Sera","text":"I understand.","duration_ticks":1}`
+  Example JSON: `{"action":"chat","target":"Sera","text":"Makes sense."}`
 
 - `chat` with `intent`: buy, sell, trade, give, pay, accept, or reject through the same spoken turn.
-  Example JSON: `{"action":"chat","target":"Sera","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1}`
+  Example JSON: `{"action":"chat","target":"Sera","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35}`
 
 - `chat` with `intent:"accept_transaction"` or `intent:"reject_transaction"`: respond to Sera's pending offers while you remain in this live chat.
-  Example JSON: `{"action":"chat","target":"Sera","text":"Agreed.","intent":"accept_transaction","offer_ref":"offer-1","duration_ticks":1,"thought":"The offer is fair."}`
+  Example JSON: `{"action":"chat","target":"Sera","text":"Agreed.","intent":"accept_transaction","offer_ref":"offer-1","thought":"The offer is fair."}`
 
 - `leave_chat`: leave the live chat. You may include `text` for a final goodbye line.
-  Example JSON: `{"action":"leave_chat","text":"Goodbye for now.","duration_ticks":1,"thought":"I need to end this conversation now."}`
+  Example JSON: `{"action":"leave_chat","text":"All right, chat later.","thought":"I need to end this conversation now."}`
+
+
+
 
 ## Speaking into the world
 
 - `say`: use `text` to speak out loud in your current location. This is local speech, not a thread, and it does not take a target.
-  Example JSON: `{"action":"say","text":"Fresh bread is ready at the inn.","duration_ticks":1}`
+  Example JSON: `{"action":"say","text":"Fresh bread at the inn if anyone wants some."}`
 
 If you want to pray, return a final JSON action with `"action": "pray"` and put the prayer text in `text`.
 

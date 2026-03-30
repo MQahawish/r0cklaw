@@ -26,7 +26,6 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 ```json
 {
   "action": "...",
-  "duration_ticks": 1,
   "target": "optional agent name",
   "location": "optional location name",
   "text": "optional spoken or written content",
@@ -48,26 +47,44 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 
 ### Available now
 - `check_field`: Available now. 2 fields here need attention.
-- `plant`: Available now. At least one field is fallow and ready to plant.
 - `water`: Available now. A growing field can be watered to speed it along.
+- `harvest`: Available now. 1 field is ready to harvest.
 
 ### Unavailable here
-- `harvest`: Unavailable now. No field is ready to harvest.
+- `plant`: Unavailable now. All fields are already in use.
 ## Act in the world
 
 - `chat`: continue your live chat with Marcus Hale. Use the same target until you leave the scene.
-  Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I understand.","duration_ticks":1}`
+  Example JSON: `{"action":"chat","target":"Marcus Hale","text":"Makes sense."}`
 
 - `chat` with `intent`: buy, sell, trade, give, pay, accept, or reject through the same spoken turn.
-  Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35,"duration_ticks":1}`
+  Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35}`
 
 - `leave_chat`: leave the live chat. You may include `text` for a final goodbye line.
-  Example JSON: `{"action":"leave_chat","text":"Goodbye for now.","duration_ticks":1,"thought":"I need to end this conversation now."}`
+  Example JSON: `{"action":"leave_chat","text":"All right, chat later.","thought":"I need to end this conversation now."}`
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Temporary actions available now
+
+- `rest`: take a short break to recover.
+  Example JSON: `{"action":"rest","thought":"A short break will help me recover before harder work."}`
 
 ## Speaking into the world
 
 - `say`: use `text` to speak out loud in your current location. This is local speech, not a thread, and it does not take a target.
-  Example JSON: `{"action":"say","text":"Fresh bread is ready at the inn.","duration_ticks":1}`
+  Example JSON: `{"action":"say","text":"Fresh bread at the inn if anyone wants some."}`
 
 If you want to pray, return a final JSON action with `"action": "pray"` and put the prayer text in `text`.
 

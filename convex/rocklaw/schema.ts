@@ -24,7 +24,10 @@ export const rocklawTables = {
     // Whether the agent is mid-action (bridge locks this while ticking)
     busy: v.boolean(),
     busyUntilTick: v.optional(v.number()),
-    // Overheard context from eavesdrop -- injected into next tick's location.md then cleared
+    pendingActionJson: v.optional(v.string()),
+    pendingActionStartedTick: v.optional(v.number()),
+    pendingActionStartedDay: v.optional(v.number()),
+    // Overheard context from eavesdrop -- injected into next tick's TURN.md then cleared
     pendingNote: v.optional(v.string()),
     blankSelf: v.optional(v.boolean()),
     // God-mode agent controls
@@ -235,11 +238,34 @@ export const rocklawTables = {
     name: v.string(),
     type: v.string(),
     capacity: v.number(),
+    tags: v.optional(v.array(v.string())),
     // JSON array of agent names currently here
     presentAgents: v.string(),
     // Pending messages left at this location's board: JSON array
     messageBoard: v.string(),
   }).index('name', ['name']),
+
+  rl_place_stocks: defineTable({
+    placeName: v.string(),
+    item: v.string(),
+    quantity: v.number(),
+    capacity: v.optional(v.number()),
+    buys: v.boolean(),
+    sells: v.boolean(),
+    bidPrice: v.optional(v.number()),
+    askPrice: v.optional(v.number()),
+  })
+    .index('place_item', ['placeName', 'item'])
+    .index('place', ['placeName'])
+    .index('item', ['item']),
+
+  rl_place_markets: defineTable({
+    placeName: v.string(),
+    treasury: v.number(),
+    buySpreadPct: v.number(),
+    sellSpreadPct: v.number(),
+    targetStockRatio: v.number(),
+  }).index('placeName', ['placeName']),
 
   // World events (injected by god-mode or triggered by the simulation).
   rl_world_events: defineTable({
@@ -287,7 +313,14 @@ export const rocklawTables = {
   rl_world_state: defineTable({
     tick: v.number(),
     day: v.number(),
-    timeOfDay: v.union(v.literal('morning'), v.literal('afternoon'), v.literal('evening')),
+    timeOfDay: v.union(
+      v.literal('dawn'),
+      v.literal('morning'),
+      v.literal('midday'),
+      v.literal('afternoon'),
+      v.literal('evening'),
+      v.literal('night'),
+    ),
     isRunning: v.boolean(),
   }),
 

@@ -8,12 +8,11 @@ Do not invent actions like `herbalist`.
 ## Current role actions
 
 - `gather`: spend time collecting herbs and useful plants.
-  Example JSON: `{"action":"gather","duration_ticks":1,"thought":"Medicine stock is falling and herbs come first."}`
+  Example JSON: `{"action":"gather","thought":"Medicine stock is falling and herbs come first."}`
 - `brew`: turn gathered stock into medicine.
-  Example JSON: `{"action":"brew","item":"medicine","quantity":1,"duration_ticks":1,"thought":"Fresh medicine is worth more than raw herbs."}`
-- When someone is present and `chat` is available in TOOLS.md, use it to advise them about care or treatment.
+  Example JSON: `{"action":"brew","item":"medicine","quantity":1,"thought":"Fresh medicine is worth more than raw herbs."}`
 - `sell` / `give` / `trade`: distribute medicine directly.
-  Example JSON: `{"action":"sell","target":"Old Rook","item":"medicine","quantity":1,"amount":6,"duration_ticks":1,"thought":"Regular medicine matters for him."}`
+  Example JSON: `{"action":"sell_place","target":"market","item":"medicine","quantity":1,"thought":"Medicine is in demand and the market is buying."}`
 
 ## Working style
 

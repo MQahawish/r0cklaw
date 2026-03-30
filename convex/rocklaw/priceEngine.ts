@@ -1,5 +1,5 @@
 /**
- * Price Engine -- recalculates market prices based on total supply across all agents.
+ * Price Engine -- recalculates market prices based on total supply across all agents and place stocks.
  * Called after any inventory-changing action.
  */
 
@@ -36,6 +36,7 @@ export const recalculate = internalMutation({
   args: {},
   handler: async (ctx) => {
     const agents = await ctx.db.query('rl_agents').collect();
+    const placeStocks = await ctx.db.query('rl_place_stocks').collect();
     const events = await ctx.db
       .query('rl_world_events')
       .withIndex('active', (q) => q.eq('active', true))
@@ -47,11 +48,14 @@ export const recalculate = internalMutation({
     const basePriceMultiplier = await readSysFloat(ctx, 'economy', 'base_price_multiplier', 1.0);
 
     for (const [item, config] of Object.entries(ITEM_CONFIG)) {
-      // Total supply = sum across all agent inventories
-      const totalSupply = agents.reduce((sum, agent) => {
+      const agentSupply = agents.reduce((sum, agent) => {
         const inv = JSON.parse(agent.inventory) as Record<string, number>;
         return sum + (inv[item] ?? 0);
       }, 0);
+      const placeSupply = placeStocks.reduce((sum, stock) => (
+        stock.item === item ? sum + stock.quantity : sum
+      ), 0);
+      const totalSupply = agentSupply + placeSupply;
 
       // Price formula: scarcity multiplier applied to base price
       let multiplier = 1.0;
