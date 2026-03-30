@@ -8,12 +8,31 @@ import { Viewport } from 'pixi-viewport';
 import { Id } from '../../convex/_generated/dataModel';
 import { useQuery } from 'convex/react';
 import { api } from '../../convex/_generated/api.js';
+import { GameId } from '../../convex/aiTown/ids.ts';
 import { useSendInput } from '../hooks/sendInput.ts';
 import { toastOnError } from '../toasts.ts';
 import { DebugPath } from './DebugPath.tsx';
 import { PositionIndicator } from './PositionIndicator.tsx';
 import { SHOW_DEBUG_UI } from './Game.tsx';
 import { ServerGame } from '../hooks/serverGame.ts';
+import { RocklawMapOverlay } from './RocklawMapOverlay.tsx';
+
+const ACTION_EMOJI: Record<string, string> = {
+  chat: '💬',
+  say: '📣',
+  move: '🚶',
+  craft: '⚒️',
+  brew: '⚗️',
+  gather: '🌿',
+  harvest: '🌾',
+  plant: '🌱',
+  water: '💧',
+  buy_place: '🛒',
+  sell_place: '📦',
+  trade: '🤝',
+  sleep: '😴',
+  rest: '😌',
+};
 
 export const PixiGame = (props: {
   worldId: Id<'worlds'>;
@@ -23,12 +42,14 @@ export const PixiGame = (props: {
   width: number;
   height: number;
   setSelectedElement: SelectElement;
+  selectedPlayerId?: GameId<'players'>;
 }) => {
   // PIXI setup.
   const pixiApp = useApp();
   const viewportRef = useRef<Viewport | undefined>();
 
   const humanTokenIdentifier = useQuery(api.world.userStatus, { worldId: props.worldId }) ?? null;
+  const rocklawWorld = useQuery(api.rocklaw.observe.getFrontendWorld);
   const humanPlayerId = [...props.game.world.players.values()].find(
     (p) => p.human === humanTokenIdentifier,
   )?.id;
@@ -48,6 +69,7 @@ export const PixiGame = (props: {
     t: number;
   } | null>(null);
   const onMapPointerUp = async (e: any) => {
+    props.setSelectedElement(undefined);
     if (dragStart.current) {
       const { screenX, screenY } = dragStart.current;
       dragStart.current = null;
@@ -81,6 +103,54 @@ export const PixiGame = (props: {
   };
   const { width, height, tileDim } = props.game.worldMap;
   const players = [...props.game.world.players.values()];
+  const rocklawVisualState = new Map<string, {
+    overlayText?: string;
+    overlayTone?: 'neutral' | 'chat' | 'busy' | 'trade' | 'warning';
+    isSpeaking?: boolean;
+  }>();
+  if (rocklawWorld) {
+    for (const agent of rocklawWorld.agents) {
+      const liveScene = agent.currentScene;
+      const lastSceneMessage = liveScene?.recentMessages?.[liveScene.recentMessages.length - 1];
+      if (lastSceneMessage) {
+        const partnerLabel =
+          lastSceneMessage.fromAgent === agent.name
+            ? `💬 ${lastSceneMessage.text}`
+            : `💬 with ${liveScene?.partner}`;
+        rocklawVisualState.set(agent.name, {
+          overlayText: partnerLabel,
+          overlayTone: 'chat',
+          isSpeaking: true,
+        });
+        continue;
+      }
+
+      if (agent.busy && agent.busyLabel) {
+        rocklawVisualState.set(agent.name, {
+          overlayText: `⏳ ${agent.busyLabel}`,
+          overlayTone: 'busy',
+          isSpeaking: false,
+        });
+        continue;
+      }
+
+      if (agent.latestAction?.message) {
+        const actionEmoji = ACTION_EMOJI[agent.latestAction.action] ?? '•';
+        rocklawVisualState.set(agent.name, {
+          overlayText: `${actionEmoji} ${agent.latestAction.message}`,
+          overlayTone:
+            agent.latestAction.action === 'trade' ||
+            agent.latestAction.action === 'buy_place' ||
+            agent.latestAction.action === 'sell_place'
+              ? 'trade'
+              : agent.latestAction.outcome === 'failed'
+                ? 'warning'
+                : 'neutral',
+          isSpeaking: agent.latestAction.action === 'chat' || agent.latestAction.action === 'say',
+        });
+      }
+    }
+  }
 
   // Zoom on the user’s avatar when it is created
   useEffect(() => {
@@ -92,6 +162,28 @@ export const PixiGame = (props: {
       scale: 1.5,
     });
   }, [humanPlayerId]);
+
+  useEffect(() => {
+    if (!viewportRef.current || props.selectedPlayerId === undefined) return;
+    const selectedPlayer = props.game.world.players.get(props.selectedPlayerId);
+    if (!selectedPlayer) return;
+    viewportRef.current.animate({
+      position: new PIXI.Point(selectedPlayer.position.x * tileDim, selectedPlayer.position.y * tileDim),
+      scale: 1.8,
+      time: 450,
+      ease: 'easeInOutSine',
+    });
+  }, [props.game.world.players, props.selectedPlayerId, tileDim]);
+
+  useEffect(() => {
+    if (!viewportRef.current || props.selectedPlayerId !== undefined || humanPlayerId !== undefined) return;
+    viewportRef.current.animate({
+      position: new PIXI.Point((width * tileDim) / 2, (height * tileDim) / 2),
+      scale: 1.28,
+      time: 350,
+      ease: 'easeInOutSine',
+    });
+  }, [height, humanPlayerId, props.selectedPlayerId, tileDim, width]);
 
   return (
     <PixiViewport
@@ -107,6 +199,7 @@ export const PixiGame = (props: {
         onpointerup={onMapPointerUp}
         onpointerdown={onMapPointerDown}
       />
+      {rocklawWorld && <RocklawMapOverlay tileDim={tileDim} liveScenes={rocklawWorld.liveScenes} />}
       {players.map(
         (p) =>
           // Only show the path for the human player in non-debug mode.
@@ -115,7 +208,10 @@ export const PixiGame = (props: {
           ),
       )}
       {lastDestination && <PositionIndicator destination={lastDestination} tileDim={tileDim} />}
-      {players.map((p) => (
+      {players.map((p) => {
+        const rocklawName = p.human?.startsWith('rocklaw:') ? p.human.slice('rocklaw:'.length) : null;
+        const visual = rocklawName ? rocklawVisualState.get(rocklawName) : undefined;
+        return (
         <Player
           key={`player-${p.id}`}
           game={props.game}
@@ -123,8 +219,12 @@ export const PixiGame = (props: {
           isViewer={p.id === humanPlayerId}
           onClick={props.setSelectedElement}
           historicalTime={props.historicalTime}
+          overlayText={visual?.overlayText}
+          overlayTone={visual?.overlayTone}
+          isRocklawSpeaking={visual?.isSpeaking}
         />
-      ))}
+        );
+      })}
     </PixiViewport>
   );
 };

@@ -168,6 +168,8 @@ wait_for_url "http://127.0.0.1:5173"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/load-local-env.sh"
 "$SCRIPT_DIR/ensure-convex-functions.sh"
+echo "Ensuring base AI Town world/map exists for the frontend..."
+npx convex run init '{"numAgents":0}' >/dev/null
 
 echo "[2/5] Stopping background sim and all gateways..."
 npx convex run rocklaw/god:stopSim >/dev/null 2>&1 || true

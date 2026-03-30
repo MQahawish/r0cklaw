@@ -28,6 +28,8 @@ Use ZeroClaw when you are working on:
 
 - [LOCAL_DEV.md](/home/mahmoudqahawish/Github/r0cklaw/LOCAL_DEV.md)
   - how to run, reset, step, and inspect Rocklaw locally
+- [LOCAL_LLAMA.md](/home/mahmoudqahawish/Github/r0cklaw/LOCAL_LLAMA.md)
+  - local `llama.cpp` build, launch, tuning, and benchmark commands
 - [ARCHITECTURE.md](/home/mahmoudqahawish/Github/r0cklaw/ARCHITECTURE.md)
   - canonical technical explanation of Rocklaw
 - [ROADMAP.md](/home/mahmoudqahawish/Github/r0cklaw/ROADMAP.md)

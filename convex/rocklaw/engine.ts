@@ -25,6 +25,7 @@ export const TICK_INTERVAL_MS = 30_000;
 
 // How often compaction runs (in ticks).
 const COMPACT_EVERY_N_TICKS = 10;
+const LIVE_CHAT_STALL_LIMIT = 3;
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -232,6 +233,22 @@ export const manualTick = action({
 
     // Process existing live chat scenes first. Participants do not take normal
     // world actions while the scene is active.
+    const stalledScenes = await ctx.runMutation(internal.rocklaw.bridge.closeStalledLiveChatScenes, {
+      tick,
+      day,
+      maxStallTurns: LIVE_CHAT_STALL_LIMIT,
+    });
+    for (const scene of stalledScenes) {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        agentName: scene.agentA,
+        line: `- Day ${day} ${timeOfDay}: conversation with ${scene.agentB} ended because it stalled without progress.`,
+      });
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        agentName: scene.agentB,
+        line: `- Day ${day} ${timeOfDay}: conversation with ${scene.agentA} ended because it stalled without progress.`,
+      });
+    }
+
     const liveScenes = await ctx.runQuery(internal.rocklaw.bridge.listLiveChatScenes, {});
     const sceneParticipants = new Set<string>();
     for (const scene of liveScenes) {
@@ -261,10 +278,10 @@ export const manualTick = action({
       const interruptedContext =
         currentScene.interruptedContextPending && currentScene.interruptedSpeaker === speaker
           ? [
-              `You were about to say: "${currentScene.interruptedText ?? ''}"`,
+              'You had started to respond, but your draft was interrupted before it was spoken.',
               `But ${currentScene.openingSpeaker ?? partner} spoke first and said: "${currentScene.openingText ?? ''}"`,
               ...(interruptedDraftContext ? [interruptedDraftContext] : []),
-              'Respond naturally from there.',
+              'Respond naturally from there. Ground your reply in the partner\'s most recent line, not in your interrupted draft.',
             ].join('\n')
           : null;
       const speakerPlan = await ctx.runAction(internal.rocklaw.bridgeNode.planAgentAction, {
@@ -277,6 +294,9 @@ export const manualTick = action({
           'Your valid actions right now are `chat` and `leave_chat`.',
           'If you want to buy, sell, trade, give, pay, accept, or reject inside this scene, do it through `chat` using a spoken `text` plus `intent` and the relevant fields.',
           'You cannot take a normal world action until you leave this chat scene.',
+          'Ignore any prior plan, market errand, or unfinished task while this live chat is active.',
+          'Do not resume your earlier task until after you explicitly use `leave_chat`.',
+          'Start from the partner\'s latest spoken line. Answer it, acknowledge it, or counter it directly before changing topic.',
           'Make progress. Do one of these each turn: ask one direct question, make one concrete offer, accept/reject a pending offer with the exact structured fields, answer the partner\'s last question, or leave_chat.',
           'Do not repeat yourself, do not restate the same offer twice, and do not use filler like "..." or "waiting for your response".',
           'If this conversation is no longer moving toward a concrete result, end it with leave_chat and a brief goodbye.',

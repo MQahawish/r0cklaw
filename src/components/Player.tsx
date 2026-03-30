@@ -21,6 +21,9 @@ export const Player = ({
   player,
   onClick,
   historicalTime,
+  overlayText,
+  overlayTone,
+  isRocklawSpeaking,
 }: {
   game: ServerGame;
   isViewer: boolean;
@@ -28,6 +31,9 @@ export const Player = ({
 
   onClick: SelectElement;
   historicalTime?: number;
+  overlayText?: string;
+  overlayTone?: 'neutral' | 'chat' | 'busy' | 'trade' | 'warning';
+  isRocklawSpeaking?: boolean;
 }) => {
   const playerCharacter = game.playerDescriptions.get(player.id)?.character;
   if (!playerCharacter) {
@@ -56,7 +62,7 @@ export const Player = ({
 
   const isSpeaking = !![...game.world.conversations.values()].find(
     (c) => c.isTyping?.playerId === player.id,
-  );
+  ) || !!isRocklawSpeaking;
   const isThinking =
     !isSpeaking &&
     !![...game.world.agents.values()].find(
@@ -78,6 +84,8 @@ export const Player = ({
             ? player.activity?.emoji
             : undefined
         }
+        overlayText={overlayText}
+        overlayTone={overlayTone}
         isViewer={isViewer}
         textureUrl={character.textureUrl}
         spritesheetData={character.spritesheetData}

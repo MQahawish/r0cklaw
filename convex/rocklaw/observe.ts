@@ -30,6 +30,252 @@ export const getAgentWorkspacePaths = query({
   },
 });
 
+function parseInventory(inventoryJson: string): Array<{ item: string; quantity: number }> {
+  try {
+    const parsed = JSON.parse(inventoryJson) as Record<string, number>;
+    return Object.entries(parsed)
+      .filter(([, quantity]) => typeof quantity === 'number' && quantity > 0)
+      .sort((a: [string, number], b: [string, number]) => b[1] - a[1])
+      .map(([item, quantity]: [string, number]) => ({ item, quantity }));
+  } catch {
+    return [];
+  }
+}
+
+function parsePendingActionLabel(agent: any): string | null {
+  if (!agent.busy || !agent.pendingActionJson || agent.busyUntilTick === undefined) return null;
+  try {
+    const parsed = JSON.parse(agent.pendingActionJson) as Record<string, unknown>;
+    return describeBusyStatus(parsed, agent.busyUntilTick);
+  } catch {
+    return `busy until tick ${agent.busyUntilTick}`;
+  }
+}
+
+function createSceneThreadKey(scene: { agentA: string; agentB: string }) {
+  return createChatThreadKey(scene.agentA, scene.agentB);
+}
+
+async function getRenderableSceneMessages(ctx: any, scene: { agentA: string; agentB: string }, limit = 4) {
+  const threadKey = createSceneThreadKey(scene);
+  const threadMessages = await ctx.db
+    .query('rl_chat_messages')
+    .withIndex('thread_sent', (q: any) => q.eq('threadKey', threadKey))
+    .collect();
+  return threadMessages
+    .slice()
+    .sort((a: any, b: any) => a.sentDay - b.sentDay || a.sentTick - b.sentTick)
+    .filter((entry: any) => isRenderableSceneMessage(entry.text))
+    .slice(-limit)
+    .map((entry: any) => ({
+      fromAgent: entry.fromAgent,
+      text: entry.text,
+      sentDay: entry.sentDay,
+      sentTick: entry.sentTick,
+    }));
+}
+
+export const getFrontendWorld = query({
+  args: {},
+  handler: async (ctx) => {
+    const worldState = await ctx.db.query('rl_world_state').unique();
+    const agents = await ctx.db.query('rl_agents').collect();
+    const actions = await ctx.db.query('rl_actions_log').collect();
+    const scenes = await ctx.db
+      .query('rl_chat_scenes')
+      .withIndex('status_location', (q) => q.eq('status', 'live'))
+      .collect();
+    const transactions = await ctx.db.query('rl_transactions').collect();
+
+    const liveScenes = await Promise.all(
+      scenes.map(async (scene) => ({
+        sceneId: scene.sceneId,
+        left: scene.agentA,
+        right: scene.agentB,
+        location: scene.location,
+        nextSpeaker: scene.nextSpeaker,
+        recentMessages: await getRenderableSceneMessages(ctx, scene, 4),
+      })),
+    );
+
+    const latestActionByAgent = new Map<string, {
+      action: string;
+      target: string | null;
+      location: string | null;
+      message: string | null;
+      tick: number;
+      day: number;
+      outcome: string;
+      outcomeNote: string | null;
+    }>();
+
+    const recentActions = actions
+      .slice()
+      .sort((a, b) => b.tick - a.tick || b._creationTime - a._creationTime)
+      .map((entry) => {
+        const normalized = {
+          agentName: entry.agentName,
+          action: entry.action,
+          target: entry.target ?? null,
+          location: entry.location ?? null,
+          message: entry.message ?? null,
+          tick: entry.tick,
+          day: entry.day,
+          outcome: entry.outcome,
+          outcomeNote: entry.outcomeNote ?? null,
+        };
+        if (!latestActionByAgent.has(entry.agentName)) {
+          latestActionByAgent.set(entry.agentName, normalized);
+        }
+        return normalized;
+      })
+      .slice(0, 12);
+
+    const recentTransactions = transactions
+      .filter((txn) => txn.status !== 'pending')
+      .slice()
+      .sort((a, b) => (b.resolvedTick ?? b.createdTick) - (a.resolvedTick ?? a.createdTick) || b._creationTime - a._creationTime)
+      .slice(0, 8)
+      .map((txn) => ({
+        txnId: txn.txnId,
+        fromAgent: txn.fromAgent,
+        toAgent: txn.toAgent,
+        kind: txn.kind,
+        status: txn.status,
+        message: txn.message ?? null,
+        outcomeNote: txn.outcomeNote ?? null,
+      }));
+
+    const liveSceneByAgent = new Map<string, {
+      partner: string;
+      recentMessages: Array<{ fromAgent: string; text: string; sentDay: number; sentTick: number }>;
+    }>();
+    for (const scene of liveScenes) {
+      liveSceneByAgent.set(scene.left, {
+        partner: scene.right,
+        recentMessages: scene.recentMessages,
+      });
+      liveSceneByAgent.set(scene.right, {
+        partner: scene.left,
+        recentMessages: scene.recentMessages,
+      });
+    }
+
+    return {
+      tick: worldState?.tick ?? 0,
+      day: worldState?.day ?? 1,
+      timeOfDay: worldState?.timeOfDay ?? 'morning',
+      agents: agents.map((agent) => ({
+        name: agent.name,
+        role: agent.role,
+        location: agent.location,
+        busy: agent.busy,
+        busyLabel: parsePendingActionLabel(agent),
+        coin: agent.coin,
+        latestAction: latestActionByAgent.get(agent.name) ?? null,
+        currentScene: liveSceneByAgent.get(agent.name) ?? null,
+      })),
+      liveScenes,
+      recentActions,
+      recentTransactions,
+    };
+  },
+});
+
+export const getFrontendAgentDetails = query({
+  args: { agentName: v.string() },
+  handler: async (ctx, { agentName }) => {
+    const agent = await ctx.db.query('rl_agents').withIndex('name', (q) => q.eq('name', agentName)).unique();
+    if (!agent) return null;
+
+    const reputation = await ctx.db
+      .query('rl_reputation')
+      .withIndex('agentName', (q) => q.eq('agentName', agentName))
+      .unique();
+
+    const actions = (await ctx.db.query('rl_actions_log').collect())
+      .filter((entry) => entry.agentName === agentName)
+      .sort((a, b) => b.tick - a.tick || b._creationTime - a._creationTime);
+
+    const allScenes = await ctx.db
+      .query('rl_chat_scenes')
+      .withIndex('status_location', (q) => q.eq('status', 'live'))
+      .collect();
+    const currentScene = allScenes.find((scene) => scene.agentA === agentName || scene.agentB === agentName) ?? null;
+    const scenePartner = currentScene
+      ? currentScene.agentA === agentName ? currentScene.agentB : currentScene.agentA
+      : null;
+    const recentSceneMessages = currentScene ? await getRenderableSceneMessages(ctx, currentScene, 6) : [];
+
+    const transactions = await ctx.db.query('rl_transactions').collect();
+    const incomingOffers = transactions
+      .filter((txn) => txn.toAgent === agentName && txn.status === 'pending')
+      .sort((a, b) => b.createdTick - a.createdTick || b._creationTime - a._creationTime)
+      .map((txn) => ({
+        txnId: txn.txnId,
+        fromAgent: txn.fromAgent,
+        kind: txn.kind,
+        message: txn.message ?? null,
+      }));
+    const outgoingOffers = transactions
+      .filter((txn) => txn.fromAgent === agentName && txn.status === 'pending')
+      .sort((a, b) => b.createdTick - a.createdTick || b._creationTime - a._creationTime)
+      .map((txn) => ({
+        txnId: txn.txnId,
+        toAgent: txn.toAgent,
+        kind: txn.kind,
+        message: txn.message ?? null,
+      }));
+
+    return {
+      name: agent.name,
+      role: agent.role,
+      location: agent.location,
+      coin: agent.coin,
+      energy: agent.energy,
+      health: agent.health,
+      hunger: agent.hunger,
+      reputation: reputation?.score ?? 50,
+      busy: agent.busy,
+      busyLabel: parsePendingActionLabel(agent),
+      pendingNote: agent.pendingNote ?? null,
+      inventory: parseInventory(agent.inventory),
+      latestAction: actions[0]
+        ? {
+            action: actions[0].action,
+            target: actions[0].target ?? null,
+            location: actions[0].location ?? null,
+            message: actions[0].message ?? null,
+            tick: actions[0].tick,
+            day: actions[0].day,
+            outcome: actions[0].outcome,
+            outcomeNote: actions[0].outcomeNote ?? null,
+          }
+        : null,
+      recentActions: actions.slice(0, 8).map((entry) => ({
+        action: entry.action,
+        target: entry.target ?? null,
+        location: entry.location ?? null,
+        message: entry.message ?? null,
+        tick: entry.tick,
+        day: entry.day,
+        outcome: entry.outcome,
+        outcomeNote: entry.outcomeNote ?? null,
+      })),
+      currentScene: currentScene
+        ? {
+            partner: scenePartner,
+            location: currentScene.location,
+            nextSpeaker: currentScene.nextSpeaker,
+            recentMessages: recentSceneMessages,
+          }
+        : null,
+      incomingOffers,
+      outgoingOffers,
+    };
+  },
+});
+
 function createChatThreadKey(agentA: string, agentB: string): string {
   return [agentA, agentB].sort((a, b) => a.localeCompare(b)).join('::');
 }

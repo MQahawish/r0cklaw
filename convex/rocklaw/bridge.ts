@@ -11,7 +11,7 @@ import { v } from 'convex/values';
 import { internalMutation, internalQuery } from '../_generated/server';
 import { internal } from '../_generated/api';
 import { TICK_INTERVAL_MS } from './engine';
-import { getRecipe, getService, hungerRestoreFor, isEdible } from './economy';
+import { ROLE_ECONOMIC_ACTIONS, getRecipe, getService, hungerRestoreFor, isEdible } from './economy';
 import { describeActionForHumans, getActionDuration } from './actionTiming';
 import { isSleepPeriod, timeOfDayForTick } from './dayCycle';
 import { derivePlaceQuote } from './placeMarkets';
@@ -109,6 +109,10 @@ const CHAT_COMMERCE_INTENTS = new Set([
   'accept_transaction',
   'reject_transaction',
 ]) as Set<string>;
+
+const ROLE_GATED_ACTIONS = new Set(
+  Object.values(ROLE_ECONOMIC_ACTIONS).flatMap((actions) => actions),
+);
 
 function sceneOnlyActionNote(intent: string) {
   return `chat intent "${intent}" is only valid inside a live chat with the other agent. Start or continue a chat first.`;
@@ -562,6 +566,29 @@ async function advanceLiveChatSceneForSpeaker(ctx: any, agentName: string, tick:
   return scene;
 }
 
+function isProgressingLiveChatTurn(parsed: RocklawAction) {
+  if (parsed.action === 'leave_chat') return true;
+  if (parsed.action !== 'chat') return false;
+  if (getChatIntent(parsed)) return true;
+  const text = (parsed.text ?? parsed.message ?? '').trim().toLowerCase();
+  if (!text) return false;
+  if (text.includes('?')) return true;
+  return [
+    'offer',
+    'price',
+    'coin',
+    'buy',
+    'sell',
+    'trade',
+    'deal',
+    'terms',
+    'accept',
+    'decline',
+    'agree',
+    'how much',
+  ].some((needle) => text.includes(needle));
+}
+
 async function closeLiveChatSceneForAgent(
   ctx: any,
   agentName: string,
@@ -746,14 +773,19 @@ async function advanceLiveSceneTurn(
   agentName: string,
   tick: number,
   day: number,
+  parsed?: RocklawAction,
 ) {
   const scene = await getLiveChatSceneForAgent(ctx, agentName);
   if (!scene) return;
+  const nextStallTurns = parsed
+    ? (isProgressingLiveChatTurn(parsed) ? 0 : (scene.stallTurns ?? 0) + 1)
+    : scene.stallTurns;
   await ctx.db.patch(scene._id, {
     nextSpeaker: getScenePartner(scene, agentName),
     lastSpeaker: agentName,
     lastActiveTick: tick,
     lastActiveDay: day,
+    stallTurns: nextStallTurns,
   });
 }
 
@@ -868,6 +900,7 @@ async function resolveLocationName(ctx: any, rawLocation: string | null | undefi
 async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAction, tick?: number): Promise<WorldValidation> {
   const destination = parsed.location ?? parsed.target ?? null;
   const activeChatScene = await getLiveChatSceneForAgent(ctx, agentDoc.name);
+  const roleActions = new Set(ROLE_ECONOMIC_ACTIONS[agentDoc.role] ?? []);
 
   if (activeChatScene) {
     const partner = getScenePartner(activeChatScene, agentDoc.name);
@@ -952,6 +985,13 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
     if (typeof needed.coin === 'number' && agentDoc.coin < needed.coin) {
       return { ok: false, note: `Not enough coin: need ${needed.coin}c, have ${agentDoc.coin}c.` };
     }
+  }
+
+  if (ROLE_GATED_ACTIONS.has(parsed.action) && !roleActions.has(parsed.action)) {
+    return {
+      ok: false,
+      note: `${agentDoc.role} cannot use ${parsed.action} as a role action. Choose another valid action from TURN.md.`,
+    };
   }
 
   switch (parsed.action) {
@@ -2204,7 +2244,6 @@ async function resolveTransactionResponse(
   }
   const completionText = `Trade completed: ${formatTransactionItems(offer)} for ${formatTransactionItems(request)}.`;
   await createSceneSystemMessage(ctx, agentDoc.name, proposer.name, completionText, tick, day);
-  await createSceneSystemMessage(ctx, proposer.name, agentDoc.name, completionText, tick, day);
 
   await ctx.scheduler.runAfter(0, internal.rocklaw.priceEngine.recalculate, {});
   await ctx.scheduler.runAfter(0, internal.rocklaw.reputation.updateReputation, {
@@ -2306,6 +2345,7 @@ export const createLiveChatScene = internalMutation({
       openedDay: day,
       lastActiveTick: tick,
       lastActiveDay: day,
+      stallTurns: 0,
       openingSpeaker,
       openingText,
       interruptedSpeaker,
@@ -2356,6 +2396,63 @@ export const closeLiveChatScene = internalMutation({
           partner: closed.partner,
         }
       : null;
+  },
+});
+
+export const closeStalledLiveChatScenes = internalMutation({
+  args: {
+    tick: v.number(),
+    day: v.number(),
+    maxStallTurns: v.number(),
+  },
+  handler: async (ctx, { tick, day, maxStallTurns }) => {
+    const scenes = await ctx.db
+      .query('rl_chat_scenes')
+      .withIndex('status_location', (q: any) => q.eq('status', 'live'))
+      .collect();
+    const closed: Array<{ sceneId: string; agentA: string; agentB: string }> = [];
+    for (const scene of scenes) {
+      if ((scene.stallTurns ?? 0) < maxStallTurns) continue;
+      await ctx.db.patch(scene._id, {
+        status: 'closed',
+        closeReason: `Conversation stalled after ${scene.stallTurns} low-progress turns.`,
+        closedTick: tick,
+        closedDay: day,
+        lastActiveTick: tick,
+        lastActiveDay: day,
+      });
+
+      const sentPendingA = await ctx.db
+        .query('rl_transactions')
+        .withIndex('sender_status', (q: any) => q.eq('fromAgent', scene.agentA).eq('status', 'pending'))
+        .collect();
+      const receivedPendingA = await ctx.db
+        .query('rl_transactions')
+        .withIndex('recipient_status', (q: any) => q.eq('toAgent', scene.agentA).eq('status', 'pending'))
+        .collect();
+      const sceneTransactions = [...sentPendingA, ...receivedPendingA].filter((txn) =>
+        ((txn.fromAgent === scene.agentA && txn.toAgent === scene.agentB)
+          || (txn.fromAgent === scene.agentB && txn.toAgent === scene.agentA))
+        && txn.status === 'pending',
+      );
+      for (const txn of sceneTransactions) {
+        const note = `In-person offer ended when the conversation between ${scene.agentA} and ${scene.agentB} stalled.`;
+        await ctx.db.patch(txn._id, {
+          status: 'expired',
+          resolvedTick: tick,
+          resolvedDay: day,
+          outcomeNote: note,
+        });
+        await setInteractionOutcomeByTransactionId(ctx, txn.txnId, {
+          status: 'expired',
+          resolvedTick: tick,
+          resolvedDay: day,
+          outcomeNote: note,
+        });
+      }
+      closed.push({ sceneId: scene.sceneId, agentA: scene.agentA, agentB: scene.agentB });
+    }
+    return closed;
   },
 });
 
@@ -2484,6 +2581,7 @@ async function executeResolvedAction(
     chatDeliveryOverride?: 'live' | 'deferred';
     chatDeferredReason?: string;
     activityDurationTicks?: number;
+    validationTick?: number;
   },
 ) {
   const {
@@ -2495,9 +2593,10 @@ async function executeResolvedAction(
     chatDeliveryOverride,
     chatDeferredReason,
     activityDurationTicks = 1,
+    validationTick = tick,
   } = args;
 
-  const worldValidation = await validateWorldExecution(ctx, agentDoc, parsed, tick);
+  const worldValidation = await validateWorldExecution(ctx, agentDoc, parsed, validationTick);
   if (!worldValidation.ok) {
     const failNote = ('note' in worldValidation && typeof worldValidation.note === 'string')
       ? worldValidation.note
@@ -2650,7 +2749,7 @@ async function executeResolvedAction(
     );
     if (result?.outcome === 'success') {
       await appendLiveSceneActionMessage(ctx, agentDoc, parsed, tick, day, parsed.target ?? undefined);
-      await advanceLiveSceneTurn(ctx, agentName, tick, day);
+      await advanceLiveSceneTurn(ctx, agentName, tick, day, parsed);
     }
     return { ...result, durationTicks: 1 };
   }
@@ -2724,7 +2823,7 @@ async function executeResolvedAction(
       finalHunger,
     );
     if (result?.outcome === 'success') {
-      await advanceLiveSceneTurn(ctx, agentName, tick, day);
+      await advanceLiveSceneTurn(ctx, agentName, tick, day, parsed);
     }
     return { ...result, durationTicks: 1 };
   }
@@ -2771,7 +2870,7 @@ async function executeResolvedAction(
           hunger: finalHunger,
           ...clearBusyStatePatch(),
         });
-        await advanceLiveSceneTurn(ctx, agentName, tick, day);
+        await advanceLiveSceneTurn(ctx, agentName, tick, day, parsed);
         return { outcome: 'failed', note: sideEffectValidation.note, durationTicks: 1 };
       }
 
@@ -2814,7 +2913,7 @@ async function executeResolvedAction(
             hunger: finalHunger,
             ...clearBusyStatePatch(),
           });
-          await advanceLiveSceneTurn(ctx, agentName, tick, day);
+          await advanceLiveSceneTurn(ctx, agentName, tick, day, parsed);
           return { outcome: 'failed', note: `Target agent not found: ${partner}.`, durationTicks: 1 };
         }
         const recipientProduces =
@@ -2853,7 +2952,7 @@ async function executeResolvedAction(
       }
 
       if (result?.outcome === 'success') {
-        await advanceLiveSceneTurn(ctx, agentName, tick, day);
+        await advanceLiveSceneTurn(ctx, agentName, tick, day, parsed);
       }
       return { ...(result ?? { outcome: 'success', note: `Live chat sent to ${partner}.` }), durationTicks: 1 };
     }
@@ -2871,7 +2970,7 @@ async function executeResolvedAction(
       chatDeferredReason,
     );
     if ((chatDeliveryOverride === 'live') && result?.outcome === 'success') {
-      await advanceLiveSceneTurn(ctx, agentName, tick, day);
+      await advanceLiveSceneTurn(ctx, agentName, tick, day, parsed);
     }
     return { ...result, durationTicks: 1 };
   }
@@ -2918,7 +3017,7 @@ async function executeResolvedAction(
       coin: recipientApplied.newCoin,
     });
     await appendLiveSceneActionMessage(ctx, agentDoc, parsed, tick, day, recipient.name);
-    await advanceLiveSceneTurn(ctx, agentName, tick, day);
+    await advanceLiveSceneTurn(ctx, agentName, tick, day, parsed);
   }
 
   if (parsed.action === 'talk') {
@@ -3150,6 +3249,7 @@ export const completePendingAction = internalMutation({
       tick,
       day,
       activityDurationTicks: 0,
+      validationTick: agentDoc.pendingActionStartedTick ?? tick,
     });
     return {
       ...result,

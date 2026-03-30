@@ -47,13 +47,22 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 
 ### Available now
 - `check_field`: Available now. 2 fields here need attention.
-- `water`: Available now. A growing field can be watered to speed it along.
-- `harvest`: Available now. 1 field is ready to harvest.
+- `harvest`: Available now. 2 fields is ready to harvest.
 
 ### Unavailable here
 - `plant`: Unavailable now. All fields are already in use.
+- `water`: Unavailable now. No growing field needs water.
 ## Act in the world
 
+- Do not use `observe`, `inspect`, `look`, or `survey` as a final world action. Observation is done through file reads and notes during tool use.
+- Do not invent placeholder values in JSON. Never put strings like `"None"`, `"null"`, `"unknown"`, or `<placeholder>` into `target`, `offer_ref`, `item`, or other optional fields. Omit the field instead.
+- Only use `chat` with `intent:"accept_transaction"` or `intent:"reject_transaction"` when `TURN.md` shows a real pending offer with a concrete `offer_ref`.
+
+- `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread
+  Choose a real target from `ONLINE`, first-seen nearby people, current live scenes, or known thread contacts in `TURN.md`. Do not invent a person just because they appear in an example.
+  Example JSON: `{"action":"chat","target":"<known contact from TURN.md>","text":"I need coal by Day 9."}`
+- For `intent:"trade"`, natural-language text alone is invalid. You must include both `offer` and `request` arrays.
+  Example JSON: `{"action":"chat","target":"<current live chat partner>","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}`
 - `chat`: continue your live chat with Marcus Hale. Use the same target until you leave the scene.
   Example JSON: `{"action":"chat","target":"Marcus Hale","text":"Makes sense."}`
 
@@ -76,10 +85,13 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 
 
 
+
+
+
 ## Temporary actions available now
 
-- `rest`: take a short break to recover.
-  Example JSON: `{"action":"rest","thought":"A short break will help me recover before harder work."}`
+- `sleep`: stop for proper sleep and recover more deeply.
+  Example JSON: `{"action":"sleep","thought":"It is time to sleep and recover fully."}`
 
 ## Speaking into the world
 

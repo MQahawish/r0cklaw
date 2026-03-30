@@ -120,6 +120,7 @@ export const rocklawTables = {
     openedDay: v.number(),
     lastActiveTick: v.number(),
     lastActiveDay: v.number(),
+    stallTurns: v.optional(v.number()),
     closeReason: v.optional(v.string()),
     closedTick: v.optional(v.number()),
     closedDay: v.optional(v.number()),

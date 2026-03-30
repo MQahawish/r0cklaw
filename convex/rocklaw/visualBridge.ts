@@ -14,27 +14,10 @@
 
 import { v } from 'convex/values';
 import { internalMutation } from '../_generated/server';
+import { internal } from '../_generated/api';
 import { insertInput } from '../aiTown/insertInput';
 import { SerializedPlayer } from '../aiTown/player';
-
-// ── Location → tile coordinate map ──────────────────────────────────────────
-// Verified walkable tiles on the 45x32 gentle map (objmap layer 0, value -1).
-
-export const LOCATION_TILES: Record<string, { x: number; y: number }> = {
-  forge:  { x: 8,  y: 6  },
-  market: { x: 18, y: 14 },
-  inn:    { x: 32, y: 8  },
-  farm:   { x: 38, y: 20 },
-  shrine: { x: 8,  y: 24 },
-  gate:   { x: 22, y: 28 },
-  square: { x: 22, y: 13 },
-  mine:   { x: 40, y: 28 },
-  bakery: { x: 28, y: 14 },
-  warehouse: { x: 25, y: 18 },
-};
-
-// Fallback for unknown locations
-const DEFAULT_TILE = { x: 22, y: 13 };
+import { getPlaceLayout } from './mapLayout';
 
 // ── Agent → sprite map ───────────────────────────────────────────────────────
 
@@ -67,12 +50,35 @@ const ACTION_EMOJI: Record<string, string> = {
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-function tileFor(location: string): { x: number; y: number } {
-  return LOCATION_TILES[location] ?? DEFAULT_TILE;
-}
-
 function tokenFor(agentName: string): string {
   return `rocklaw:${agentName}`;
+}
+
+async function placementTileForAgent(ctx: any, agentName: string, location: string): Promise<{ x: number; y: number }> {
+  const placeLayout = getPlaceLayout(location);
+  const colocated = await ctx.db
+    .query('rl_agents')
+    .withIndex('location', (q: any) => q.eq('location', location))
+    .collect();
+  const liveScenes = await ctx.db
+    .query('rl_chat_scenes')
+    .withIndex('status_location', (q: any) => q.eq('status', 'live').eq('location', location))
+    .collect();
+  for (const scene of liveScenes) {
+    const scenePair = [scene.agentA, scene.agentB].sort((a: string, b: string) => a.localeCompare(b));
+    const sceneIndex = scenePair.indexOf(agentName);
+    if (sceneIndex !== -1) {
+      return placeLayout.sceneSlots[sceneIndex] ?? placeLayout.center;
+    }
+  }
+  const chatPriorityNames = liveScenes.flatMap((scene: any) => [scene.agentA, scene.agentB]);
+  const remainingNames = colocated
+    .map((entry: any) => entry.name)
+    .filter((name: string) => !chatPriorityNames.includes(name))
+    .sort((a: string, b: string) => a.localeCompare(b));
+  const sortedNames = remainingNames;
+  const slotIndex = Math.max(0, sortedNames.indexOf(agentName));
+  return placeLayout.standingSlots[slotIndex % placeLayout.standingSlots.length] ?? placeLayout.center;
 }
 
 // ── Init: create AI Town players for all Rocklaw agents ──────────────────────
@@ -113,7 +119,6 @@ export const initVisualAgents = internalMutation({
       const token = tokenFor(agent.name);
       if (existingTokens.has(token)) continue;
 
-      const tile = tileFor(agent.location);
       const character = AGENT_SPRITES[agent.name] ?? 'f1';
 
       await insertInput(ctx, worldId, 'join', {
@@ -123,11 +128,53 @@ export const initVisualAgents = internalMutation({
         tokenIdentifier: token,
       });
 
-      console.log(`[visualBridge] Joined ${agent.name} as ${character} at tile ${tile.x},${tile.y}`);
+      console.log(`[visualBridge] Joined ${agent.name} as ${character}`);
       created++;
     }
 
+    await ctx.scheduler.runAfter(1500, internal.rocklaw.visualBridge.reconcileVisualAgentPlacements, {});
     console.log(`[visualBridge] initVisualAgents complete — created ${created} players`);
+  },
+});
+
+export const reconcileVisualAgentPlacements = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const worldStatus = await ctx.db
+      .query('worldStatus')
+      .filter((q) => q.eq(q.field('isDefault'), true))
+      .unique();
+    if (!worldStatus) return;
+
+    const worldDoc = await ctx.db.get(worldStatus.worldId);
+    if (!worldDoc) return;
+
+    const agents = await ctx.db.query('rl_agents').collect();
+    const players = worldDoc.players as SerializedPlayer[];
+    let changed = false;
+
+    const updatedPlayers = await Promise.all(players.map(async (player) => {
+      if (!player.human?.startsWith('rocklaw:')) return player;
+      const agentName = player.human.slice('rocklaw:'.length);
+      const agent = agents.find((entry) => entry.name === agentName);
+      if (!agent) return player;
+
+      const tile = await placementTileForAgent(ctx, agent.name, agent.location);
+      if (player.position.x === tile.x && player.position.y === tile.y) return player;
+
+      changed = true;
+      return {
+        ...player,
+        position: tile,
+        pathfinding: undefined,
+        speed: 0,
+        facing: { dx: 0, dy: 1 },
+      };
+    }));
+
+    if (changed) {
+      await ctx.db.patch(worldStatus.worldId, { players: updatedPlayers });
+    }
   },
 });
 
@@ -153,7 +200,7 @@ export const syncAgentPosition = internalMutation({
     const player = players.find((p) => p.human === token);
     if (!player) return;
 
-    const destination = tileFor(newLocation);
+    const destination = await placementTileForAgent(ctx, agentName, newLocation);
 
     // Refresh lastInput to prevent AI Town idle-kick (HUMAN_IDLE_TOO_LONG = 5 min)
     const now = Date.now();
@@ -236,5 +283,6 @@ export const keepAliveVisualAgents = internalMutation({
       p.human?.startsWith('rocklaw:') ? { ...p, lastInput: now } : p,
     );
     await ctx.db.patch(worldStatus.worldId, { players: updatedPlayers });
+    await ctx.scheduler.runAfter(0, internal.rocklaw.visualBridge.reconcileVisualAgentPlacements, {});
   },
 });

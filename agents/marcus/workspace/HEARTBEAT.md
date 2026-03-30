@@ -1,10 +1,10 @@
 # HEARTBEAT -- Marcus Hale
 
 ## Recent Activity
-- Day 2 midday: first saw Lena Marsh (Herbalist) at market.
-- Day 2 midday: first saw Sera (Innkeeper) at market.
-- Day 2 midday: You chatted with Lena Marsh ("Lena, good to see you. I'm listening. What's your price?") ⚠ Live chat sent to Lena Marsh.
-- Day 2 afternoon: You chatted with Lena Marsh (intent: trade) ("I have a set of tools. They're in high demand right now. I'd") ⚠ Offer txn-2-9-trade-marcus-hale-1774847555348 created for Lena Marsh.
-- Day 2 evening: chatting with Lena Marsh (waiting)
-- Day 2 night: You chatted with Lena Marsh (intent: trade) ("Lena, I appreciate the offer, but I'm more interested in a d") ⚠ Offer txn-2-11-trade-marcus-hale-1774847647093 created for Lena Marsh.
-- Day 3 dawn: chatting with Lena Marsh (waiting)
+- Day 2 evening: You left the conversation ("All right, Elena. I'll catch you later.") ⚠ You said goodbye and left the live chat with Elena Voss.
+- Day 2 night: You decided to go to market
+- Day 3 dawn: You used buy_place on market [FAILED] ⚠ market does not trade iron_ore.
+- Day 3 morning: You decided to go to forge
+- Day 3 midday: You chatted with Elena Voss ("Hello Elena, I'm back. I was hoping to find some iron ore to") ⚠ Live chat sent to Elena Voss.
+- Day 3 afternoon: You chatted with Elena Voss ("Yes, actually, Elena. Do you have any iron ore you'd be will") ⚠ Live chat sent to Elena Voss.
+- Day 3 evening: chatting with Elena Voss (waiting)

@@ -13,6 +13,8 @@ export const Character = ({
   isThinking = false,
   isSpeaking = false,
   emoji = '',
+  overlayText = '',
+  overlayTone = 'neutral',
   isViewer = false,
   speed = 0.1,
   onClick,
@@ -31,6 +33,8 @@ export const Character = ({
   // Shows a speech bubble if true.
   isSpeaking?: boolean;
   emoji?: string;
+  overlayText?: string;
+  overlayTone?: 'neutral' | 'chat' | 'busy' | 'trade' | 'warning';
   // Highlights the player.
   isViewer?: boolean;
   // The speed of the animation. Can be tuned depending on the side and speed of the NPC.
@@ -94,6 +98,7 @@ export const Character = ({
         <Text x={18} y={-10} scale={0.8} text={'💬'} anchor={{ x: 0.5, y: 0.5 }} />
       )}
       {isViewer && <ViewerIndicator />}
+      {overlayText && <StatusBubble text={overlayText} tone={overlayTone} />}
       <AnimatedSprite
         ref={ref}
         isPlaying={isMoving}
@@ -117,4 +122,53 @@ function ViewerIndicator() {
   }, []);
 
   return <Graphics draw={draw} />;
+}
+
+function StatusBubble({
+  text,
+  tone,
+}: {
+  text: string;
+  tone: 'neutral' | 'chat' | 'busy' | 'trade' | 'warning';
+}) {
+  const bubbleText = text.length > 42 ? `${text.slice(0, 39)}...` : text;
+  const width = Math.max(72, Math.min(188, bubbleText.length * 6.6 + 18));
+  const height = 24;
+  const palette: Record<typeof tone, { fill: number; alpha: number; stroke: number }> = {
+    neutral: { fill: 0x1d1b17, alpha: 0.88, stroke: 0xcab58e },
+    chat: { fill: 0x294b63, alpha: 0.92, stroke: 0xb6def2 },
+    busy: { fill: 0x47561d, alpha: 0.92, stroke: 0xd2ec8d },
+    trade: { fill: 0x5a3a11, alpha: 0.92, stroke: 0xf3cf89 },
+    warning: { fill: 0x5b1f22, alpha: 0.92, stroke: 0xf1a9ae },
+  };
+  const colors = palette[tone];
+  const draw = useCallback((g: PIXI.Graphics) => {
+    g.clear();
+    g.lineStyle(1.5, colors.stroke, 0.95);
+    g.beginFill(colors.fill, colors.alpha);
+    g.drawRoundedRect(-width / 2, -52, width, height, 8);
+    g.endFill();
+  }, [colors, width]);
+
+  return (
+    <Container>
+      <Graphics draw={draw} />
+      <Text
+        x={0}
+        y={-40}
+        text={bubbleText}
+        anchor={{ x: 0.5, y: 0.5 }}
+        style={
+          new PIXI.TextStyle({
+            fill: '#f7f0dc',
+            fontSize: 10,
+            fontFamily: 'Georgia',
+            align: 'center',
+            wordWrap: false,
+          })
+        }
+        scale={0.92}
+      />
+    </Container>
+  );
 }

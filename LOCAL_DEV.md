@@ -5,6 +5,7 @@ Practical commands for running Rocklaw locally with:
 - self-hosted Convex in Docker
 - ZeroClaw agent gateways on the host
 - remote model providers such as OpenRouter, OpenAI, Anthropic, Gemini
+- optional local GGUF inference through `llama.cpp`
 
 ## Prerequisites
 
@@ -68,6 +69,60 @@ Stop local stack and wipe self-hosted Convex Docker data:
 
 ```bash
 npm run clean:rocklaw
+```
+
+## Local llama.cpp
+
+Detailed local-model workflow:
+
+- [LOCAL_LLAMA.md](/home/mahmoudqahawish/Github/r0cklaw/LOCAL_LLAMA.md)
+
+Most reused commands:
+
+Check local CUDA visibility from `llama-server`:
+
+```bash
+cd /home/mahmoudqahawish/Github/llama.cpp/build/bin
+export LD_LIBRARY_PATH=$PWD:/usr/local/cuda/targets/x86_64-linux/lib:/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+./llama-server --list-devices
+```
+
+Run the current local baseline model:
+
+```bash
+cd /home/mahmoudqahawish/Github/llama.cpp/build/bin
+export LD_LIBRARY_PATH=$PWD:/usr/local/cuda/targets/x86_64-linux/lib:/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+
+./llama-server \
+  --model /home/mahmoudqahawish/Models/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --ctx-size 8192 \
+  --gpu-layers all \
+  --parallel 1 \
+  --flash-attn auto \
+  --reasoning off
+```
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8080/health
+```
+
+Quick OpenAI-compatible chat test:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "Qwen3-4B-Q4_K_M",
+    "messages": [
+      {"role":"system","content":"You are concise."},
+      {"role":"user","content":"Reply with exactly: local llama works"}
+    ],
+    "temperature": 0
+  }'
 ```
 
 ## Single-Agent Debug
@@ -297,6 +352,12 @@ Expected env vars by provider:
 - `gemini` -> `GEMINI_API_KEY` or `GOOGLE_API_KEY`
 
 The startup scripts now validate credentials against each agent's configured provider instead of assuming OpenRouter.
+
+For local `llama.cpp`, keep using an OpenAI-compatible provider profile in ZeroClaw and point it at:
+
+```text
+http://127.0.0.1:8080/v1
+```
 
 ## Useful URLs
 
