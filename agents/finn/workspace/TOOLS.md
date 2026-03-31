@@ -3,10 +3,9 @@
 ## Runtime rule
 
 These notes describe the kinds of actions that exist in Rocklaw.
-In ZeroClaw session mode, do NOT run shell commands like move.sh, craft.sh, talk.sh, or pray.sh to perform them.
+In ZeroClaw session mode, do NOT run shell commands like move.sh, work.sh, talk.sh, or pray.sh to perform them.
 Use your available tools only to inspect files, recall memory, and update your private notes.
 When you are ready to act in the world, return the final Rocklaw JSON action instead.
-
 
 All interaction with the world happens through JSON actions that the Rocklaw engine executes.
 The legacy `.sh` names in older notes are conceptual labels only, not commands you should run.
@@ -43,55 +42,30 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 }
 ```
 
-## Economic actions right now
+## Economic actions
 
-### Available now
-- `check_field`: Available now. 2 fields here need attention.
-- `harvest`: Available now. 2 fields is ready to harvest.
+Runtime availability for your role will be listed here each tick.
 
-### Unavailable here
-- `plant`: Unavailable now. All fields are already in use.
-- `water`: Unavailable now. No growing field needs water.
 ## Act in the world
 
 - Do not use `observe`, `inspect`, `look`, or `survey` as a final world action. Observation is done through file reads and notes during tool use.
 - Do not invent placeholder values in JSON. Never put strings like `"None"`, `"null"`, `"unknown"`, or `<placeholder>` into `target`, `offer_ref`, `item`, or other optional fields. Omit the field instead.
 - Only use `chat` with `intent:"accept_transaction"` or `intent:"reject_transaction"` when `TURN.md` shows a real pending offer with a concrete `offer_ref`.
+- If `ONLINE`, live scenes, and known thread contacts are empty, do not target a person. Choose a non-chat action instead.
+- Do not infer a person from a role need alone. Needing a blacksmith, farmer, merchant, or healer does not make someone a valid target unless `TURN.md` currently shows them as a real contact.
 
-- `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread
-  Choose a real target from `ONLINE`, first-seen nearby people, current live scenes, or known thread contacts in `TURN.md`. Do not invent a person just because they appear in an example.
-  Example JSON: `{"action":"chat","target":"<known contact from TURN.md>","text":"I need coal by Day 9."}`
+- `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread.
+  Example JSON: `{"action":"chat","target":"<known contact from TURN.md>","text":"Do you still have coal?"}`
 - For `intent:"trade"`, natural-language text alone is invalid. You must include both `offer` and `request` arrays.
   Example JSON: `{"action":"chat","target":"<current live chat partner>","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}`
-- `chat`: continue your live chat with Marcus Hale. Use the same target until you leave the scene.
-  Example JSON: `{"action":"chat","target":"Marcus Hale","text":"Makes sense."}`
-
-- `chat` with `intent`: buy, sell, trade, give, pay, accept, or reject through the same spoken turn.
-  Example JSON: `{"action":"chat","target":"Marcus Hale","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35}`
-
-- `leave_chat`: leave the live chat. You may include `text` for a final goodbye line.
-  Example JSON: `{"action":"leave_chat","text":"All right, chat later.","thought":"I need to end this conversation now."}`
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-## Temporary actions available now
-
-- `sleep`: stop for proper sleep and recover more deeply.
-  Example JSON: `{"action":"sleep","thought":"It is time to sleep and recover fully."}`
+- `move`: use `location` and choose only from `Reachable places now` in `TURN.md`.
+  Example JSON: `{"action":"move","location":"market"}`
+- `buy_place`: buy stock directly from the place you are standing in at the local price shown in `TURN.md`.
+  Example JSON: `{"action":"buy_place","target":"market","item":"coal","quantity":3}`
+- `sell_place`: sell stock directly into the place you are standing in at the local price shown in `TURN.md`.
+  Example JSON: `{"action":"sell_place","target":"bakery","item":"grain","quantity":4}`
+- `deliver_place`: move your own stock into a place without immediate payment. This is storage or supply, not a sale.
+  Example JSON: `{"action":"deliver_place","target":"warehouse","item":"coal","quantity":5}`
 
 ## Speaking into the world
 
@@ -99,21 +73,3 @@ Return one JSON object when you are ready to act. Use only the fields that matte
   Example JSON: `{"action":"say","text":"Fresh bread at the inn if anyone wants some."}`
 
 If you want to pray, return a final JSON action with `"action": "pray"` and put the prayer text in `text`.
-
-## Farmer skills
-
-`harvest`
-  Bring in crops from the field. Must be at farm.
-  Example JSON: use the `harvest` action with the typed fields for this verb.
-
-`plant`
-  Sow seeds for the next season. Must be at farm.
-  Example JSON: use the `plant` action with the typed fields for this verb.
-
-`water`
-  Tend the irrigation. Improves next harvest quality.
-  Example JSON: use the `water` action with the typed fields for this verb.
-
-`check_field`
-  Inspect the crop state and estimate this season's yield.
-  Must be at farm.

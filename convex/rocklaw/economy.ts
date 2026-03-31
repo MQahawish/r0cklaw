@@ -13,7 +13,7 @@ export type ItemDef = {
 };
 
 export type RecipeDef = {
-  action: 'craft' | 'smelt' | 'brew';
+  action: 'work' | 'brew';
   output: string;
   location: string;
   consumes: Array<{ item: string; quantity: number }>;
@@ -64,6 +64,7 @@ export const ITEM_CATALOGUE: Record<string, ItemDef> = {
   herbs: { id: 'herbs', category: 'raw' },
   medicine: { id: 'medicine', category: 'medicine' },
   flour: { id: 'flour', category: 'material' },
+  iron_ingot: { id: 'iron_ingot', category: 'material' },
   horseshoe: { id: 'horseshoe', category: 'crafted' },
   tools: { id: 'tools', category: 'crafted' },
   knife: { id: 'knife', category: 'crafted' },
@@ -72,7 +73,7 @@ export const ITEM_CATALOGUE: Record<string, ItemDef> = {
 
 export const RECIPE_CATALOGUE: RecipeDef[] = [
   {
-    action: 'craft',
+    action: 'work',
     output: 'horseshoe',
     location: 'forge',
     consumes: [
@@ -83,7 +84,7 @@ export const RECIPE_CATALOGUE: RecipeDef[] = [
     note: 'Forge a horseshoe at the forge.',
   },
   {
-    action: 'craft',
+    action: 'work',
     output: 'tools',
     location: 'forge',
     consumes: [
@@ -94,7 +95,7 @@ export const RECIPE_CATALOGUE: RecipeDef[] = [
     note: 'Forge tools at the forge.',
   },
   {
-    action: 'craft',
+    action: 'work',
     output: 'knife',
     location: 'forge',
     consumes: [
@@ -105,15 +106,15 @@ export const RECIPE_CATALOGUE: RecipeDef[] = [
     note: 'Forge a knife at the forge.',
   },
   {
-    action: 'smelt',
-    output: 'tools',
+    action: 'work',
+    output: 'iron_ingot',
     location: 'forge',
     consumes: [
       { item: 'iron_ore', quantity: 2 },
       { item: 'coal', quantity: 1 },
     ],
-    produces: [{ item: 'tools', quantity: 1 }],
-    note: 'Smelt raw ore into usable metal goods at the forge.',
+    produces: [{ item: 'iron_ingot', quantity: 1 }],
+    note: 'Refine raw ore into an iron ingot at the forge.',
   },
   {
     action: 'brew',
@@ -140,16 +141,16 @@ export const SERVICE_CATALOGUE: Record<string, ServiceDef> = {
 };
 
 export const ROLE_ECONOMIC_ACTIONS: Record<string, string[]> = {
-  Blacksmith: ['craft', 'smelt'],
-  Farmer: ['check_field', 'plant', 'water', 'harvest'],
-  Herbalist: ['gather', 'brew'],
+  Blacksmith: ['work'],
+  Farmer: ['work'],
+  Herbalist: ['work'],
   Innkeeper: [],
   Merchant: [],
 };
 
 export const ROLE_TRADE_PROFILES: Record<string, TradeProfile> = {
   Blacksmith: {
-    likelySells: ['horseshoe', 'tools', 'knife'],
+    likelySells: ['horseshoe', 'tools', 'knife', 'iron_ingot'],
     likelyBuys: ['iron_ore', 'coal'],
   },
   Farmer: {
@@ -243,6 +244,9 @@ export function demandPressureForItem(
   }
   if (item === 'iron_ore' || item === 'coal' || item === 'tools' || item === 'horseshoe' || item === 'knife') {
     demand += blacksmiths * 0.2;
+  }
+  if (item === 'iron_ingot') {
+    demand += blacksmiths * 0.15;
   }
   if (item === 'bread' || item === 'ale' || item === 'meal') {
     demand += innkeepers * 0.2;

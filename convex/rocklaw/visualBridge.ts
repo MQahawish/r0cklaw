@@ -32,6 +32,7 @@ const AGENT_SPRITES: Record<string, string> = {
 // ── Action → emoji map ───────────────────────────────────────────────────────
 
 const ACTION_EMOJI: Record<string, string> = {
+  work: '⚒️',
   craft: '⚒️', smelt: '🔥', repair: '🔧', mine: '⛏️',
   harvest: '🌾', plant: '🌱', water: '💧', check_field: '👀',
   gather: '🌿', brew: '⚗️', treat: '💊', identify: '🔍',

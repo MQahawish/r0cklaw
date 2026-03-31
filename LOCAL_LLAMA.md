@@ -40,7 +40,7 @@ Expected signal:
 - `Available devices:`
 - `CUDA0: NVIDIA GeForce ...`
 
-## Build llama-server
+## Build llama-server / llama-bench
 
 The current reliable build path is a CUDA Docker build, not a host-native CUDA build.
 
@@ -48,18 +48,29 @@ Run from inside the `llama.cpp` repo:
 
 ```bash
 cd /home/mahmoudqahawish/Github/llama.cpp
-rm -rf build
+sudo rm -rf build
 docker run --rm --runtime=nvidia --gpus all --security-opt=label=disable \
   -v "$PWD:/src:Z" \
   -w /src \
   nvidia/cuda:12.9.1-devel-ubuntu22.04 \
-  bash -lc "apt-get update && apt-get install -y git build-essential cmake && cmake -S . -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build -j8 --target llama-server"
+  bash -lc "apt-get update && apt-get install -y git build-essential cmake && cmake -S . -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build -j8 --target llama-server llama-bench"
 ```
 
-Verify the binary:
+Verify the binaries:
 
 ```bash
 ls -lh /home/mahmoudqahawish/Github/llama.cpp/build/bin/llama-server
+ls -lh /home/mahmoudqahawish/Github/llama.cpp/build/bin/llama-bench
+```
+
+Notes:
+
+- if `rm -rf build` fails with `Permission denied`, the previous Docker build wrote root-owned files into the bind mount
+- `sudo rm -rf build` is the simplest recovery
+- after the build, reclaim ownership if needed:
+
+```bash
+sudo chown -R "$USER:$USER" /home/mahmoudqahawish/Github/llama.cpp/build
 ```
 
 ## Update llama.cpp
@@ -67,12 +78,12 @@ ls -lh /home/mahmoudqahawish/Github/llama.cpp/build/bin/llama-server
 ```bash
 cd /home/mahmoudqahawish/Github/llama.cpp
 git pull
-rm -rf build
+sudo rm -rf build
 docker run --rm --runtime=nvidia --gpus all --security-opt=label=disable \
   -v "$PWD:/src:Z" \
   -w /src \
   nvidia/cuda:12.9.1-devel-ubuntu22.04 \
-  bash -lc "apt-get update && apt-get install -y git build-essential cmake && cmake -S . -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build -j8 --target llama-server"
+  bash -lc "apt-get update && apt-get install -y git build-essential cmake && cmake -S . -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release && cmake --build build -j8 --target llama-server llama-bench"
 ```
 
 ## Download a Model
@@ -221,6 +232,108 @@ Use the returned `usage.timings` block to compare:
 - `predicted_per_second`
 
 When testing context changes, keep everything else fixed and only change one variable at a time.
+
+## llama-bench
+
+Use `llama-bench` when you want a real throughput table with:
+
+- model size
+- raw parameter count
+- backend
+- GPU offload level
+- prompt-processing throughput
+- token-generation throughput
+
+Baseline benchmark:
+
+```bash
+cd /home/mahmoudqahawish/Github/llama.cpp/build/bin
+export LD_LIBRARY_PATH=$PWD:/usr/local/cuda/targets/x86_64-linux/lib:/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+
+./llama-bench \
+  -m /home/mahmoudqahawish/Models/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf \
+  -ngl 99 \
+  -fa 1 \
+  -p 512 \
+  -n 128 \
+  -r 3 \
+  -o md
+```
+
+GPU offload sweep:
+
+```bash
+./llama-bench \
+  -m /home/mahmoudqahawish/Models/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf \
+  -ngl 0,16,32,99 \
+  -fa 1 \
+  -p 512 \
+  -n 128 \
+  -r 3 \
+  -o md
+```
+
+Prefilled-context sweep:
+
+```bash
+./llama-bench \
+  -m /home/mahmoudqahawish/Models/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf \
+  -ngl 99 \
+  -fa 1 \
+  -p 512 \
+  -n 128 \
+  -d 0,512,2048 \
+  -r 3 \
+  -o md
+```
+
+Raw machine-readable output:
+
+```bash
+./llama-bench \
+  -m /home/mahmoudqahawish/Models/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf \
+  -ngl 99 \
+  -fa 1 \
+  -p 512 \
+  -n 128 \
+  -r 3 \
+  -o csv
+```
+
+Interpreting the main columns:
+
+- `pp512`: prompt processing throughput for a 512-token prompt
+- `tg128`: generation throughput for 128 output tokens
+- `ngl`: number of layers offloaded to GPU
+- `fa`: flash attention on/off
+
+Observed results on this machine:
+
+- GPU: NVIDIA GeForce RTX 2060 with Max-Q Design, 5738 MiB VRAM
+- model: `Qwen3-4B-Q4_K_M.gguf`
+
+Offload sweep:
+
+| ngl | pp512 t/s | tg128 t/s |
+| ---: | --------: | --------: |
+| 0 | 774.09 | 14.96 |
+| 16 | 991.62 | 23.05 |
+| 32 | 1423.50 | 46.64 |
+| 99 | 1638.87 | 59.52 |
+
+Context-depth sweep with `ngl=99`:
+
+| depth | pp512 t/s | tg128 t/s |
+| ----: | --------: | --------: |
+| 0 | 1685.41 | 62.03 |
+| 512 | 1622.60 | 59.91 |
+| 2048 | 1447.50 | 56.13 |
+
+Takeaways:
+
+- `--gpu-layers all` is the right baseline for this 4B Q4 model on this GPU
+- deeper prefills reduce throughput, but the drop through `d2048` is still moderate
+- `tg128` is the most relevant number for perceived chat speed
 
 ## Optimization Notes
 

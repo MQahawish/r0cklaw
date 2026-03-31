@@ -3,10 +3,9 @@
 ## Runtime rule
 
 These notes describe the kinds of actions that exist in Rocklaw.
-In ZeroClaw session mode, do NOT run shell commands like move.sh, craft.sh, talk.sh, or pray.sh to perform them.
+In ZeroClaw session mode, do NOT run shell commands like move.sh, work.sh, talk.sh, or pray.sh to perform them.
 Use your available tools only to inspect files, recall memory, and update your private notes.
 When you are ready to act in the world, return the final Rocklaw JSON action instead.
-
 
 All interaction with the world happens through JSON actions that the Rocklaw engine executes.
 The legacy `.sh` names in older notes are conceptual labels only, not commands you should run.
@@ -43,25 +42,34 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 }
 ```
 
+## Economic actions
+
+Runtime availability for your role will be listed here each tick.
+
 ## Act in the world
 
 - Do not use `observe`, `inspect`, `look`, or `survey` as a final world action. Observation is done through file reads and notes during tool use.
 - Do not invent placeholder values in JSON. Never put strings like `"None"`, `"null"`, `"unknown"`, or `<placeholder>` into `target`, `offer_ref`, `item`, or other optional fields. Omit the field instead.
 - Only use `chat` with `intent:"accept_transaction"` or `intent:"reject_transaction"` when `TURN.md` shows a real pending offer with a concrete `offer_ref`.
+- If `ONLINE`, live scenes, and known thread contacts are empty, do not target a person. Choose a non-chat action instead.
+- Do not infer a person from a role need alone. Needing a blacksmith, farmer, merchant, or healer does not make someone a valid target unless `TURN.md` currently shows them as a real contact.
 
-
+- `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread.
+  Example JSON: `{"action":"chat","target":"<known contact from TURN.md>","text":"Do you still have coal?"}`
 - For `intent:"trade"`, natural-language text alone is invalid. You must include both `offer` and `request` arrays.
-  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}`
-- For `intent:"trade"`, natural-language text alone is invalid. You must include both `offer` and `request` arrays.
-  Example JSON: `{"action":"chat","target":"Lena Marsh","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}`
-- `chat`: continue your live chat with Brother Aldric. Use the same target until you leave the scene.
-  Example JSON: `{"action":"chat","target":"Brother Aldric","text":"Makes sense."}`
+  Example JSON: `{"action":"chat","target":"<current live chat partner>","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}`
+- `move`: use `location` and choose only from `Reachable places now` in `TURN.md`.
+  Example JSON: `{"action":"move","location":"market"}`
+- `buy_place`: buy stock directly from the place you are standing in at the local price shown in `TURN.md`.
+  Example JSON: `{"action":"buy_place","target":"market","item":"coal","quantity":3}`
+- `sell_place`: sell stock directly into the place you are standing in at the local price shown in `TURN.md`.
+  Example JSON: `{"action":"sell_place","target":"bakery","item":"grain","quantity":4}`
+- `deliver_place`: move your own stock into a place without immediate payment. This is storage or supply, not a sale.
+  Example JSON: `{"action":"deliver_place","target":"warehouse","item":"coal","quantity":5}`
 
-- `chat` with `intent`: buy, sell, trade, give, pay, accept, or reject through the same spoken turn.
-  Example JSON: `{"action":"chat","target":"Brother Aldric","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35}`
+## Speaking into the world
 
-- `leave_chat`: leave the live chat. You may include `text` for a final goodbye line.
-  Example JSON: `{"action":"leave_chat","text":"All right, chat later.","thought":"I need to end this conversation now."}`
+- `say`: use `text` to speak out loud in your current location. This is local speech, not a thread, and it does not take a target.
+  Example JSON: `{"action":"say","text":"Fresh bread at the inn if anyone wants some."}`
 
-- Each live-chat turn must make progress: answer the partner's last question, ask one direct question, make one concrete offer, respond to a pending offer with the exact structured fields, or leave the chat.
-- Do not repeat the same point, do not restate the same offer twice, and never output filler like `...` or `waiting for your response`.
+If you want to pray, return a final JSON action with `"action": "pray"` and put the prayer text in `text`.

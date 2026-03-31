@@ -68,7 +68,7 @@ class ZeroClawTurnError extends Error {
 const VALID_ACTIONS = new Set([
   'chat', 'leave_chat', 'say', 'move', 'rest', 'sleep', 'eat',
   'pray',
-  'craft', 'smelt',
+  'work',
   'harvest', 'plant', 'water', 'check_field',
   'gather', 'brew',
   'buy_place', 'sell_place', 'deliver_place',
@@ -525,60 +525,17 @@ function buildTickMessage(
     `You are in ${location}.`,
     `Last tick: ${lastHeartbeatLine ?? 'none yet'}`,
     ...(promptPrefix ? ['', promptPrefix] : []),
-    'Use your files and tools only to understand the situation and decide.',
-    'Anchor yourself in HEARTBEAT.md first so your next action follows from what you already did.',
-    'Read TURN.md and HEARTBEAT.md first. In an ordinary tick, do not read more than 2 additional files after those.',
+    'Read HEARTBEAT.md, then TURN.md.',
+    'Read SELF.md only if needed.',
+    'Read at most one chat/<name>/CHAT.md only if needed.',
     'If TURN.md already shows an obvious valid action, do not keep exploring. Take the action immediately.',
-    'Do not reread the same file in the same tick unless the first read clearly failed.',
-    'Do not inspect extra files just to double-check. If you are still uncertain after minimal reads, choose the safest valid action visible in TURN.md and return it.',
-    'In a live chat scene, do not read extra files unless you need a specific offer_ref or thread detail that is missing from TURN.md.',
-    'Do observation, inspection, memory recall, and private note-writing inside your tool use, not as the final world action.',
-    'Use only actions currently listed in TOOLS.md. Temporary actions like rest and sleep appear there only when they are currently available.',
-    'For move, choose only from Reachable places now in TURN.md.',
-    'For buy_place, sell_place, and deliver_place, target a place listed in TURN.md and include item plus quantity.',
-    'Never use observe, inspect, survey, or look as the final world action. Observation happens through file reads, memory recall, and notes during tool use.',
-    'Return a final JSON action quickly. On ordinary ticks, stop after a small number of reads instead of stalling in tool use.',
-    'Return exactly one JSON object and nothing else.',
-    'The first character must be { and the last character must be }.',
-    'No prose before or after the JSON object.',
-    'Do not wrap the JSON in markdown fences.',
-    'Do not write placeholder strings like "None", "null", "unknown", or "<...>" into optional fields. Omit optional fields you are not using.',
-    'Do not ask clarifying questions. Do not emit tool_code. Do not execute shell commands for world actions.',
-    'Check TURN.md for your current state, nearby people, offers, market/news context, and chat summaries.',
-    'Check SELF.md for your current goals, beliefs, plans, secrets, desires, and relevant relationships.',
-    'If you need more context with someone, read their thread file under chat/<name>/CHAT.md.',
-    'Choose people only from your actual current context: nearby people, current live chat partner, known thread contacts, first-seen contacts, or explicit relationships shown in TURN.md or SELF.md.',
-    'If TURN.md shows no nearby people, no live chat partner, and no known thread contacts, do not target a person. Choose a non-chat action instead.',
-    'Do not invent prior familiarity, regular customers, friendships, or shared history unless TURN.md, SELF.md, or an existing chat thread explicitly shows it.',
+    'Ground your choice in TURN.md first.',
+    'Use only people, places, items, offers, and relationships that actually appear in TURN.md, SELF.md, or an active chat thread.',
+    'If no valid person is shown there, do not choose chat.',
     'If an active interaction directly addresses you, respond to it before starting unrelated work unless you have a clear reason not to.',
-    'If someone just spoke to you in a live chat or deferred thread, ground your next reply in their most recent line before introducing a new topic or offer.',
-    'Direct person-to-person commerce is expressed through action:"chat" with a spoken "text" plus a structured "intent" field while you are already in a live chat with that same person.',
-    'Valid chat intents are: buy, sell, trade, give, pay, accept_transaction, reject_transaction.',
-    'For chat intents, target a person you are actively chatting with. Never target a place like market, inn, forge, or square.',
-    'Do not infer a person from a role need alone. For example, needing a blacksmith, farmer, or merchant does not make someone a valid target unless TURN.md currently shows them as a real contact.',
-    'Use `accept_transaction` or `reject_transaction` only when TURN.md shows a real pending offer with a concrete `offer_ref`. If there is no such offer, reply in plain chat or make a new structured offer instead.',
-    'For intent:"trade", natural-language barter text is not enough. You must include both offer:[{"item":"...","quantity":N}] and request:[{"item":"...","quantity":N}].',
-    'Speak like a present-day person. Prefer short, casual, modern phrasing like "hi", "hey", "okay", "sounds good", or "what\'s up" when natural.',
-    'Do not sound posh, ceremonial, lofty, or old-fashioned. Avoid lines like "A pleasure to see you", "It is kind of you", or "May your work continue..." unless there is an exceptional reason.',
-    'If you want to explain why, put it in "thought".',
-    'For chat, say, pray, and leave_chat, put the actual visible content in "text". Use "message" only for optional visible framing when it is distinct.',
-    'Use "memory_note" for the private takeaway.',
-    '',
-    'Each action takes 1 tick to finish.',
-    'Final response schema:',
-    '{"action":"...","target":"optional","location":"optional","text":"optional","intent":"optional","offer_ref":"optional","topic":"optional","item":"optional","quantity":1,"amount":0,"consumes":[],"produces":[],"offer":[],"request":[],"thought":"optional","message":"optional","memory_note":"optional"}',
-    '',
-    'Examples:',
-    '{"action":"move","location":"market","thought":"Need supplies before work stalls.","message":"Going to the market."}',
-    '{"action":"buy_place","target":"market","item":"coal","quantity":3,"thought":"I need more fuel and the market has stock."}',
-    '{"action":"sell_place","target":"bakery","item":"grain","quantity":4,"thought":"The bakery buys grain and I can turn this into coin."}',
-    '{"action":"chat","target":"<known contact from TURN.md>","text":"Hey, do you still have coal?","thought":"I should contact a real known contact from TURN.md before making an offer."}',
-    '{"action":"say","text":"Hi, fresh bread at the inn if anyone wants some.","thought":"People nearby may hear a local greeting or announcement."}',
-    '{"action":"chat","target":"<current live chat partner>","text":"I can pay 12 coin for three coal.","intent":"buy","item":"coal","quantity":3,"amount":12,"thought":"I am already in a live chat with the other person and want to make an offer."}',
-    '{"action":"chat","target":"<current live chat partner>","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}],"thought":"I want a barter trade, so I must provide both offer and request arrays."}',
-    '{"action":"chat","target":"<current live chat partner>","text":"Okay, deal.","intent":"accept_transaction","offer_ref":"offer-1","thought":"I am already in a live chat with the other person and the offer is fair."}',
-    '{"action":"chat","target":"<current live chat partner>","text":"I can do that if you make it four coal instead of three.","intent":"trade","offer":[{"item":"horseshoe","quantity":1}],"request":[{"item":"coal","quantity":4}],"thought":"I want to haggle, so I should answer with a concrete counteroffer instead of vague negotiation."}',
-    '{"action":"craft","item":"horseshoe","quantity":2,"consumes":[{"item":"iron_ore","quantity":4},{"item":"coal","quantity":2}],"produces":[{"item":"horseshoe","quantity":2}],"thought":"Market demand is severe and I have the materials.","message":"Crafting two horseshoes."}',
+    'Use tools only to read files, recall memory, and update private notes.',
+    'Do not use tools or shell commands to perform world actions.',
+    'Return exactly one Rocklaw action JSON object and nothing else.',
   ];
 
   return sections.join('\n');
@@ -824,11 +781,11 @@ function validateAction(action: RocklawAction): boolean {
     case 'leave_chat':
       return true;
     case 'eat':
-    case 'craft':
     case 'repair':
-    case 'smelt':
     case 'appraise':
       return typeof (action.item ?? action.target) === 'string';
+    case 'work':
+      return action.item === undefined || action.item === null || typeof action.item === 'string';
     default:
       return true;
   }
@@ -860,8 +817,11 @@ function pseudoActionCorrection(action: Partial<RocklawAction> | null | undefine
     : typeof action?.target === 'string'
     ? action.target.trim().toLowerCase()
     : '';
-  if (raw === 'craft' && itemLike === 'meal') {
+  if ((raw === 'craft' || raw === 'smelt') && itemLike === 'meal') {
     return 'Meals are not crafted as inventory items. Use sell with item:"meal" when someone is here to be served, or choose another real action.';
+  }
+  if (raw === 'craft' || raw === 'smelt') {
+    return 'Blacksmith production now uses action:"work". Choose work with an item like horseshoe, tools, knife, or iron_ingot.';
   }
   return null;
 }
@@ -906,8 +866,7 @@ function summariseRejectedAttempt(
     case 'sleep': narrative = `go to sleep`; break;
     case 'eat': narrative = `eat ${action.item}`; break;
     case 'pray': narrative = `offer a prayer`; break;
-    case 'craft': narrative = `craft ${action.quantity || 1} ${action.item}`; break;
-    case 'smelt': narrative = `smelt ${action.quantity || 1} ${action.item}`; break;
+    case 'work': narrative = `do work${action.item ? ` for ${action.quantity || 1} ${action.item}` : ''}`; break;
     case 'harvest': narrative = `harvest crops`; break;
     case 'plant': narrative = `plant crops`; break;
     case 'water': narrative = `water the fields`; break;

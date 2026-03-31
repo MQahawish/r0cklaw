@@ -21,8 +21,7 @@ export const ACTION_DURATIONS: Record<string, number> = {
   harvest: 2,
   plant: 2,
   water: 1,
-  craft: 2,
-  smelt: 2,
+  work: 2,
   brew: 2,
   rest: 1,
   sleep: 2,
@@ -36,8 +35,7 @@ export function getActionDuration(action: string | null | undefined): number {
 export function describeActionForHumans(action: ActionLike | null | undefined): string {
   if (!action?.action) return 'working';
   switch (action.action) {
-    case 'craft':
-    case 'smelt':
+    case 'work':
     case 'brew':
     case 'eat':
       return action.item ? `${action.action} ${action.item}` : action.action;

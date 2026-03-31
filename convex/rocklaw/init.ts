@@ -72,8 +72,8 @@ const LOCATIONS = [
 ];
 
 export const initRocklaw = mutation({
-  args: { force: v.optional(v.boolean()) },
-  handler: async (ctx, { force }) => {
+  args: { force: v.optional(v.boolean()), agentNames: v.optional(v.array(v.string())) },
+  handler: async (ctx, { force, agentNames }) => {
     // Guard: don't run twice unless forced
     const existing = await ctx.db.query('rl_world_state').first();
     if (existing && !force) {
@@ -155,8 +155,16 @@ export const initRocklaw = mutation({
       }
     }
 
+    const selectedRoster = Array.isArray(agentNames) && agentNames.length > 0
+      ? AGENT_ROSTER.filter((agent) => agentNames.includes(agent.name))
+      : AGENT_ROSTER;
+
+    if (selectedRoster.length === 0) {
+      throw new Error('[init] No matching agents in roster for requested agentNames.');
+    }
+
     // Agents
-    for (const agentData of AGENT_ROSTER) {
+    for (const agentData of selectedRoster) {
       const existingAgent = await ctx.db
         .query('rl_agents')
         .withIndex('name', (q) => q.eq('name', agentData.name))
@@ -180,7 +188,7 @@ export const initRocklaw = mutation({
     }
 
     // Seed reputation for all agents at neutral score (50)
-    for (const agentData of AGENT_ROSTER) {
+    for (const agentData of selectedRoster) {
       const existingRep = await ctx.db
         .query('rl_reputation')
         .withIndex('agentName', (q) => q.eq('agentName', agentData.name))
@@ -202,8 +210,8 @@ export const initRocklaw = mutation({
     // Register Rocklaw agents in the AI Town visual layer (1s delay for world to be ready)
     await ctx.scheduler.runAfter(1000, internal.rocklaw.visualBridge.initVisualAgents, {});
 
-    console.log('[init] Rocklaw initialised. 5 villagers, 10 locations, market prices seeded.');
-    return { status: 'ok', agents: AGENT_ROSTER.length, locations: LOCATIONS.length };
+    console.log(`[init] Rocklaw initialised. ${selectedRoster.length} villagers, ${LOCATIONS.length} locations, market prices seeded.`);
+    return { status: 'ok', agents: selectedRoster.length, locations: LOCATIONS.length };
   },
 });
 

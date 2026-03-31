@@ -697,8 +697,7 @@ function summariseManualAction(
     case 'sleep': narrative = `You went to sleep`; break;
     case 'eat': narrative = `You ate ${action.item}`; break;
     case 'pray': narrative = `You offered a prayer`; break;
-    case 'craft': narrative = `You crafted ${action.quantity || 1} ${action.item}`; break;
-    case 'smelt': narrative = `You smelted ${action.quantity || 1} ${action.item}`; break;
+    case 'work': narrative = `You worked${action.item ? ` and produced ${action.quantity || 1} ${action.item}` : ''}`; break;
     case 'harvest': narrative = `You harvested crops`; break;
     case 'plant': narrative = `You planted crops`; break;
     case 'water': narrative = `You watered the fields`; break;

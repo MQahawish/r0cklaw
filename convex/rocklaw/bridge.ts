@@ -58,6 +58,7 @@ type WorldValidation =
   | { ok: false; note: string }
   | {
       ok: true;
+      workKind?: 'blacksmith' | 'plant' | 'water' | 'harvest' | 'gather' | 'brew';
       resolvedLocation?: string;
       resolvedTarget?: string;
       consumes?: Array<{ item: string; quantity: number }>;
@@ -77,6 +78,7 @@ type WorldValidation =
 // Effort costs per action (deducted from energy after completion)
 const EFFORT_COSTS: Record<string, number> = {
   // Physical labour
+  work: 16,
   craft: 16, smelt: 18, repair: 20, mine: 45,
   harvest: 14, plant: 12, water: 5, check_field: 2,
   gather: 6, brew: 8, treat: 8, identify: 3,
@@ -94,6 +96,308 @@ const EFFORT_COSTS: Record<string, number> = {
   recall: 0,
   eat: 0, rest: -18, sleep: -70,
 };
+
+const BLACKSMITH_WORK_PRIORITY = ['horseshoe', 'tools', 'knife', 'iron_ingot'] as const;
+const FARMER_WORK_CROPS = ['grain', 'vegetables'] as const;
+const HERBALIST_WORK_OUTPUTS = ['herbs', 'medicine'] as const;
+
+function feasibleBlacksmithOutputs(agentDoc: any): string[] {
+  if (agentDoc.role !== 'Blacksmith') return [];
+  const feasible: string[] = [];
+  for (const output of BLACKSMITH_WORK_PRIORITY) {
+    const recipe = getRecipe('work', output);
+    if (!recipe) continue;
+    if (agentDoc.location !== recipe.location) continue;
+    if (formatRequirementShortfall(agentDoc.inventory, recipe.consumes)) continue;
+    feasible.push(output);
+  }
+  return feasible;
+}
+
+async function feasibleFarmerWorkOutputs(ctx: any, agentDoc: any): Promise<string[]> {
+  if (agentDoc.role !== 'Farmer' || agentDoc.location !== 'farm') return [];
+  const fields = await getFieldsAtLocation(ctx, agentDoc.location);
+  const feasible: string[] = [];
+  for (const field of fields) {
+    if (field.stage === 'ready' && field.cropItem) feasible.push(field.cropItem);
+  }
+  if (fields.some((field: any) => field.stage === 'growing')) feasible.push('field_maintenance');
+  for (const crop of FARMER_WORK_CROPS) {
+    const hasFallowField = fields.some((field: any) => field.stage === 'fallow');
+    if (hasFallowField && inventoryHasAtLeast(agentDoc.inventory, crop, 1)) feasible.push(crop);
+  }
+  return Array.from(new Set(feasible));
+}
+
+async function feasibleHerbalistWorkOutputs(ctx: any, agentDoc: any): Promise<string[]> {
+  if (agentDoc.role !== 'Herbalist') return [];
+  const feasible: string[] = [];
+  const patches = await getHerbPatchesAtLocation(ctx, agentDoc.location);
+  if (patches.some((entry: any) => entry.available > 0)) feasible.push('herbs');
+  const medicineRecipe = getRecipe('brew', 'medicine');
+  if (medicineRecipe && agentDoc.location === medicineRecipe.location && !formatRequirementShortfall(agentDoc.inventory, medicineRecipe.consumes)) {
+    feasible.push('medicine');
+  }
+  return feasible;
+}
+
+function resolveBlacksmithWorkRecipe(agentDoc: any, requestedItem?: string | null) {
+  if (agentDoc.role !== 'Blacksmith') {
+    return { recipe: null as ReturnType<typeof getRecipe>, note: `${agentDoc.role} cannot use work as a role action.` };
+  }
+
+  if (requestedItem) {
+    const recipe = getRecipe('work', requestedItem);
+    if (!recipe) {
+      const feasible = feasibleBlacksmithOutputs(agentDoc);
+      return {
+        recipe: null as ReturnType<typeof getRecipe>,
+        note: feasible.length > 0
+          ? `Blacksmith work cannot produce ${requestedItem}. Feasible outputs right now: ${feasible.join(', ')}.`
+          : `Blacksmith work cannot produce ${requestedItem}. Choose horseshoe, tools, knife, or iron_ingot.`,
+      };
+    }
+    return { recipe, note: null as string | null };
+  }
+
+  for (const output of BLACKSMITH_WORK_PRIORITY) {
+    const recipe = getRecipe('work', output);
+    if (!recipe) continue;
+    if (agentDoc.location !== recipe.location) continue;
+    if (formatRequirementShortfall(agentDoc.inventory, recipe.consumes)) continue;
+    return { recipe, note: null as string | null };
+  }
+
+  return {
+    recipe: null as ReturnType<typeof getRecipe>,
+    note: 'No valid blacksmith work is available right now. Move to the forge or gather the needed inputs first.',
+  };
+}
+
+async function resolveFarmerWork(ctx: any, agentDoc: any, requestedItem?: string | null) {
+  if (agentDoc.role !== 'Farmer') {
+    return { validation: null as WorldValidation | null, note: `${agentDoc.role} cannot use work as a role action.` };
+  }
+  if (agentDoc.location !== 'farm') {
+    return { validation: null as WorldValidation | null, note: 'Farmer work is only available at the farm.' };
+  }
+
+  const fields = await getFieldsAtLocation(ctx, agentDoc.location);
+  const readyField = (crop?: string | null) => fields.find((entry: any) => entry.stage === 'ready' && entry.cropItem && (!crop || entry.cropItem === crop));
+  const growingField = fields.find((entry: any) => entry.stage === 'growing');
+  const fallowField = fields.find((entry: any) => entry.stage === 'fallow');
+
+  if (requestedItem) {
+    if (!FARMER_WORK_CROPS.includes(requestedItem as (typeof FARMER_WORK_CROPS)[number])) {
+      const feasible = await feasibleFarmerWorkOutputs(ctx, agentDoc);
+      return {
+        validation: null as WorldValidation | null,
+        note: feasible.length > 0
+          ? `Farmer work cannot target ${requestedItem}. Feasible work right now: ${feasible.join(', ')}.`
+          : `Farmer work cannot target ${requestedItem}. Choose grain or vegetables, or use bare work for the best available field task.`,
+      };
+    }
+    const harvestField = readyField(requestedItem);
+    if (harvestField) {
+      const quantity = requestedItem === 'grain' ? 4 : 3;
+      return {
+        validation: {
+          ok: true as const,
+          workKind: 'harvest' as const,
+          fieldKey: harvestField.fieldKey,
+          cropItem: requestedItem,
+          produces: [{ item: requestedItem, quantity }],
+          note: `Harvest ${requestedItem} from ${harvestField.fieldKey}.`,
+        },
+        note: null as string | null,
+      };
+    }
+    if (!fallowField) {
+      const feasible = await feasibleFarmerWorkOutputs(ctx, agentDoc);
+      return {
+        validation: null as WorldValidation | null,
+        note: feasible.length > 0
+          ? `No fallow field is available to plant ${requestedItem}. Feasible farm work right now: ${feasible.join(', ')}.`
+          : `No fallow field is available to plant ${requestedItem}.`,
+      };
+    }
+    if (!inventoryHasAtLeast(agentDoc.inventory, requestedItem, 1)) {
+      const inv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+      const feasible = await feasibleFarmerWorkOutputs(ctx, agentDoc);
+      return {
+        validation: null as WorldValidation | null,
+        note: feasible.length > 0
+          ? `Not enough ${requestedItem}: need 1, have ${inv[requestedItem] ?? 0}. Feasible farm work right now: ${feasible.join(', ')}.`
+          : `Not enough ${requestedItem}: need 1, have ${inv[requestedItem] ?? 0}.`,
+      };
+    }
+    return {
+      validation: {
+        ok: true as const,
+        workKind: 'plant' as const,
+        fieldKey: fallowField.fieldKey,
+        cropItem: requestedItem,
+        consumes: [{ item: requestedItem, quantity: 1 }],
+        note: `Plant ${requestedItem} in ${fallowField.fieldKey}.`,
+      },
+      note: null as string | null,
+    };
+  }
+
+  const anyReadyField = readyField();
+  if (anyReadyField && anyReadyField.cropItem) {
+    const quantity = anyReadyField.cropItem === 'grain' ? 4 : 3;
+    return {
+      validation: {
+        ok: true as const,
+        workKind: 'harvest' as const,
+        fieldKey: anyReadyField.fieldKey,
+        cropItem: anyReadyField.cropItem,
+        produces: [{ item: anyReadyField.cropItem, quantity }],
+        note: `Harvest ${anyReadyField.cropItem} from ${anyReadyField.fieldKey}.`,
+      },
+      note: null as string | null,
+    };
+  }
+  if (growingField) {
+    return {
+      validation: {
+        ok: true as const,
+        workKind: 'water' as const,
+        fieldKey: growingField.fieldKey,
+        note: `Water ${growingField.fieldKey}.`,
+      },
+      note: null as string | null,
+    };
+  }
+  if (fallowField) {
+    for (const crop of FARMER_WORK_CROPS) {
+      if (inventoryHasAtLeast(agentDoc.inventory, crop, 1)) {
+        return {
+          validation: {
+            ok: true as const,
+            workKind: 'plant' as const,
+            fieldKey: fallowField.fieldKey,
+            cropItem: crop,
+            consumes: [{ item: crop, quantity: 1 }],
+            note: `Plant ${crop} in ${fallowField.fieldKey}.`,
+          },
+          note: null as string | null,
+        };
+      }
+    }
+  }
+
+  return {
+    validation: null as WorldValidation | null,
+    note: 'No valid farm work is available right now. Wait for a field state change or get more seed stock.',
+  };
+}
+
+async function resolveHerbalistWork(ctx: any, agentDoc: any, requestedItem?: string | null) {
+  if (agentDoc.role !== 'Herbalist') {
+    return { validation: null as WorldValidation | null, note: `${agentDoc.role} cannot use work as a role action.` };
+  }
+  const patches = await getHerbPatchesAtLocation(ctx, agentDoc.location);
+  const patch = patches.find((entry: any) => entry.available > 0);
+  const medicineRecipe = getRecipe('brew', 'medicine');
+  const canBrewMedicine = Boolean(
+    medicineRecipe &&
+    agentDoc.location === medicineRecipe.location &&
+    !formatRequirementShortfall(agentDoc.inventory, medicineRecipe.consumes),
+  );
+
+  if (requestedItem) {
+    if (!HERBALIST_WORK_OUTPUTS.includes(requestedItem as (typeof HERBALIST_WORK_OUTPUTS)[number])) {
+      const feasible = await feasibleHerbalistWorkOutputs(ctx, agentDoc);
+      return {
+        validation: null as WorldValidation | null,
+        note: feasible.length > 0
+          ? `Herbalist work cannot target ${requestedItem}. Feasible work right now: ${feasible.join(', ')}.`
+          : `Herbalist work cannot target ${requestedItem}. Choose herbs or medicine, or use bare work.`,
+      };
+    }
+    if (requestedItem === 'herbs') {
+      if (!patch) {
+        const feasible = await feasibleHerbalistWorkOutputs(ctx, agentDoc);
+        return {
+          validation: null as WorldValidation | null,
+          note: feasible.length > 0
+            ? `No gatherable herbs are available here right now. Feasible herbal work right now: ${feasible.join(', ')}.`
+            : 'No gatherable herbs are available here right now.',
+        };
+      }
+      const quantity = Math.min(2, patch.available);
+      return {
+        validation: {
+          ok: true as const,
+          workKind: 'gather' as const,
+          herbPatchKey: patch.patchKey,
+          produces: [{ item: patch.herbItem, quantity }],
+          note: `Gather ${quantity} ${patch.herbItem} from ${patch.patchKey}.`,
+        },
+        note: null as string | null,
+      };
+    }
+    if (!medicineRecipe || agentDoc.location !== medicineRecipe.location) {
+      return {
+        validation: null as WorldValidation | null,
+        note: 'Medicine work is only available at the shrine.',
+      };
+    }
+    const shortfall = formatRequirementShortfall(agentDoc.inventory, medicineRecipe.consumes);
+    if (shortfall) {
+      const feasible = await feasibleHerbalistWorkOutputs(ctx, agentDoc);
+      return {
+        validation: null as WorldValidation | null,
+        note: feasible.length > 0
+          ? `${shortfall} Feasible herbal work right now: ${feasible.join(', ')}.`
+          : `${shortfall} No herbal output is currently feasible with your stock.`,
+      };
+    }
+    return {
+      validation: {
+        ok: true as const,
+        workKind: 'brew' as const,
+        consumes: medicineRecipe.consumes,
+        produces: medicineRecipe.produces,
+        note: medicineRecipe.note,
+      },
+      note: null as string | null,
+    };
+  }
+
+  if (patch) {
+    const quantity = Math.min(2, patch.available);
+    return {
+      validation: {
+        ok: true as const,
+        workKind: 'gather' as const,
+        herbPatchKey: patch.patchKey,
+        produces: [{ item: patch.herbItem, quantity }],
+        note: `Gather ${quantity} ${patch.herbItem} from ${patch.patchKey}.`,
+      },
+      note: null as string | null,
+    };
+  }
+  if (canBrewMedicine && medicineRecipe) {
+    return {
+      validation: {
+        ok: true as const,
+        workKind: 'brew' as const,
+        consumes: medicineRecipe.consumes,
+        produces: medicineRecipe.produces,
+        note: medicineRecipe.note,
+      },
+      note: null as string | null,
+    };
+  }
+
+  return {
+    validation: null as WorldValidation | null,
+    note: 'No valid herbal work is available right now. Move to a herb patch or the shrine, or gather more herbs first.',
+  };
+}
 
 const LIVE_CHAT_SCENE_ACTIONS = new Set([
   'chat',
@@ -268,10 +572,10 @@ function normaliseAction(parsed: RocklawAction): RocklawAction {
   if ((action === 'chat' || action === 'say' || action === 'message' || action === 'talk' || action === 'write' || action === 'pray' || action === 'eavesdrop') && !normalized.text && parsed.message) {
     normalized.text = parsed.message;
   }
-  if ((action === 'craft' || action === 'repair' || action === 'smelt' || action === 'eat') && !normalized.item && target) {
+  if ((action === 'work' || action === 'craft' || action === 'repair' || action === 'smelt' || action === 'eat') && !normalized.item && target) {
     normalized.item = target;
   }
-  if ((action === 'eat' || action === 'craft' || action === 'smelt') && normalized.quantity == null && normalized.item) {
+  if ((action === 'eat' || action === 'work' || action === 'craft' || action === 'smelt') && normalized.quantity == null && normalized.item) {
     normalized.quantity = 1;
   }
   if (action === 'chat' && (intent === 'buy' || intent === 'sell' || intent === 'give') && normalized.quantity == null && normalized.item) {
@@ -988,6 +1292,24 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
   }
 
   if (ROLE_GATED_ACTIONS.has(parsed.action) && !roleActions.has(parsed.action)) {
+    if (agentDoc.role === 'Blacksmith' && (parsed.action === 'craft' || parsed.action === 'smelt')) {
+      return {
+        ok: false,
+        note: 'Blacksmith production now uses work. Choose work with an output item from TURN.md instead.',
+      };
+    }
+    if (agentDoc.role === 'Farmer' && ['check_field', 'plant', 'water', 'harvest'].includes(parsed.action)) {
+      return {
+        ok: false,
+        note: 'Farmer production now uses work. Use bare work for the best field task, or work with grain or vegetables when you need a specific crop.',
+      };
+    }
+    if (agentDoc.role === 'Herbalist' && ['gather', 'brew'].includes(parsed.action)) {
+      return {
+        ok: false,
+        note: 'Herbalist production now uses work. Use bare work for the best herbal task, or work with herbs or medicine when you need a specific output.',
+      };
+    }
     return {
       ok: false,
       note: `${agentDoc.role} cannot use ${parsed.action} as a role action. Choose another valid action from TURN.md.`,
@@ -1128,9 +1450,39 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
         note: `Deliver ${quantity} ${parsed.item} into ${resolved.place.name}.`,
       };
     }
+    case 'work':
     case 'craft':
     case 'smelt':
     case 'brew': {
+      if (parsed.action === 'work') {
+        let workValidation: WorldValidation | null = null;
+        let workNote: string | null = null;
+        if (agentDoc.role === 'Blacksmith') {
+          const resolved = resolveBlacksmithWorkRecipe(agentDoc, parsed.item ?? parsed.target);
+          workNote = resolved.note;
+          workValidation = resolved.recipe
+            ? {
+                ok: true,
+                workKind: 'blacksmith',
+                consumes: resolved.recipe.consumes,
+                produces: resolved.recipe.produces,
+                note: resolved.recipe.note,
+              }
+            : null;
+        } else if (agentDoc.role === 'Farmer') {
+          const resolved = await resolveFarmerWork(ctx, agentDoc, parsed.item ?? parsed.target);
+          workValidation = resolved.validation;
+          workNote = resolved.note;
+        } else if (agentDoc.role === 'Herbalist') {
+          const resolved = await resolveHerbalistWork(ctx, agentDoc, parsed.item ?? parsed.target);
+          workValidation = resolved.validation;
+          workNote = resolved.note;
+        } else {
+          workNote = `${agentDoc.role} cannot use work as a role action.`;
+        }
+        return workValidation ?? { ok: false, note: workNote ?? 'work requires a known output item.' };
+      }
+
       const recipe = getRecipe(parsed.action, parsed.item ?? parsed.target);
       if (!recipe) {
         if (parsed.action === 'craft' && (parsed.item ?? parsed.target) === 'meal') {
@@ -1142,7 +1494,9 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
         return { ok: false, note: `${parsed.action} ${recipe.output} is unavailable here. Move to ${recipe.location}.` };
       }
       const shortfall = formatRequirementShortfall(agentDoc.inventory, recipe.consumes);
-      if (shortfall) return { ok: false, note: shortfall };
+      if (shortfall) {
+        return { ok: false, note: shortfall };
+      }
       return { ok: true, consumes: recipe.consumes, produces: recipe.produces, note: recipe.note };
     }
     case 'check_field': {
@@ -3033,7 +3387,7 @@ async function executeResolvedAction(
     );
   }
 
-  if (parsed.action === 'plant' && worldValidation.fieldKey) {
+  if ((parsed.action === 'plant' || (parsed.action === 'work' && worldValidation.workKind === 'plant')) && worldValidation.fieldKey) {
     const field = await ctx.db
       .query('rl_fields')
       .withIndex('fieldKey', (q: any) => q.eq('fieldKey', worldValidation.fieldKey!))
@@ -3047,7 +3401,7 @@ async function executeResolvedAction(
     }
   }
 
-  if (parsed.action === 'water' && worldValidation.fieldKey) {
+  if ((parsed.action === 'water' || (parsed.action === 'work' && worldValidation.workKind === 'water')) && worldValidation.fieldKey) {
     const field = await ctx.db
       .query('rl_fields')
       .withIndex('fieldKey', (q: any) => q.eq('fieldKey', worldValidation.fieldKey!))
@@ -3059,7 +3413,7 @@ async function executeResolvedAction(
     }
   }
 
-  if (parsed.action === 'harvest' && worldValidation.fieldKey) {
+  if ((parsed.action === 'harvest' || (parsed.action === 'work' && worldValidation.workKind === 'harvest')) && worldValidation.fieldKey) {
     const field = await ctx.db
       .query('rl_fields')
       .withIndex('fieldKey', (q: any) => q.eq('fieldKey', worldValidation.fieldKey!))
@@ -3073,7 +3427,7 @@ async function executeResolvedAction(
     }
   }
 
-  if (parsed.action === 'gather' && worldValidation.herbPatchKey) {
+  if ((parsed.action === 'gather' || (parsed.action === 'work' && worldValidation.workKind === 'gather')) && worldValidation.herbPatchKey) {
     const patch = await ctx.db
       .query('rl_herb_patches')
       .withIndex('patchKey', (q: any) => q.eq('patchKey', worldValidation.herbPatchKey!))
@@ -3132,7 +3486,7 @@ async function executeResolvedAction(
     ...clearBusyStatePatch(),
   });
 
-  if (['buy', 'sell', 'buy_place', 'sell_place', 'deliver_place', 'craft', 'smelt', 'brew', 'give', 'trade', 'eat', 'plant', 'harvest', 'gather'].includes(parsed.action)) {
+  if (['buy', 'sell', 'buy_place', 'sell_place', 'deliver_place', 'work', 'craft', 'smelt', 'brew', 'give', 'trade', 'eat', 'plant', 'harvest', 'gather'].includes(parsed.action)) {
     await ctx.scheduler.runAfter(0, internal.rocklaw.priceEngine.recalculate, {});
   }
 

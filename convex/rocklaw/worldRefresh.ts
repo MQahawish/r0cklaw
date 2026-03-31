@@ -165,15 +165,88 @@ function buildEconomicSurface(args: {
   for (const recipe of RECIPE_CATALOGUE.filter((entry) => roleActions.includes(entry.action))) {
     const cheapestPrice = prices.find((price) => price.item === recipe.output)?.price;
     const hasInputs = recipe.consumes.every((entry) => (inv[entry.item] ?? 0) >= entry.quantity);
+    const actionLabel = recipe.action === 'work' ? `work:${recipe.output}` : `${recipe.action}:${recipe.output}`;
+    const verb = recipe.action === 'work' ? 'work on' : recipe.action;
     entries.push({
-      action: `${recipe.action}:${recipe.output}`,
+      action: actionLabel,
       status: agent.location === recipe.location && hasInputs ? 'available' : 'unavailable',
       detail: agent.location !== recipe.location
-        ? `Unavailable here. Move to ${recipe.location} to ${recipe.action} ${recipe.output}.`
+        ? `Unavailable here. Move to ${recipe.location} to ${verb} ${recipe.output}.`
         : hasInputs
         ? `Available now at ${recipe.location}${typeof cheapestPrice === 'number' ? `; ${recipe.output} is priced around ${cheapestPrice}c.` : '.'}`
-        : `Unavailable now. You lack the inputs to ${recipe.action} ${recipe.output}.`
+        : `Unavailable now. You lack the inputs to ${verb} ${recipe.output}.`
     });
+  }
+
+  if (agent.role === 'Farmer' && roleActions.includes('work')) {
+    const readyField = fieldsHere.find((field) => field.stage === 'ready' && field.cropItem);
+    const growingField = fieldsHere.find((field) => field.stage === 'growing');
+    const fallowField = fieldsHere.find((field) => field.stage === 'fallow');
+    const cropSeeds = ['grain', 'vegetables'].filter((item) => (inv[item] ?? 0) > 0);
+
+    if (readyField?.cropItem) {
+      entries.push({
+        action: `work:${readyField.cropItem}`,
+        status: agent.location === 'farm' ? 'available' : 'unavailable',
+        detail: agent.location === 'farm'
+          ? `Available now. Harvest ${readyField.cropItem} from ${readyField.fieldKey}.`
+          : 'Unavailable here. Move to farm to do field work.',
+      });
+    } else if (growingField) {
+      entries.push({
+        action: 'work',
+        status: agent.location === 'farm' ? 'available' : 'unavailable',
+        detail: agent.location === 'farm'
+          ? `Available now. Water ${growingField.fieldKey} to keep growth on schedule.`
+          : 'Unavailable here. Move to farm to do field work.',
+      });
+    } else if (fallowField && cropSeeds.length > 0) {
+      for (const crop of cropSeeds) {
+        entries.push({
+          action: `work:${crop}`,
+          status: agent.location === 'farm' ? 'available' : 'unavailable',
+          detail: agent.location === 'farm'
+            ? `Available now. Plant ${crop} in ${fallowField.fieldKey}.`
+            : 'Unavailable here. Move to farm to do field work.',
+        });
+      }
+    } else {
+      entries.push({
+        action: 'work',
+        status: 'unavailable',
+        detail: agent.location !== 'farm'
+          ? 'Unavailable here. Move to farm to do field work.'
+          : 'No valid farm work is currently feasible with your field state and seed stock.',
+      });
+    }
+  }
+
+  if (agent.role === 'Herbalist' && roleActions.includes('work')) {
+    const patch = herbPatchesHere.find((entry) => entry.available > 0);
+    const canBrewMedicine = agent.location === 'shrine' && (inv.herbs ?? 0) >= 2;
+    if (patch) {
+      entries.push({
+        action: 'work:herbs',
+        status: 'available',
+        detail: `Available now. Gather herbs from ${patch.patchKey}.`,
+      });
+    }
+    if (canBrewMedicine) {
+      entries.push({
+        action: 'work:medicine',
+        status: 'available',
+        detail: 'Available now. Brew medicine at the shrine.',
+      });
+    }
+    if (!patch && !canBrewMedicine) {
+      entries.push({
+        action: 'work',
+        status: 'unavailable',
+        detail: agent.location === 'shrine'
+          ? 'No valid herbal work is currently feasible here. Gather herbs first or move to a patch.'
+          : 'No valid herbal work is currently feasible here. Move to a herb patch or the shrine.',
+      });
+    }
   }
 
   const mealService = SERVICE_CATALOGUE.meal;
@@ -188,64 +261,6 @@ function buildEconomicSurface(args: {
           : 'Unavailable now. You need bread and ale before `sell` with `item:"meal"` will work.',
       });
     }
-  }
-
-  if (roleActions.includes('check_field')) {
-    entries.push({
-      action: 'check_field',
-      status: agent.location === 'farm' ? 'available' : 'unavailable',
-      detail: agent.location === 'farm'
-        ? `Available now. ${fieldsHere.length} field${fieldsHere.length === 1 ? '' : 's'} here need attention.`
-        : 'Unavailable here. Move to farm to inspect field state.',
-    });
-  }
-  if (roleActions.includes('plant')) {
-    const hasFallowField = fieldsHere.some((field) => field.stage === 'fallow');
-    entries.push({
-      action: 'plant',
-      status: agent.location === 'farm' && hasFallowField ? 'available' : 'unavailable',
-      detail: agent.location === 'farm'
-        ? hasFallowField
-          ? 'Available now. At least one field is fallow and ready to plant.'
-          : 'Unavailable now. All fields are already in use.'
-        : 'Unavailable here. Move to farm to plant crops.',
-    });
-  }
-  if (roleActions.includes('water')) {
-    const needsWater = fieldsHere.some((field) => field.stage === 'growing');
-    entries.push({
-      action: 'water',
-      status: agent.location === 'farm' && needsWater ? 'available' : 'unavailable',
-      detail: agent.location === 'farm'
-        ? needsWater
-          ? 'Available now. A growing field can be watered to speed it along.'
-          : 'Unavailable now. No growing field needs water.'
-        : 'Unavailable here. Move to farm to water crops.',
-    });
-  }
-  if (roleActions.includes('harvest')) {
-    const readyFields = fieldsHere.filter((field) => field.stage === 'ready');
-    entries.push({
-      action: 'harvest',
-      status: agent.location === 'farm' && readyFields.length > 0 ? 'available' : 'unavailable',
-      detail: agent.location === 'farm'
-        ? readyFields.length > 0
-          ? `Available now. ${readyFields.length} field${readyFields.length === 1 ? '' : 's'} is ready to harvest.`
-          : 'Unavailable now. No field is ready to harvest.'
-        : 'Unavailable here. Move to farm to harvest crops.',
-    });
-  }
-
-  if (roleActions.includes('gather')) {
-    const gatherable = herbPatchesHere.some((patch) => patch.available > 0);
-    const remedy = reachableLocations.includes('shrine') ? 'shrine' : reachableLocations[0] ?? 'shrine';
-    entries.push({
-      action: 'gather',
-      status: gatherable ? 'available' : 'unavailable',
-      detail: gatherable
-        ? 'Available now. Herbs can be gathered here.'
-        : `Unavailable here. Move to ${remedy} to gather herbs.`,
-    });
   }
 
   return entries;

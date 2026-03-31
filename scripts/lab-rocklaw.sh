@@ -145,9 +145,10 @@ if [[ -t 0 ]]; then
 fi
 
 missing_credentials=0
-for config_path in "$ROOT_DIR"/agents/*/config.toml; do
+for agent in "${AGENTS[@]}"; do
+  config_path="$ROOT_DIR/agents/$agent/config.toml"
   if ! provider_credentials_ok "$config_path"; then
-    echo "Error: missing credentials for $(basename "$(dirname "$config_path")")."
+    echo "Error: missing credentials for $agent."
     provider_credentials_message "$config_path"
     missing_credentials=1
   fi
@@ -178,8 +179,8 @@ npx convex run rocklaw/god:stopSim >/dev/null 2>&1 || true
 if [[ "$MODE" == "--fresh" ]]; then
   echo "[3/5] Reinitialising Rocklaw world..."
   npx convex run rocklaw/init:initRocklaw '{"force":true}' >/dev/null
-  for config_path in "$ROOT_DIR"/agents/*/config.toml; do
-    "$SCRIPT_DIR/reset-agent-session.sh" "$(basename "$(dirname "$config_path")")" "$PROFILE"
+  for agent in "${AGENTS[@]}"; do
+    "$SCRIPT_DIR/reset-agent-session.sh" "$agent" "$PROFILE"
   done
 else
   echo "[3/5] Keeping current Rocklaw world state..."
@@ -189,8 +190,8 @@ npx convex run rocklaw/init:setAllAgentsBlankProfile "{\"blankSelf\":$([[ \"$PRO
 npx convex run rocklaw/init:setWorkspaceRoot "{\"rootPath\":\"$ROOT_DIR\"}" >/dev/null
 
 echo "[4/5] Preparing all agent runtime traces..."
-for agent_dir in "$ROOT_DIR"/agents/*; do
-  agent_slug="$(basename "$agent_dir")"
+for agent_slug in "${AGENTS[@]}"; do
+  agent_dir="$ROOT_DIR/agents/$agent_slug"
   config_path="$agent_dir/config.toml"
   trace_path="$agent_dir/workspace/state/runtime-trace.jsonl"
   tick_debug_path="$agent_dir/workspace/state/tick-debug.jsonl"

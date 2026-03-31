@@ -1,8 +1,18 @@
-workspace_dir = "workspace"
 default_provider = "openrouter"
 default_model = "google/gemini-2.5-flash"
 default_temperature = 0.8
+
+[agent]
 max_tool_iterations = 20
+allowed_tools = [
+  "file_read",
+  "file_write",
+  "file_edit",
+  "memory_recall",
+  "memory_store",
+  "glob_search",
+  "content_search",
+]
 
 [gateway]
 port = 42618

@@ -55,6 +55,7 @@ fi
 
 missing_credentials=0
 for config_path in "$ROOT_DIR"/agents/*/config.toml; do
+  [[ -f "$config_path" ]] || continue
   if ! provider_credentials_ok "$config_path"; then
     echo "Error: missing credentials for $(basename "$(dirname "$config_path")")."
     provider_credentials_message "$config_path"
@@ -83,6 +84,7 @@ if [[ "$RESET_MODE" == "fresh" ]]; then
   echo "[3/6] Reinitialising Rocklaw world from scratch..."
   npx convex run rocklaw/init:initRocklaw '{"force":true}' >/dev/null
   for config_path in "$ROOT_DIR"/agents/*/config.toml; do
+    [[ -f "$config_path" ]] || continue
     "$SCRIPT_DIR/reset-agent-session.sh" "$(basename "$(dirname "$config_path")")"
   done
 else

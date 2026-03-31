@@ -267,6 +267,8 @@ If you pass `--auto N`, the first `N` ticks run automatically before prompting.
 
 If you also pass `--blank-self`, the reset path clears mutable per-agent self-state under `workspace/self/`, then recreates minimal placeholders for `MEMORY.md`, `self/goals.md`, `self/plans.md`, and message-log files. It also strips named-agent references from the runtime `IDENTITY.md` and `SOUL.md` view for that run, while preserving the underlying seeded versions for later restoration.
 
+The reset path now also sanitizes runtime `AGENTS.md` and `TOOLS.md` so `--blank-self` does not carry over stale live-chat state from a previous run. Stable seed templates now live under repo-side `agents/shared/seed_docs/` for shared docs, plus `agents/*/seed_skills/` for role-specific skills, rather than inside the mutable agent workspace.
+
 Fresh reset already clears `world/*.md` for every profile. Those files are regenerated from Convex state before ticks run, so they do not need a separate blanking mode.
 
 Interactive full-world step loop:
@@ -358,6 +360,96 @@ For local `llama.cpp`, keep using an OpenAI-compatible provider profile in ZeroC
 ```text
 http://127.0.0.1:8080/v1
 ```
+
+For a keyless local setup, use the ZeroClaw provider alias `llamacpp` and set `api_url` in the agent config:
+
+```toml
+default_provider = "llamacpp"
+default_model = "Qwen3-4B-Q4_K_M"
+api_url = "http://127.0.0.1:8080/v1"
+```
+
+For ZeroClaw agent turns on the local Qwen 3 4B GGUF, a simple `--ctx-size 8192` server is not enough. The injected agent prompt can exceed 8k tokens even on a clean session. The current working local-agent server shape on the RTX 2060 Max-Q is:
+
+```bash
+cd /home/mahmoudqahawish/Github/llama.cpp/build/bin
+export LD_LIBRARY_PATH=$PWD:/usr/local/cuda/targets/x86_64-linux/lib:/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+
+./llama-server \
+  --model /home/mahmoudqahawish/Models/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --ctx-size 32768 \
+  --gpu-layers 16 \
+  --parallel 1 \
+  --flash-attn auto \
+  --reasoning off
+```
+
+Tradeoff:
+
+- lower GPU offload than the simple chat baseline
+- much larger context budget so ZeroClaw prompt assembly fits
+- slower per-tick latency, but viable for real local agent turns
+
+Recommended one-agent flow for local `llama-server`:
+
+1. Start `llama-server` on `127.0.0.1:8080`.
+2. Update one agent config, for example [agents/elena/config.toml](/home/mahmoudqahawish/Github/r0cklaw/agents/elena/config.toml), to use `default_provider = "llamacpp"` and `api_url = "http://127.0.0.1:8080/v1"`.
+3. Start an isolated agent lab:
+
+```bash
+npm run lab:agent -- elena --fresh
+```
+
+4. Tick the agent manually:
+
+```bash
+npm run tick:agent -- elena
+```
+
+5. Benchmark recent ticks:
+
+```bash
+npm run bench:agent -- elena --limit 10
+```
+
+The benchmark reads `agents/<name>/workspace/state/tick-debug.jsonl` and computes per-tick wall-clock duration from the persisted start and completion timestamps.
+
+Recommended isolated single-agent flow:
+
+1. Re-seed Rocklaw with only the target agent:
+
+```bash
+npx convex run rocklaw/init:initRocklaw '{"force":true,"agentNames":["Elena Voss"]}'
+```
+
+2. Reset the local workspace to blank-self:
+
+```bash
+./scripts/reset-agent-session.sh elena --blank-self
+npx convex run rocklaw/init:setAgentBlankProfile '{"agentName":"Elena Voss","blankSelf":true}'
+```
+
+3. Start the one-agent lab and fire one tick:
+
+```bash
+npm run lab:agent -- elena --fresh --blank-self
+npm run tick:agent -- elena
+```
+
+4. Inspect the exact persisted run:
+
+```bash
+npm run watch:agent -- elena --once
+```
+
+Observed clean isolated result after the reset fix:
+
+- Elena in a one-agent world no longer hallucinated stale chat partners from `AGENTS.md` / `TOOLS.md`
+- the next local tick produced a valid non-chat action:
+  `{"action":"work","item":"horseshoe",...}`
+- Rocklaw accepted it and marked the work as started until tick 4
 
 ## Useful URLs
 

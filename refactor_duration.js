@@ -5,8 +5,9 @@ const path = require('path');
 const filesToProcess = [
   'convex/rocklaw/worldRefreshNode.ts',
   ...glob.sync('agents/*/workspace/skills/*/SKILL.md'),
-  ...glob.sync('agents/*/workspace/state/seeded_docs/TOOLS.md'),
-  ...glob.sync('agents/*/workspace/state/seeded_docs/AGENTS.md')
+  ...glob.sync('agents/*/seed_skills/*/SKILL.md'),
+  'agents/shared/seed_docs/TOOLS.md',
+  ...glob.sync('agents/*/seed_docs/AGENTS.md')
 ];
 
 for (const file of filesToProcess) {

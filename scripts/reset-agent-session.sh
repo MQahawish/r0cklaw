@@ -35,29 +35,74 @@ PY
 
 mkdir -p \
   "$WORKSPACE/state" \
-  "$WORKSPACE/state/seeded_docs" \
-  "$WORKSPACE/state/seeded_skills" \
   "$WORKSPACE/memory" \
   "$WORKSPACE/sessions"
 
 chmod -R a+rwX "$WORKSPACE" "$WORKSPACE/state" "$WORKSPACE/memory" "$WORKSPACE/sessions" 2>/dev/null || true
 
-backup_seeded_doc() {
+seed_runtime_doc_from_repo() {
   local file_name=$1
+  local shared_template_src="$ROOT_DIR/agents/shared/seed_docs/$file_name"
+  local template_src="$ROOT_DIR/agents/$AGENT/seed_docs/$file_name"
   local src="$WORKSPACE/$file_name"
-  local backup="$WORKSPACE/state/seeded_docs/$file_name"
+
+  if [[ ( "$file_name" == "TOOLS.md" || "$file_name" == "AGENTS.md" ) && -f "$shared_template_src" ]]; then
+    cp "$shared_template_src" "$src"
+    return 0
+  fi
+
+  if [[ -f "$template_src" ]]; then
+    cp "$template_src" "$src"
+    return 0
+  fi
+
   if [[ -f "$src" ]]; then
-    cp "$src" "$backup"
+    return 0
+  fi
+
+  local repo_path="agents/$AGENT/workspace/$file_name"
+
+  if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    && git -C "$ROOT_DIR" show "HEAD:$repo_path" >"$src" 2>/dev/null; then
+    return 0
   fi
 }
 
-restore_seeded_doc() {
+sanitize_runtime_doc() {
   local file_name=$1
-  local src="$WORKSPACE/state/seeded_docs/$file_name"
-  local dst="$WORKSPACE/$file_name"
-  if [[ -f "$src" ]]; then
-    cp "$src" "$dst"
-  fi
+  local doc_path=$2
+
+  python3 - <<'PY' "$file_name" "$doc_path"
+import pathlib
+import re
+import sys
+
+file_name = sys.argv[1]
+path = pathlib.Path(sys.argv[2])
+
+if not path.exists():
+    raise SystemExit(0)
+
+text = path.read_text(encoding="utf-8")
+
+if file_name == "AGENTS.md":
+    text = re.sub(
+        r"\nYou are currently in a live chat scene with .*? end the scene\.\n",
+        "\n",
+        text,
+        flags=re.S,
+    )
+elif file_name == "TOOLS.md":
+    text = re.sub(
+        r"\n- `chat`: continue your live chat with .*?never output filler like `\.\.\.` or `waiting for your response`\.\n",
+        "\n",
+        text,
+        flags=re.S,
+    )
+
+text = re.sub(r"\n{3,}", "\n\n", text).strip() + "\n"
+path.write_text(text, encoding="utf-8")
+PY
 }
 
 rotate_dir() {
@@ -90,29 +135,22 @@ rm -f \
   "/tmp/zeroclaw-$AGENT.log"
 
 rm -rf \
+  "$WORKSPACE/state/seeded_docs" \
+  "$WORKSPACE/state/seeded_skills" \
   "$WORKSPACE/chat" \
   "$WORKSPACE/world/chat" \
   "$WORKSPACE/world" \
   "$WORKSPACE/self" \
   "$WORKSPACE/self/messages"
 
-backup_seeded_doc "IDENTITY.md"
-backup_seeded_doc "SOUL.md"
-backup_seeded_doc "AGENTS.md"
-backup_seeded_doc "TOOLS.md"
-
-while IFS= read -r skill_file; do
-  rel="${skill_file#$WORKSPACE/skills/}"
-  backup="$WORKSPACE/state/seeded_skills/$rel"
-  mkdir -p "$(dirname "$backup")"
-  cp "$skill_file" "$backup"
-done < <(find "$WORKSPACE/skills" -type f -name 'SKILL.md' 2>/dev/null | sort)
+seed_runtime_doc_from_repo "AGENTS.md"
+seed_runtime_doc_from_repo "TOOLS.md"
+sanitize_runtime_doc "AGENTS.md" "$WORKSPACE/AGENTS.md"
+sanitize_runtime_doc "TOOLS.md" "$WORKSPACE/TOOLS.md"
 
 if [[ "$PROFILE" == "--seeded" ]]; then
-  restore_seeded_doc "IDENTITY.md"
-  restore_seeded_doc "SOUL.md"
-  restore_seeded_doc "AGENTS.md"
-  restore_seeded_doc "TOOLS.md"
+  seed_runtime_doc_from_repo "AGENTS.md"
+  seed_runtime_doc_from_repo "TOOLS.md"
 fi
 
 cat > "$WORKSPACE/HEARTBEAT.md" <<EOF
@@ -183,8 +221,8 @@ for filename in ("IDENTITY.md", "SOUL.md"):
 PY
 fi
 
-restore_seeded_doc "AGENTS.md"
-restore_seeded_doc "TOOLS.md"
+sanitize_runtime_doc "AGENTS.md" "$WORKSPACE/AGENTS.md"
+sanitize_runtime_doc "TOOLS.md" "$WORKSPACE/TOOLS.md"
 
 python3 - <<'PY' "$WORKSPACE" "$AGENT_NAME" "$PROFILE"
 import pathlib

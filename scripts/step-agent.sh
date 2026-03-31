@@ -9,11 +9,12 @@ AGENT=""
 MODE="--continue"
 PROFILE="--seeded"
 AUTO_TICKS=0
+VERBOSE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help|-h)
-      echo "Usage: $0 <agent-slug> [--continue|--fresh] [--seeded|--blank-self] [--auto <ticks>]"
+      echo "Usage: $0 <agent-slug> [--continue|--fresh] [--seeded|--blank-self] [--auto <ticks>] [--verbose]"
       exit 0
       ;;
     --continue|--fresh)
@@ -32,12 +33,16 @@ while [[ $# -gt 0 ]]; do
       AUTO_TICKS="$2"
       shift 2
       ;;
+    --verbose)
+      VERBOSE=1
+      shift
+      ;;
     *)
       if [[ -z "$AGENT" ]]; then
         AGENT="$1"
         shift
       else
-        echo "Usage: $0 <agent-slug> [--continue|--fresh] [--seeded|--blank-self] [--auto <ticks>]"
+        echo "Usage: $0 <agent-slug> [--continue|--fresh] [--seeded|--blank-self] [--auto <ticks>] [--verbose]"
         exit 1
       fi
       ;;
@@ -45,7 +50,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$AGENT" ]]; then
-  echo "Usage: $0 <agent-slug> [--continue|--fresh] [--seeded|--blank-self] [--auto <ticks>]"
+  echo "Usage: $0 <agent-slug> [--continue|--fresh] [--seeded|--blank-self] [--auto <ticks>] [--verbose]"
   exit 1
 fi
 
@@ -61,7 +66,11 @@ while true; do
   echo "=== Tick $tick_count ==="
   "$SCRIPT_DIR/tick-agent.sh" "$AGENT"
   echo ""
-  node "$SCRIPT_DIR/watch-agent.mjs" "$AGENT" --once
+  if [[ "$VERBOSE" -eq 1 ]]; then
+    node "$SCRIPT_DIR/watch-agent.mjs" "$AGENT" --once
+  else
+    node "$SCRIPT_DIR/step-agent-summary.mjs" "$AGENT"
+  fi
   echo ""
 
   if [[ "$tick_count" -le "$AUTO_TICKS" ]]; then

@@ -822,6 +822,14 @@ function buildEconomicActionsSection(data: any): string {
   const incomingOffers = Array.isArray(data.incomingTransactions) ? data.incomingTransactions : [];
   const available = entries.filter((entry: any) => entry.status === 'available');
   const unavailable = entries.filter((entry: any) => entry.status === 'unavailable');
+  const bestBlacksmithWork = data.agent.role === 'Blacksmith'
+    ? available.find((entry: any) => typeof entry.action === 'string' && entry.action.startsWith('work:'))
+    : null;
+  const blacksmithHint = data.agent.role === 'Blacksmith'
+    ? bestBlacksmithWork
+      ? `### Best blacksmith work now\n- \`${bestBlacksmithWork.action}\`: use bare \`{"action":"work"}\` unless you specifically need a different output.\n`
+      : '### Best blacksmith work now\n- No blacksmith output is currently feasible with your stock.\n'
+    : '';
 
   if (incomingOffers.length > 0) {
     unavailable.unshift({
@@ -842,6 +850,7 @@ function buildEconomicActionsSection(data: any): string {
   return [
     '## Economic actions right now',
     '',
+    ...(blacksmithHint ? [blacksmithHint, ''] : []),
     '### Available now',
     formatLines(available),
     '',
@@ -852,12 +861,12 @@ function buildEconomicActionsSection(data: any): string {
 }
 
 async function refreshRuntimeToolsMd(workspaceDir: string, timeOfDay: string, data: any): Promise<void> {
-  const backupPath = path.join(workspaceDir, 'state', 'seeded_docs', 'TOOLS.md');
+  const templatePath = path.join(path.dirname(path.dirname(workspaceDir)), 'shared', 'seed_docs', 'TOOLS.md');
   const runtimePath = path.join(workspaceDir, 'TOOLS.md');
 
   let template = '';
   try {
-    template = await fs.readFile(backupPath, 'utf8');
+    template = await fs.readFile(templatePath, 'utf8');
   } catch {
     template = await fs.readFile(runtimePath, 'utf8');
   }
@@ -903,10 +912,7 @@ async function refreshRuntimeToolsMd(workspaceDir: string, timeOfDay: string, da
     .replace(/- `message`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred message in their CHAT thread\n\s*Example JSON: `\{"action":"message","target":"Marcus Hale","text":"I need coal by Day 9\."\}`/, chatBlock)
     .replace(/- `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread\n\s*Example JSON: `\{"action":"chat","target":"Marcus Hale","text":"I need coal by Day 9\."\}`/, chatBlock)
     .replace('- `move`: use `location`\n  Example JSON: `{"action":"move","location":"market"}`', moveBlock)
-    .replace(/## Economic actions[\s\S]*?## Act in the world\n\n/, `${economicSection}## Act in the world\n\n`)
-    .replace(/## Innkeeper skills[\s\S]*$/m, `## Innkeeper skills\n\n- Use \`chat\` first to open a live conversation with a guest who is actually in your current context.\n\n- There is no separate \`craft\` action for meals. Meal service happens through \`chat\` with \`intent:"sell"\` and \`item:"meal"\` while you are already chatting live with the guest.\n\n- Example JSON: \`{"action":"chat","target":"<guest currently here>","text":"I can make you a hot meal if you want one.","intent":"sell","item":"meal","quantity":1,"amount":8}\`\n`)
-    .replace(/## Priest skills[\s\S]*?(?=\n## |\n$)/m, `## Priest skills\n\n- Use \`chat\` to offer support, reassurance, or practical comfort directly to one real person from your current context.\n  Example JSON: \`{"action":"chat","target":"<nearby person from TURN.md>","text":"That sounds hard. If you need help, let me know.","thought":"Offer support through direct chat."}\`\n\n- Use \`pray\` for prayers spoken into the world.\n  Example JSON: \`{"action":"pray","text":"I hope this village gets a calmer week.","thought":"Offer a public prayer for the village."}\`\n\n- If you want to hand supplies to someone, open a live chat first. \`give\` is only valid inside that chat scene.\n`)
-    .replace(/## Merchant skills[\s\S]*$/m, `## Merchant skills\n\n- Prefer movement, place trading, and direct stock deals over crafting. Your main job is sourcing, moving, buying, selling, and brokering goods.\n\n- Only choose \`craft\` yourself when TURN.md gives a strong practical reason and you already have the right materials and location. Do not drift into workshop production just because something is scarce.\n\n- Use \`chat\` first to open a live conversation with a real current contact. Direct commerce is only valid while you are already in a live chat with that same person.\n\n- Once the live chat is open, use \`chat\` with \`intent:"buy"\` to make an in-person offer for stock.\n  Example JSON: \`{"action":"chat","target":"<current live chat partner>","text":"I can offer 24 coin for four grain.","intent":"buy","item":"grain","quantity":4,"amount":24}\`\n\n- Use \`chat\` with \`intent:"sell"\` to move inventory directly while that live chat is active.\n  Example JSON: \`{"action":"chat","target":"<current live chat partner>","text":"I can sell you three coal for 12 coin.","intent":"sell","item":"coal","quantity":3,"amount":12}\`\n\n- Use \`chat\` with \`intent:"trade"\` when a direct swap will close faster than coin.\n  Example JSON: \`{"action":"chat","target":"<current live chat partner>","text":"I can swap two coal for four grain.","intent":"trade","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}]}\`\n`);
+    .replace(/## Economic actions[\s\S]*?## Act in the world\n\n/, `${economicSection}## Act in the world\n\n`);
   content = content
     .replace(/`talk`/g, '`chat`')
     .replace(/`message`/g, '`chat`')
@@ -949,13 +955,13 @@ async function refreshRuntimeToolsMd(workspaceDir: string, timeOfDay: string, da
 }
 
 async function refreshRuntimeAgentsMd(workspaceDir: string, data: any): Promise<void> {
-  const backupPath = path.join(workspaceDir, 'state', 'seeded_docs', 'AGENTS.md');
+  const templatePath = path.join(path.dirname(path.dirname(workspaceDir)), 'shared', 'seed_docs', 'AGENTS.md');
   const runtimePath = path.join(workspaceDir, 'AGENTS.md');
   const canChatNow = Array.isArray(data.nearby) && data.nearby.length > 0;
 
   let template = '';
   try {
-    template = await fs.readFile(backupPath, 'utf8');
+    template = await fs.readFile(templatePath, 'utf8');
   } catch {
     template = await fs.readFile(runtimePath, 'utf8');
   }
@@ -1049,10 +1055,10 @@ function buildRuntimeAgentActionProfile(data: any, canChatNow: boolean, canRespo
 
   const role = data.agent.role;
   const roleSpecificActionsByRole: Record<string, string[]> = {
-    Blacksmith: ['craft', 'smelt'],
+    Blacksmith: ['work'],
     Merchant: [],
-    Farmer: ['check_field', 'plant', 'water', 'harvest'],
-    Herbalist: ['gather', 'brew'],
+    Farmer: ['work'],
+    Herbalist: ['work'],
     Innkeeper: [],
   };
 
@@ -1077,20 +1083,20 @@ function buildRuntimeAgentActionProfile(data: any, canChatNow: boolean, canRespo
 
 async function refreshRuntimeSkillMds(workspaceDir: string, data: any): Promise<void> {
   const skillsRoot = path.join(workspaceDir, 'skills');
-  const backupRoot = path.join(workspaceDir, 'state', 'seeded_skills');
+  const templateRoot = path.join(path.dirname(workspaceDir), 'seed_skills');
   const canChatNow = Array.isArray(data.nearby) && data.nearby.length > 0;
 
   let skillPaths: string[] = [];
   try {
-    skillPaths = await collectFiles(backupRoot, 'SKILL.md');
+    skillPaths = await collectFiles(templateRoot, 'SKILL.md');
   } catch {
     return;
   }
 
-  await Promise.all(skillPaths.map(async (backupPath) => {
-    const rel = path.relative(backupRoot, backupPath);
+  await Promise.all(skillPaths.map(async (templatePath) => {
+    const rel = path.relative(templateRoot, templatePath);
     const runtimePath = path.join(skillsRoot, rel);
-    let content = await fs.readFile(backupPath, 'utf8');
+    let content = await fs.readFile(templatePath, 'utf8');
 
     content = content
       .replace(/`talk`/g, '`chat`')
