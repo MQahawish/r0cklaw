@@ -6,6 +6,9 @@ import { execFileSync } from "child_process";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
 const AGENTS = ["elena", "marcus", "finn", "lena", "sera"];
+const INLINE_MESSAGE_MAX = 88;
+const OUTCOME_NOTE_MAX = 52;
+const SCENE_BOX_WIDTH = 60;
 
 function readLastTerminalRecord(agent) {
   const debugPath = path.join(ROOT, "agents", agent, "workspace", "state", "tick-debug.jsonl");
@@ -38,7 +41,7 @@ function formatAction(record) {
 function formatOutcome(record) {
   const outcome = record?.validation?.outcome ?? record?.phase ?? "unknown";
   const note = typeof record?.validation?.note === "string" && record.validation.note.trim() !== ""
-    ? ` | ${record.validation.note}`
+    ? ` | ${trimInline(record.validation.note, OUTCOME_NOTE_MAX)}`
     : "";
   return `${outcome}${note}`;
 }
@@ -46,6 +49,65 @@ function formatOutcome(record) {
 function formatBusyState(agentState) {
   if (!agentState?.busy) return null;
   return `busy${agentState.busyLabel ? ` | ${agentState.busyLabel}` : ""}`;
+}
+
+function trimInline(text, max = INLINE_MESSAGE_MAX) {
+  const compact = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (!compact) return "";
+  if (compact.length <= max) return compact;
+  return `${compact.slice(0, max - 1).trimEnd()}…`;
+}
+
+function formatModelLabel(provider, model) {
+  const safeProvider = provider ?? "default";
+  const safeModel = model ?? "default";
+  if (safeProvider === "openrouter") return safeModel;
+  return `${safeProvider}/${safeModel}`;
+}
+
+function wrapText(text, width) {
+  const compact = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (!compact) return [""];
+  const words = compact.split(" ");
+  const lines = [];
+  let current = "";
+  for (const word of words) {
+    if (!current) {
+      current = word;
+      continue;
+    }
+    if (`${current} ${word}`.length <= width) {
+      current += ` ${word}`;
+      continue;
+    }
+    lines.push(current);
+    current = word;
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
+function renderSceneBoxLine(text = "") {
+  const safe = text.length > SCENE_BOX_WIDTH ? `${text.slice(0, SCENE_BOX_WIDTH - 1)}…` : text;
+  return `  | ${safe.padEnd(SCENE_BOX_WIDTH)} |`;
+}
+
+function renderSceneMessage(message) {
+  const text = typeof message === "string"
+    ? message
+    : `- ${message.fromAgent}: ${message.text}`;
+  return wrapText(text, SCENE_BOX_WIDTH).map((line) => renderSceneBoxLine(line));
+}
+
+function formatInlineExtras(record, busyStatus, liveSceneStatus) {
+  const extras = [];
+  const outward = record?.parsedAction?.message ?? record?.parsedAction?.text;
+  if (typeof outward === "string" && outward.trim() !== "") {
+    extras.push(trimInline(outward));
+  }
+  if (busyStatus) extras.push(busyStatus);
+  if (liveSceneStatus) extras.push(liveSceneStatus);
+  return extras.length > 0 ? ` | ${extras.join(" | ")}` : "";
 }
 
 function pairKey(left, right) {
@@ -154,7 +216,7 @@ function buildFallbackSceneSummaries(records) {
       left: agentDisplay,
       right: liveScene.partner,
       location: liveScene.location,
-      recentMessages: thread.lines.slice(-4).map((line) => normaliseSceneLine(line, agentDisplay)),
+      recentMessages: thread.lines.map((line) => normaliseSceneLine(line, agentDisplay)),
     });
   }
   return Array.from(sceneMap.values());
@@ -180,7 +242,9 @@ for (const scene of liveScenes) {
 }
 
 const worldActionRecords = records;
-
+const activeAgents = process.env.ROCKLAW_ACTIVE_AGENTS
+  ? process.env.ROCKLAW_ACTIVE_AGENTS.split(",").map((entry) => entry.trim()).filter(Boolean)
+  : [];
 const headerRecord = records.map((entry) => entry.record).find(Boolean);
 const header = summary
   ? `Tick ${summary.tick} | Day ${summary.day} | ${summary.timeOfDay}`
@@ -191,12 +255,18 @@ const header = summary
 console.log("Rocklaw World Step");
 console.log("------------------------------------------------------------------------------");
 console.log(header);
+if (activeAgents.length > 0) {
+  console.log(`Agents this tick: ${activeAgents.join(", ")}`);
+}
 console.log("");
 
 console.log("WORLD ACTIONS");
 for (const { agent, record } of worldActionRecords) {
   const agentName = record?.agentName ?? agent;
   const agentState = agentStateByName.get(agentName) ?? agentStateByName.get(agent);
+  const provider = agentState?.provider ?? "default";
+  const model = agentState?.model ?? "default";
+  const modelLabel = formatModelLabel(provider, model);
   const recordTick = typeof record?.tick === "number" ? record.tick : null;
   const summaryTick = typeof summary?.tick === "number" ? summary.tick : null;
   const staleRecord = summaryTick !== null && recordTick !== null ? recordTick < summaryTick : false;
@@ -205,30 +275,27 @@ for (const { agent, record } of worldActionRecords) {
 
   if (busyStatus && (!record || staleRecord)) {
     const extras = [busyStatus, liveSceneStatus].filter(Boolean).join(" | ");
-    console.log(`${agent.padEnd(8)} ${"(in progress)".padEnd(28)} ${extras}`);
+    console.log(`${agent.padEnd(8)} ${modelLabel.padEnd(34)} ${"(in progress)".padEnd(28)} ${extras}`);
     continue;
   }
 
   if (staleRecord) {
     const extras = ["idle", liveSceneStatus].filter(Boolean).join(" | ");
-    console.log(`${agent.padEnd(8)} ${"(no action this tick)".padEnd(28)} ${extras}`);
+    console.log(`${agent.padEnd(8)} ${modelLabel.padEnd(34)} ${"(no action this tick)".padEnd(28)} ${extras}`);
     continue;
   }
 
   if (!record) {
-    console.log(`${agent.padEnd(8)} no tick record yet`);
+    console.log(`${agent.padEnd(8)} ${modelLabel.padEnd(34)} no tick record yet`);
     continue;
   }
-  const outward = record?.parsedAction?.message ?? record?.parsedAction?.text;
-  const message = typeof outward === "string" && outward.trim() !== ""
-    ? ` | ${outward}`
-    : "";
-  const statusNotes = [];
-  if (busyStatus && recordTick === summaryTick) statusNotes.push(busyStatus);
-  if (liveSceneStatus) statusNotes.push(liveSceneStatus);
-  const busyNote = statusNotes.length > 0 ? ` | ${statusNotes.join(" | ")}` : "";
+  const inlineExtras = formatInlineExtras(
+    record,
+    busyStatus && recordTick === summaryTick ? busyStatus : null,
+    liveSceneStatus,
+  );
   console.log(
-    `${agent.padEnd(8)} ${formatAction(record).padEnd(28)} ${formatOutcome(record)}${message}${busyNote}`,
+    `${agent.padEnd(8)} ${modelLabel.padEnd(34)} ${formatAction(record).padEnd(28)} ${formatOutcome(record)}${inlineExtras}`,
   );
 }
 
@@ -237,31 +304,26 @@ if (worldActionRecords.length === 0) {
 }
 
 console.log("");
-console.log("LIVE CHAT SCENES");
 if (!Array.isArray(liveScenes) || liveScenes.length === 0) {
-  console.log("(none)");
+  console.log("LIVE CHAT SCENES: (none)");
 } else {
+  console.log("LIVE CHAT SCENES");
   for (const scene of liveScenes) {
     console.log("  +------------------------------------------------------------+");
     console.log(`  | ${scene.left} <-> ${scene.right} @ ${scene.location}`);
     console.log("  |");
     if (Array.isArray(scene.recentMessages) && scene.recentMessages.length > 0) {
       for (const message of scene.recentMessages.filter(isRenderableSceneMessage)) {
-        if (typeof message === "string") {
-          console.log(`  | ${message}`);
-        } else {
-          console.log(`  | - ${message.fromAgent}: ${message.text}`);
+        for (const line of renderSceneMessage(message)) {
+          console.log(line);
         }
       }
     } else {
-      console.log("  | (no thread lines found)");
+      console.log(renderSceneBoxLine("(no thread lines found)"));
     }
     console.log("  +------------------------------------------------------------+");
   }
 }
 
 console.log("");
-console.log("Detailed transcripts:");
-for (const agent of AGENTS) {
-  console.log(`  npm run watch:agent -- ${agent}`);
-}
+console.log(`Detailed transcripts: npm run watch:agent -- <agent>  (${AGENTS.join(", ")})`);

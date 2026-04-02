@@ -8,9 +8,8 @@ import * as path from 'path';
 
 const INSPECTOR_FILES = [
   { label: 'Soul', file: 'SOUL.md' },
-  { label: 'Memory', file: 'MEMORY.md' },
   { label: 'Heartbeat', file: 'HEARTBEAT.md' },
-  { label: 'Self', file: 'SELF.md' },
+  { label: 'Journal', file: 'JOURNAL.md' },
   { label: 'Turn', file: 'TURN.md' },
 ];
 

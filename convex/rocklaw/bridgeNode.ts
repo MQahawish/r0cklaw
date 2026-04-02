@@ -24,9 +24,9 @@ type RocklawAction = {
   duration_ticks?: number;
   thought?: string;
   message?: string;
+  journal?: string;
   consumes?: unknown[];
   produces?: unknown[];
-  memory_note?: string;
 };
 
 type WsEvent =
@@ -65,8 +65,23 @@ class ZeroClawTurnError extends Error {
   }
 }
 
+type ZeroClawTurnSuccess = {
+  kind: 'response';
+  host: string;
+  finalResponse: string;
+  events: WsEvent[];
+  retryAttempted: boolean;
+};
+
+type ZeroClawTurnFallback = {
+  kind: 'fallback';
+  action: RocklawAction;
+  retryAttempted: boolean;
+  retryFailure: string;
+};
+
 const VALID_ACTIONS = new Set([
-  'chat', 'leave_chat', 'say', 'move', 'rest', 'sleep', 'eat',
+  'chat', 'leave_chat', 'say', 'move', 'rest', 'sleep', 'eat', 'use',
   'pray',
   'work',
   'harvest', 'plant', 'water', 'check_field',
@@ -78,12 +93,137 @@ const VALID_ACTIONS = new Set([
 const GATEWAY_HOSTS = ['127.0.0.1', 'host.docker.internal'] as const;
 const WS_TIMEOUT_MS = 120_000;
 
+function isTimeoutFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('Timed out waiting for ZeroClaw session response');
+}
+
+function hasActionHint(possibleValidActions: string[] | undefined, prefix: string): boolean {
+  return Array.isArray(possibleValidActions)
+    && possibleValidActions.some((hint) => hint.trim().startsWith(`- ${prefix}`));
+}
+
+function buildTransportFallbackAction(
+  livePartner: string | undefined,
+  possibleValidActions: string[] | undefined,
+): RocklawAction | null {
+  if (livePartner) {
+    return {
+      action: 'leave_chat',
+      text: 'Talk later.',
+      thought: 'The conversation should close cleanly if I fail to respond in time.',
+    };
+  }
+  if (hasActionHint(possibleValidActions, 'sleep')) {
+    return {
+      action: 'sleep',
+      journal: 'Nothing important changed tonight. I need proper sleep so I can continue tomorrow.',
+      thought: 'Transport failed, so I am taking the safest valid action and will continue later.',
+    };
+  }
+  if (hasActionHint(possibleValidActions, 'rest')) {
+    return {
+      action: 'rest',
+      thought: 'Transport failed, so I am taking a safe low-risk action.',
+    };
+  }
+  if (hasActionHint(possibleValidActions, 'say')) {
+    return {
+      action: 'say',
+      text: 'I will check back in a bit.',
+      thought: 'Transport failed, so I am falling back to a neutral public action.',
+    };
+  }
+  return null;
+}
+
+async function runZeroClawTurnWithRecovery(
+  port: number,
+  sessionId: string,
+  agentName: string,
+  prompt: string,
+  fallbackAction: RocklawAction | null,
+): Promise<ZeroClawTurnSuccess | ZeroClawTurnFallback> {
+  try {
+    const result = await runZeroClawTurn(port, sessionId, agentName, prompt);
+    return {
+      kind: 'response',
+      host: result.host,
+      finalResponse: result.finalResponse,
+      events: result.events,
+      retryAttempted: false,
+    };
+  } catch (firstError) {
+    if (!isTimeoutFailure(firstError)) {
+      throw firstError;
+    }
+
+    const retrySessionId = `${sessionId}-retry-${Date.now()}`;
+    try {
+      const retryResult = await runZeroClawTurn(port, retrySessionId, agentName, prompt);
+      return {
+        kind: 'response',
+        host: retryResult.host,
+        finalResponse: retryResult.finalResponse,
+        events: retryResult.events,
+        retryAttempted: true,
+      };
+    } catch (retryError) {
+      if (!fallbackAction) {
+        throw retryError;
+      }
+      return {
+        kind: 'fallback',
+        action: fallbackAction,
+        retryAttempted: true,
+        retryFailure: retryError instanceof Error ? retryError.message : String(retryError),
+      };
+    }
+  }
+}
+
+async function resetOpenRouterFreeFailureState(ctx: any, agentName: string) {
+  await ctx.runMutation(internal.rocklaw.bridge.resetOpenRouterFreeFailureState, { agentName });
+}
+
+async function handleOpenRouterFreeFailure(
+  ctx: any,
+  agentName: string,
+  failureKind: 'transport_failed' | 'parse_failed' | 'invalid_action',
+  summary: string,
+) {
+  const transition = await ctx.runMutation(internal.rocklaw.bridge.registerOpenRouterFreeFailure, {
+    agentName,
+    failureKind,
+  });
+  if (!transition) return;
+
+  await ctx.runAction(internal.rocklaw.godNode.switchAgentModelInternal, {
+    agentName,
+    modelOverride: transition.model,
+    providerOverride: transition.provider,
+  });
+
+  const switchLabel = transition.mode === 'fallback'
+    ? `paid fallback model ${transition.model}`
+    : `next free model ${transition.model}`;
+  const previous = transition.previousModel ? ` from ${transition.previousModel}` : '';
+  await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+    agentName,
+    line: `- Day model switch: openrouter-free ${failureKind}${previous} -> ${switchLabel}. ${summary}`,
+  });
+  await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
+    agentName,
+    note: `SYSTEM: Your model was switched to ${transition.model} after ${failureKind} in openrouter-free mode.`,
+  });
+}
+
 export const tickAgent = internalAction({
   args: {
     agentName: v.string(),
     _manual: v.optional(v.boolean()),
   },
-  handler: async (ctx, { agentName, _manual }) => {
+  handler: async (ctx, { agentName, _manual }): Promise<void> => {
     const worldState = await ctx.runQuery(internal.rocklaw.engine.getWorldState);
     if (!worldState) {
       console.error(`[bridge] No world state — ${agentName} tick aborted`);
@@ -143,6 +283,14 @@ export const tickAgent = internalAction({
     const lastHeartbeatLine = await ctx.runAction(internal.rocklaw.worldRefreshNode.getLatestHeartbeatLine, {
       agentName,
     });
+    const possibleValidActions = await ctx.runQuery(internal.rocklaw.bridge.getPromptActionHints, {
+      agentName,
+      tick,
+    });
+    const liveScene = await ctx.runQuery(internal.rocklaw.bridge.getLiveChatScene, {
+      agentName,
+    });
+    const fallbackAction = buildTransportFallbackAction(liveScene?.partner, possibleValidActions);
 
     const tickMessage = buildTickMessage(
       day,
@@ -150,6 +298,8 @@ export const tickAgent = internalAction({
       tick,
       agent.location,
       lastHeartbeatLine ?? undefined,
+      undefined,
+      possibleValidActions,
     );
     const sessionId = buildSessionId(agentName);
     const debugRecord: Record<string, unknown> = {
@@ -167,11 +317,27 @@ export const tickAgent = internalAction({
     await appendTickDebug(agent.workspacePath, debugRecord);
 
     let rawResponse: string;
+    let plannedActionFromRecovery: RocklawAction | null = null;
     try {
-      const result = await runZeroClawTurn(agent.gatewayPort, sessionId, agentName, tickMessage);
-      rawResponse = result.finalResponse;
-      debugRecord.gatewayHost = result.host;
-      debugRecord.events = result.events;
+      const result = await runZeroClawTurnWithRecovery(
+        agent.gatewayPort,
+        sessionId,
+        agentName,
+        tickMessage,
+        fallbackAction,
+      );
+      debugRecord.retryAttempted = result.retryAttempted;
+      if (result.kind === 'response') {
+        rawResponse = result.finalResponse;
+        debugRecord.gatewayHost = result.host;
+        debugRecord.events = result.events;
+      } else {
+        rawResponse = '';
+        plannedActionFromRecovery = result.action;
+        debugRecord.transportRecoveredWithFallback = true;
+        debugRecord.fallbackAction = result.action;
+        debugRecord.retryFailure = result.retryFailure;
+      }
     } catch (err) {
       const failureMessage = err instanceof Error ? err.message : String(err);
       debugRecord.phase = 'transport_failed';
@@ -186,6 +352,7 @@ export const tickAgent = internalAction({
         agentName,
         line: summariseFailure(day, timeOfDay, 'agent turn failed before a final action', failureMessage),
       });
+      await handleOpenRouterFreeFailure(ctx, agentName, 'transport_failed', failureMessage);
       await appendTickDebug(agent.workspacePath, debugRecord);
       if (!_manual) {
         await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridgeNode.tickAgent, { agentName });
@@ -196,13 +363,13 @@ export const tickAgent = internalAction({
     debugRecord.rawResponse = rawResponse;
 
     const trimmedResponse = rawResponse.trimStart();
-    const action = extractAction(rawResponse);
-    if (!trimmedResponse.startsWith('{') && action) {
+    const extractedAction = plannedActionFromRecovery ?? extractAction(rawResponse);
+    if (!plannedActionFromRecovery && !trimmedResponse.startsWith('{') && extractedAction) {
       debugRecord.responseSalvagedFromWrappedJson = true;
       console.warn(`[bridge] Salvaged wrapped JSON response from ${agentName}`);
     }
 
-    if (!trimmedResponse.startsWith('{') && !action) {
+    if (!plannedActionFromRecovery && !trimmedResponse.startsWith('{') && !extractedAction) {
       const note = 'Final response must contain one valid Rocklaw action JSON object.';
       debugRecord.phase = 'parse_failed';
       debugRecord.timestamp = new Date().toISOString();
@@ -215,6 +382,7 @@ export const tickAgent = internalAction({
         agentName,
         line: summariseFailure(day, timeOfDay, 'response rejected: no recoverable action JSON', note),
       });
+      await handleOpenRouterFreeFailure(ctx, agentName, 'parse_failed', note);
       await appendTickDebug(agent.workspacePath, debugRecord);
       await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
         agentName,
@@ -226,7 +394,7 @@ export const tickAgent = internalAction({
       return;
     }
 
-    if (!action) {
+    if (!extractedAction) {
       const note = 'Could not parse final response as Rocklaw action JSON.';
       debugRecord.phase = 'parse_failed';
       debugRecord.timestamp = new Date().toISOString();
@@ -239,6 +407,7 @@ export const tickAgent = internalAction({
         agentName,
         line: summariseFailure(day, timeOfDay, 'response rejected: JSON parse failed', note),
       });
+      await handleOpenRouterFreeFailure(ctx, agentName, 'parse_failed', note);
       await appendTickDebug(agent.workspacePath, debugRecord);
       await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
         agentName,
@@ -250,6 +419,7 @@ export const tickAgent = internalAction({
       return;
     }
 
+    const action = extractedAction;
     debugRecord.parsedAction = action;
 
     if (!validateAction(action)) {
@@ -265,6 +435,7 @@ export const tickAgent = internalAction({
         agentName,
         line: summariseRejectedAttempt(action, day, timeOfDay, note),
       });
+      await handleOpenRouterFreeFailure(ctx, agentName, 'invalid_action', note);
       await appendTickDebug(agent.workspacePath, debugRecord);
       await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
         agentName,
@@ -290,6 +461,7 @@ export const tickAgent = internalAction({
     debugRecord.phase = 'completed';
     debugRecord.timestamp = new Date().toISOString();
 
+    await resetOpenRouterFreeFailureState(ctx, agentName);
     await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
       agentName,
       line: summariseAction(action, day, timeOfDay, result?.outcome, result?.note),
@@ -338,16 +510,36 @@ export const planAgentAction = internalAction({
       });
     }
 
-    await ctx.runAction(internal.rocklaw.worldRefreshNode.refreshWorldFiles, {
-      agentName,
-      tick,
-      day,
-      timeOfDay,
-    });
+    try {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.refreshWorldFiles, {
+        agentName,
+        tick,
+        day,
+        timeOfDay,
+      });
+    } catch (error) {
+      const note = error instanceof Error ? error.message : String(error);
+      return {
+        status: 'rejected',
+        agentName,
+        outcome: 'invalid_action',
+        note,
+        heartbeatLine: summariseFailure(day, timeOfDay, 'world file refresh failed', note),
+        pendingNote: `SYSTEM: World refresh failed before your turn could be planned. ${note}`,
+      };
+    }
 
     const lastHeartbeatLine = await ctx.runAction(internal.rocklaw.worldRefreshNode.getLatestHeartbeatLine, {
       agentName,
     });
+    const possibleValidActions = await ctx.runQuery(internal.rocklaw.bridge.getPromptActionHints, {
+      agentName,
+      tick,
+    });
+    const liveScene = await ctx.runQuery(internal.rocklaw.bridge.getLiveChatScene, {
+      agentName,
+    });
+    const fallbackAction = buildTransportFallbackAction(liveScene?.partner, possibleValidActions);
 
     const tickMessage = buildTickMessage(
       day,
@@ -356,6 +548,7 @@ export const planAgentAction = internalAction({
       agent.location,
       lastHeartbeatLine ?? undefined,
       promptPrefix ?? undefined,
+      possibleValidActions,
     );
     const sessionId = buildSessionId(agentName);
     const debugRecord: Record<string, unknown> = {
@@ -372,11 +565,27 @@ export const planAgentAction = internalAction({
     };
 
     let rawResponse: string;
+    let plannedActionFromRecovery: RocklawAction | null = null;
     try {
-      const result = await runZeroClawTurn(agent.gatewayPort, sessionId, agentName, tickMessage);
-      rawResponse = result.finalResponse;
-      debugRecord.gatewayHost = result.host;
-      debugRecord.events = result.events;
+      const result = await runZeroClawTurnWithRecovery(
+        agent.gatewayPort,
+        sessionId,
+        agentName,
+        tickMessage,
+        fallbackAction,
+      );
+      debugRecord.retryAttempted = result.retryAttempted;
+      if (result.kind === 'response') {
+        rawResponse = result.finalResponse;
+        debugRecord.gatewayHost = result.host;
+        debugRecord.events = result.events;
+      } else {
+        rawResponse = '';
+        plannedActionFromRecovery = result.action;
+        debugRecord.transportRecoveredWithFallback = true;
+        debugRecord.fallbackAction = result.action;
+        debugRecord.retryFailure = result.retryFailure;
+      }
     } catch (err) {
       const failureMessage = err instanceof Error ? err.message : String(err);
       debugRecord.phase = 'transport_failed';
@@ -386,6 +595,7 @@ export const planAgentAction = internalAction({
         debugRecord.gatewayHost = err.host;
         debugRecord.events = err.events;
       }
+      await handleOpenRouterFreeFailure(ctx, agentName, 'transport_failed', failureMessage);
       await appendTickDebug(agent.workspacePath, debugRecord);
       return {
         status: 'rejected',
@@ -398,16 +608,17 @@ export const planAgentAction = internalAction({
 
     debugRecord.rawResponse = rawResponse;
     const trimmedResponse = rawResponse.trimStart();
-    const action = extractAction(rawResponse);
-    if (!trimmedResponse.startsWith('{') && action) {
+    const extractedAction = plannedActionFromRecovery ?? extractAction(rawResponse);
+    if (!plannedActionFromRecovery && !trimmedResponse.startsWith('{') && extractedAction) {
       debugRecord.responseSalvagedFromWrappedJson = true;
     }
 
-    if (!trimmedResponse.startsWith('{') && !action) {
+    if (!plannedActionFromRecovery && !trimmedResponse.startsWith('{') && !extractedAction) {
       const note = 'Final response must contain one valid Rocklaw action JSON object.';
       debugRecord.phase = 'parse_failed';
       debugRecord.timestamp = new Date().toISOString();
       debugRecord.validation = { outcome: 'parse_failed', note };
+      await handleOpenRouterFreeFailure(ctx, agentName, 'parse_failed', note);
       await appendTickDebug(agent.workspacePath, debugRecord);
       return {
         status: 'rejected',
@@ -419,11 +630,12 @@ export const planAgentAction = internalAction({
       };
     }
 
-    if (!action) {
+    if (!extractedAction) {
       const note = 'Could not parse final response as Rocklaw action JSON.';
       debugRecord.phase = 'parse_failed';
       debugRecord.timestamp = new Date().toISOString();
       debugRecord.validation = { outcome: 'parse_failed', note };
+      await handleOpenRouterFreeFailure(ctx, agentName, 'parse_failed', note);
       await appendTickDebug(agent.workspacePath, debugRecord);
       return {
         status: 'rejected',
@@ -435,6 +647,7 @@ export const planAgentAction = internalAction({
       };
     }
 
+    const action = extractedAction;
     debugRecord.parsedAction = action;
 
     if (!validateAction(action)) {
@@ -442,6 +655,7 @@ export const planAgentAction = internalAction({
       debugRecord.phase = 'invalid_action';
       debugRecord.timestamp = new Date().toISOString();
       debugRecord.validation = { outcome: 'invalid_action', note };
+      await handleOpenRouterFreeFailure(ctx, agentName, 'invalid_action', note);
       await appendTickDebug(agent.workspacePath, debugRecord);
       return {
         status: 'rejected',
@@ -456,6 +670,7 @@ export const planAgentAction = internalAction({
     debugRecord.phase = 'planned';
     debugRecord.timestamp = new Date().toISOString();
     debugRecord.validation = { outcome: 'planned', note: null };
+    await resetOpenRouterFreeFailureState(ctx, agentName);
     await appendTickDebug(agent.workspacePath, debugRecord);
 
     return {
@@ -519,23 +734,35 @@ function buildTickMessage(
   location: string,
   lastHeartbeatLine?: string,
   promptPrefix?: string,
+  possibleValidActions?: string[],
 ): string {
   const sections = [
     `It is ${timeOfDay}, Day ${day}, tick ${tick} in Rocklaw.`,
     `You are in ${location}.`,
     `Last tick: ${lastHeartbeatLine ?? 'none yet'}`,
     ...(promptPrefix ? ['', promptPrefix] : []),
+    ...(Array.isArray(possibleValidActions) && possibleValidActions.length > 0
+      ? ['', 'Possible valid actions now:', ...possibleValidActions]
+      : []),
     'Read HEARTBEAT.md, then TURN.md.',
-    'Read SELF.md only if needed.',
+    'Read JOURNAL.md only if TURN.md is not enough and you truly need older private memory.',
     'Read at most one chat/<name>/CHAT.md only if needed.',
     'If TURN.md already shows an obvious valid action, do not keep exploring. Take the action immediately.',
     'Ground your choice in TURN.md first.',
-    'Use only people, places, items, offers, and relationships that actually appear in TURN.md, SELF.md, or an active chat thread.',
+    'Only choose an action that appears under "Possible valid actions now". If it is not listed there, do not choose it.',
+    'For buy_place, sell_place, and deliver_place, use only items listed under "Available place trading here" in TURN.md.',
+    'Do not infer direct place trading from the village price table alone.',
+    'Use only people, places, items, offers, and relationships that actually appear in TURN.md, JOURNAL.md, or an active chat thread.',
     'If no valid person is shown there, do not choose chat.',
     'If an active interaction directly addresses you, respond to it before starting unrelated work unless you have a clear reason not to.',
-    'Use tools only to read files, recall memory, and update private notes.',
+    'Use tools only to read files before your final action.',
     'Do not use tools or shell commands to perform world actions.',
-    'Return exactly one Rocklaw action JSON object and nothing else.',
+    'Do not edit JOURNAL.md directly. Long-term private memory is recorded through the required `journal` field on `sleep`.',
+    '',
+    'Final output rule:',
+    'Return exactly one Rocklaw action JSON object.',
+    'No prose. No explanation. No reasoning. No fenced code.',
+    'If you describe what you want to do instead of outputting JSON, your turn fails.',
   ];
 
   return sections.join('\n');
@@ -748,7 +975,7 @@ function validateAction(action: RocklawAction): boolean {
           typeof (entry as Record<string, unknown>).item === 'string' &&
           typeof (entry as Record<string, unknown>).quantity === 'number')));
 
-  if (!isStringish(action.target) || !isStringish(action.location) || !isStringish(action.text) || !isStringish(action.intent) || !isStringish(action.offer_ref) || !isStringish(action.topic) || !isStringish(action.item) || !isStringish(action.thought)) {
+  if (!isStringish(action.target) || !isStringish(action.location) || !isStringish(action.text) || !isStringish(action.intent) || !isStringish(action.offer_ref) || !isStringish(action.topic) || !isStringish(action.item) || !isStringish(action.thought) || !isStringish(action.journal)) {
     return false;
   }
   if (!isNumberish(action.quantity) || !isNumberish(action.amount)) return false;
@@ -780,6 +1007,8 @@ function validateAction(action: RocklawAction): boolean {
       return typeof (action.text ?? action.message) === 'string';
     case 'leave_chat':
       return true;
+    case 'sleep':
+      return typeof action.journal === 'string' && action.journal.trim().length > 0;
     case 'eat':
     case 'repair':
     case 'appraise':
@@ -821,7 +1050,7 @@ function pseudoActionCorrection(action: Partial<RocklawAction> | null | undefine
     return 'Meals are not crafted as inventory items. Use sell with item:"meal" when someone is here to be served, or choose another real action.';
   }
   if (raw === 'craft' || raw === 'smelt') {
-    return 'Blacksmith production now uses action:"work". Choose work with an item like horseshoe, tools, knife, or iron_ingot.';
+    return 'Blacksmith production now uses action:"work". Choose work with an item like horseshoe, tool, knife, or iron_ingot.';
   }
   return null;
 }
@@ -865,13 +1094,14 @@ function summariseRejectedAttempt(
     case 'rest': narrative = `take a rest`; break;
     case 'sleep': narrative = `go to sleep`; break;
     case 'eat': narrative = `eat ${action.item}`; break;
+    case 'use': narrative = `use ${action.item}`; break;
     case 'pray': narrative = `offer a prayer`; break;
     case 'work': narrative = `do work${action.item ? ` for ${action.quantity || 1} ${action.item}` : ''}`; break;
     case 'harvest': narrative = `harvest crops`; break;
     case 'plant': narrative = `plant crops`; break;
     case 'water': narrative = `water the fields`; break;
     case 'check_field': narrative = `check the fields`; break;
-    case 'gather': narrative = `gather herbs`; break;
+    case 'gather': narrative = `gather herb`; break;
     case 'brew': narrative = `brew ${action.quantity || 1} ${action.item}`; break;
     case 'play': narrative = `play`; break;
     case 'leave_chat': narrative = `leave the conversation`; break;

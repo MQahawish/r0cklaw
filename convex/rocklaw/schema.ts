@@ -34,9 +34,24 @@ export const rocklawTables = {
     paused: v.optional(v.boolean()),
     modelOverride: v.optional(v.string()),
     providerOverride: v.optional(v.string()),
+    openrouterFreeEnabled: v.optional(v.boolean()),
+    openrouterFreeCandidatesJson: v.optional(v.string()),
+    openrouterFreeCurrentIndex: v.optional(v.number()),
+    openrouterFreeFailureCount: v.optional(v.number()),
+    openrouterFreeFallbackActivated: v.optional(v.boolean()),
+    openrouterFreeFallbackModel: v.optional(v.string()),
+    openrouterFreeFallbackProvider: v.optional(v.string()),
   })
     .index('name', ['name'])
     .index('location', ['location']),
+
+  rl_agent_profiles: defineTable({
+    agentName: v.string(),
+    coreNature: v.array(v.string()),
+    whatMattersMost: v.array(v.string()),
+    whenTimesAreGood: v.array(v.string()),
+    whenTimesAreTight: v.array(v.string()),
+  }).index('agentName', ['agentName']),
 
   // Market prices, recalculated after any inventory-changing action.
   rl_market_prices: defineTable({
@@ -75,6 +90,8 @@ export const rocklawTables = {
   // receive deferred unread messages in their thread.
   rl_chat_messages: defineTable({
     threadKey: v.string(),
+    sceneId: v.optional(v.string()),
+    sceneOrder: v.optional(v.number()),
     fromAgent: v.string(),
     toAgent: v.string(),
     text: v.string(),
@@ -112,12 +129,15 @@ export const rocklawTables = {
     lastSpeaker: v.optional(v.string()),
     openingSpeaker: v.optional(v.string()),
     openingText: v.optional(v.string()),
+    openingOfferRef: v.optional(v.string()),
+    openingOfferPayloadJson: v.optional(v.string()),
     interruptedSpeaker: v.optional(v.string()),
     interruptedText: v.optional(v.string()),
     interruptedActionJson: v.optional(v.string()),
     interruptedContextPending: v.optional(v.boolean()),
     openedTick: v.number(),
     openedDay: v.number(),
+    lastMessageOrder: v.optional(v.number()),
     lastActiveTick: v.number(),
     lastActiveDay: v.number(),
     stallTurns: v.optional(v.number()),
@@ -144,6 +164,7 @@ export const rocklawTables = {
       v.literal('accepted'),
       v.literal('rejected'),
       v.literal('expired'),
+      v.literal('superseded'),
       v.literal('completed'),
       v.literal('failed'),
     ),
@@ -209,6 +230,16 @@ export const rocklawTables = {
     })
     .index('observer_subject', ['observerAgent', 'subjectAgent'])
     .index('observer', ['observerAgent']),
+
+  rl_journal_entries: defineTable({
+    agentName: v.string(),
+    day: v.number(),
+    tick: v.number(),
+    timeOfDay: v.string(),
+    summary: v.string(),
+  })
+    .index('agent_day_tick', ['agentName', 'day', 'tick'])
+    .index('agentName', ['agentName']),
 
   // Field lifecycle state for grounded farm production.
   rl_fields: defineTable({

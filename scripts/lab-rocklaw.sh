@@ -21,6 +21,7 @@ require_cmd() {
 
 require_cmd docker
 require_cmd curl
+require_cmd node
 require_cmd zeroclaw
 require_cmd npx
 require_cmd perl
@@ -29,17 +30,40 @@ require_cmd perl
 MODE="--continue"
 PROFILE="--seeded"
 AGENTS=(elena marcus finn lena sera)
+PROVIDER_PRESET="keep"
+FALLBACK_MODEL=""
+FALLBACK_PROVIDER="openrouter"
+OPENROUTER_FREE_SELECTED_MODEL=""
+OPENROUTER_FREE_CANDIDATES_JSON=""
 
 provider_preset_label() {
   case "$1" in
     keep) echo "Keep current agent provider/model settings" ;;
     openai-mini) echo "OpenAI Codex auth -> gpt-5.4-mini" ;;
     openai-main) echo "OpenAI Codex auth -> gpt-5.4" ;;
+    openrouter-free) echo "OpenRouter -> best free tools-capable model with paid fallback" ;;
     openrouter-gemini-flash) echo "OpenRouter -> google/gemini-2.5-flash" ;;
     openrouter-gemini-pro) echo "OpenRouter -> google/gemini-2.5-pro" ;;
     openrouter-gpt41-mini) echo "OpenRouter -> openai/gpt-4.1-mini" ;;
     *) echo "$1" ;;
   esac
+}
+
+prepare_openrouter_free_selection() {
+  local selection_json
+  selection_json="$(node "$SCRIPT_DIR/select-openrouter-free-models.mjs" 8)"
+  OPENROUTER_FREE_SELECTED_MODEL="$(SELECTION_JSON="$selection_json" python3 - <<'PY'
+import json, os
+data = json.loads(os.environ["SELECTION_JSON"])
+print(data["selected"])
+PY
+)"
+  OPENROUTER_FREE_CANDIDATES_JSON="$(SELECTION_JSON="$selection_json" python3 - <<'PY'
+import json, os
+data = json.loads(os.environ["SELECTION_JSON"])
+print(json.dumps(data["candidates"]))
+PY
+)"
 }
 
 apply_provider_preset() {
@@ -58,6 +82,11 @@ apply_provider_preset() {
     openai-main)
       provider="openai-codex"
       model="gpt-5.4"
+      ;;
+    openrouter-free)
+      prepare_openrouter_free_selection
+      provider="openrouter"
+      model="$OPENROUTER_FREE_SELECTED_MODEL"
       ;;
     openrouter-gemini-flash)
       provider="openrouter"
@@ -91,25 +120,33 @@ select_provider_preset() {
   echo "  1) Keep current ($current_provider / $current_model)"
   echo "  2) $(provider_preset_label openai-mini)"
   echo "  3) $(provider_preset_label openai-main)"
-  echo "  4) $(provider_preset_label openrouter-gemini-flash)"
-  echo "  5) $(provider_preset_label openrouter-gemini-pro)"
-  echo "  6) $(provider_preset_label openrouter-gpt41-mini)"
+  echo "  4) $(provider_preset_label openrouter-free)"
+  echo "  5) $(provider_preset_label openrouter-gemini-flash)"
+  echo "  6) $(provider_preset_label openrouter-gemini-pro)"
+  echo "  7) $(provider_preset_label openrouter-gpt41-mini)"
 
   local reply preset
-  read -r -p "Preset [1-6, default 1]: " reply
+  read -r -p "Preset [1-7, default 1]: " reply
   case "${reply:-1}" in
     1) preset="keep" ;;
     2) preset="openai-mini" ;;
     3) preset="openai-main" ;;
-    4) preset="openrouter-gemini-flash" ;;
-    5) preset="openrouter-gemini-pro" ;;
-    6) preset="openrouter-gpt41-mini" ;;
+    4) preset="openrouter-free" ;;
+    5) preset="openrouter-gemini-flash" ;;
+    6) preset="openrouter-gemini-pro" ;;
+    7) preset="openrouter-gpt41-mini" ;;
     *)
       echo "Unrecognized preset choice. Keeping current settings."
       preset="keep"
       ;;
   esac
 
+  if [[ "$preset" == "openrouter-free" ]]; then
+    read -r -p "Fallback paid model [default google/gemini-2.5-flash]: " FALLBACK_MODEL
+    FALLBACK_MODEL="${FALLBACK_MODEL:-google/gemini-2.5-flash}"
+  fi
+
+  PROVIDER_PRESET="$preset"
   apply_provider_preset "$preset"
   echo "Using agent preset: $(provider_preset_label "$preset")"
   echo ""
@@ -188,6 +225,23 @@ else
 fi
 npx convex run rocklaw/init:setAllAgentsBlankProfile "{\"blankSelf\":$([[ \"$PROFILE\" == \"--blank-self\" ]] && echo true || echo false)}" >/dev/null
 npx convex run rocklaw/init:setWorkspaceRoot "{\"rootPath\":\"$ROOT_DIR\"}" >/dev/null
+
+if [[ "$PROVIDER_PRESET" == "openrouter-free" ]]; then
+  candidates_json_escaped="$(OPENROUTER_FREE_CANDIDATES_JSON="$OPENROUTER_FREE_CANDIDATES_JSON" python3 - <<'PY'
+import json, os
+print(json.dumps(os.environ["OPENROUTER_FREE_CANDIDATES_JSON"]))
+PY
+)"
+  for agent in "${AGENTS[@]}"; do
+    agent_name="$(agent_slug_to_name "$agent")"
+    npx convex run rocklaw/godNode:configureOpenRouterFreeAgent "{\"agentName\":\"$agent_name\",\"currentModel\":\"$OPENROUTER_FREE_SELECTED_MODEL\",\"fallbackModel\":\"$FALLBACK_MODEL\",\"fallbackProvider\":\"$FALLBACK_PROVIDER\",\"candidatesJson\":$candidates_json_escaped}" >/dev/null
+  done
+elif [[ "$PROVIDER_PRESET" != "keep" ]]; then
+  for agent in "${AGENTS[@]}"; do
+    agent_name="$(agent_slug_to_name "$agent")"
+    npx convex run rocklaw/godNode:clearOpenRouterFreeAgent "{\"agentName\":\"$agent_name\"}" >/dev/null
+  done
+fi
 
 echo "[4/5] Preparing all agent runtime traces..."
 for agent_slug in "${AGENTS[@]}"; do

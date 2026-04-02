@@ -9,12 +9,13 @@ Do not invent actions like `farmer`.
 
 - `work`: do the best available farm work.
   Example JSON: `{"action":"work","thought":"Do the best field task available right now."}`
-- If you need a specific crop outcome, use `work` with `item:"grain"` or `item:"vegetables"`.
+- If you need a specific crop outcome, use `work` with `item:"grain"` or `item:"vegetable"`.
   Example JSON: `{"action":"work","item":"grain","thought":"Grain matters most right now."}`
-- `buy` / `sell` / `trade`: handle tools, grain, and supplies in person.
-  Example JSON: `{"action":"buy","target":"Elena Voss","item":"tools","quantity":1,"amount":18,"thought":"Good tools protect the yield."}`
+- `buy` / `sell` / `trade`: handle tool, grain, and supplies in person.
+  Example JSON: `{"action":"buy","target":"Elena Voss","item":"tool","quantity":1,"amount":18,"thought":"Good tools protect the yield."}`
 
 ## Working style
 
-Use bare `work` by default. Only include `item` when you specifically need grain or vegetables.
+Use bare `work` by default. Only include `item` when you specifically need grain or vegetable.
 Harvest comes before watering, and watering comes before planting, when the field state calls for it.
+If you have a `tool`, keep it on hand. It improves your harvest work.

@@ -45,11 +45,26 @@ tick_count=0
 
 while true; do
   tick_count=$((tick_count + 1))
+  tick_output=""
+  tick_log_line=""
+  active_agents=""
   echo ""
   echo "=== World Tick $tick_count ==="
-  npx convex run rocklaw/engine:manualTick
-  echo ""
-  node "$SCRIPT_DIR/watch-rocklaw-step.mjs"
+  tick_output="$(npx convex run rocklaw/engine:manualTick 2>&1)"
+  tick_log_line="$(printf '%s\n' "$tick_output" | grep -F "[engine] manualTick" | tail -n 1 || true)"
+  active_agents="$(TICK_OUTPUT="$tick_output" python3 - <<'PY'
+import os, re
+text = os.environ.get("TICK_OUTPUT", "")
+m = re.search(r"agents:\s*\[(.*?)\]", text, re.S)
+if not m:
+    print("")
+else:
+    names = [part.strip().strip("'\"") for part in m.group(1).split(",") if part.strip()]
+    print(",".join(names))
+PY
+)"
+  [[ -n "$tick_log_line" ]] && echo "$tick_log_line"
+  ROCKLAW_ACTIVE_AGENTS="$active_agents" node "$SCRIPT_DIR/watch-rocklaw-step.mjs"
   echo ""
 
   if [[ "$tick_count" -le "$AUTO_TICKS" ]]; then

@@ -26,6 +26,15 @@ export const TICK_INTERVAL_MS = 30_000;
 // How often compaction runs (in ticks).
 const COMPACT_EVERY_N_TICKS = 10;
 const LIVE_CHAT_STALL_LIMIT = 3;
+const SCENE_OPENING_OFFER_REF = 'scene-offer-1';
+const SCENE_OPENING_OFFER_INTENTS = new Set(['buy', 'sell', 'trade', 'give', 'pay']);
+
+function buildSceneOpeningOfferPayload(actionDoc: Record<string, unknown> | null | undefined): string | undefined {
+  if (!actionDoc || actionDoc.action !== 'chat' || typeof actionDoc.intent !== 'string') return undefined;
+  const intent = actionDoc.intent.trim().toLowerCase();
+  if (!SCENE_OPENING_OFFER_INTENTS.has(intent)) return undefined;
+  return JSON.stringify(actionDoc);
+}
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -135,6 +144,7 @@ export const getNonBusyAgents = internalQuery({
 export const startRocklaw = mutation({
   args: {},
   handler: async (ctx) => {
+    await ctx.runMutation(internal.rocklaw.init.ensureCanonicalItemIds, {});
     const state = await ctx.db.query('rl_world_state').unique();
     if (!state) throw new Error('[engine] Run initRocklaw first');
     if (state.isRunning) {
@@ -185,6 +195,7 @@ export const manualTick = action({
     timeOfDay: DayPeriod;
     agents: string[];
   }> => {
+    await ctx.runMutation(internal.rocklaw.init.ensureCanonicalItemIds, {});
     const state = await ctx.runQuery(internal.rocklaw.engine.getWorldState);
     if (!state) throw new Error('[engine] Run initRocklaw first');
 
@@ -269,7 +280,7 @@ export const manualTick = action({
         try {
           const interruptedAction = JSON.parse(currentScene.interruptedActionJson) as Record<string, unknown>;
           if (typeof interruptedAction.intent === 'string') {
-            interruptedDraftContext = `Your interrupted draft also carried intent:"${interruptedAction.intent}". If you still want that commerce move, restate it naturally in this turn's chat.`;
+            interruptedDraftContext = `Your interrupted draft also carried intent:"${interruptedAction.intent}". If you still want that move, restate it naturally in this turn's chat.`;
           }
         } catch {
           // ignore malformed stored draft context
@@ -284,6 +295,12 @@ export const manualTick = action({
               'Respond naturally from there. Ground your reply in the partner\'s most recent line, not in your interrupted draft.',
             ].join('\n')
           : null;
+      const liveChatPromptContext = await ctx.runQuery(internal.rocklaw.bridge.getLiveChatPromptContext, {
+        agentName: speaker,
+      });
+      const liveTradeFacts = await ctx.runQuery(internal.rocklaw.bridge.getLiveChatTradeFacts, {
+        agentName: speaker,
+      });
       const speakerPlan = await ctx.runAction(internal.rocklaw.bridgeNode.planAgentAction, {
         agentName: speaker,
         tick,
@@ -291,20 +308,56 @@ export const manualTick = action({
         timeOfDay,
         promptPrefix: [
           `You are already in a live chat with ${partner} at ${currentScene.location}.`,
+          'You owe the next reply in this live chat.',
           'Your valid actions right now are `chat` and `leave_chat`.',
+          'Return exactly one JSON action object for this turn. Do not answer with plain dialogue, prose, or fenced code.',
+          'If you want to speak, your reply must be a `chat` action JSON object with `target` and `text`.',
+          'Example: {"action":"chat","target":"' + partner + '","text":"Yes, I am interested. What is your price?"}',
+          'If you want to end the scene, return {"action":"leave_chat"}.',
           'If you want to buy, sell, trade, give, pay, accept, or reject inside this scene, do it through `chat` using a spoken `text` plus `intent` and the relevant fields.',
+          'When cooperation stops being enough, people protect themselves with concealment and pressure. Use `chat` with `intent:"lie"` when hiding the truth protects your position. Use `chat` with `intent:"threaten"` when someone needs to understand refusal has consequences.',
+          'Use the exact canonical item names shown in TURN.md and inventory. Do not rename a generic item into a made-up subtype. If it says `tool`, say `tool`, not `hammer`.',
+          'Use `intent:"accept_transaction"` or `intent:"reject_transaction"` only when this prompt explicitly shows a current actionable offer with an `offer_ref`.',
+          'If the opener itself carried structured terms, this prompt may expose it as `scene-offer-1`. Accept or reject that exact ref instead of retyping the terms from memory.',
+          'If no actionable `offer_ref` is shown, do not invent one and do not use `offer_id`, `offer`, or `request` with `accept_transaction`.',
+          'If you want to agree to the partner\'s proposed terms but no actionable `offer_ref` is shown, restate that deal as a fresh structured `buy`, `sell`, or `trade` offer instead.',
+          'If `intent` creates a concrete offer, your `text` must describe only that exact one deal. Do not include alternatives like "or" or extra terms that are not in the structured fields.',
+          'If you want to explore multiple possible deals, ask a question first and do not create a structured offer yet.',
+          'The active live-chat state below is authoritative. If any older session memory conflicts with it, ignore the older state.',
+          'If the generic last-tick summary conflicts with the live-chat transcript below, trust the live-chat transcript.',
+          'Do not say you are waiting. If you are taking this turn, you owe the next reply.',
+          ...(liveChatPromptContext?.latestPartnerMessage
+            ? ['', `Partner's latest line: "${liveChatPromptContext.latestPartnerMessage}"`]
+            : []),
+          ...(liveChatPromptContext?.openingOfferRef && liveChatPromptContext?.openingOfferSummary
+            ? ['', `Scene opener offer now visible: ${liveChatPromptContext.openingOfferRef} -> ${liveChatPromptContext.openingOfferSummary}`]
+            : []),
+          ...(Array.isArray(liveChatPromptContext?.transcriptLines) && liveChatPromptContext!.transcriptLines.length > 0
+            ? [
+                '',
+                liveChatPromptContext?.transcriptTruncated
+                  ? 'Active live chat transcript (recent lines plus relevant system lines):'
+                  : 'Active live chat transcript:',
+                ...liveChatPromptContext!.transcriptLines,
+              ]
+            : []),
+          'The active transcript is already in this prompt. Do not read CHAT.md just to recover the current turn state. Read CHAT.md only if you need older thread history beyond this live scene.',
+          ...(liveTradeFacts.length > 0 ? ['', ...liveTradeFacts] : []),
           'You cannot take a normal world action until you leave this chat scene.',
           'Ignore any prior plan, market errand, or unfinished task while this live chat is active.',
           'Do not resume your earlier task until after you explicitly use `leave_chat`.',
-          'Start from the partner\'s latest spoken line. Answer it, acknowledge it, or counter it directly before changing topic.',
-          'Make progress. Do one of these each turn: ask one direct question, make one concrete offer, accept/reject a pending offer with the exact structured fields, answer the partner\'s last question, or leave_chat.',
+          'Start from the injected partner line and transcript above. Answer it, acknowledge it, or counter it directly before changing topic.',
+          'Make progress. Progress can be practical or social: answer the partner, ask one direct question, learn something about what they are doing or what they think, share one relevant piece of your own situation, make one concrete offer, accept/reject a pending offer with the exact structured fields, or leave_chat.',
+          'Not every live chat needs to become a trade immediately. If trade is not urgent, one natural social or exploratory exchange is valid progress.',
+          'When someone is new, surprising, familiar, helpful, difficult, or interesting, it is valid to ask about them or react to them directly instead of jumping straight to commerce.',
+          'Do not repeat the same quantity-and-price counteroffer twice in a row. If your last spoken deal already matches your current position, either accept, reject, leave_chat, or make a meaningfully different counteroffer.',
           'Do not repeat yourself, do not restate the same offer twice, and do not use filler like "..." or "waiting for your response".',
-          'If this conversation is no longer moving toward a concrete result, end it with leave_chat and a brief goodbye.',
+          'If this conversation is no longer moving toward any concrete social or practical result, end it with leave_chat and a brief goodbye.',
           ...(interruptedContext ? ['', interruptedContext] : []),
         ].join('\n'),
         pendingNote: interruptedContext
-          ? `LIVE CHAT: You are speaking with ${partner}. ${interruptedContext} Make concrete progress or end the chat.`
-          : `LIVE CHAT: You are speaking with ${partner}. Use chat to make concrete progress with one clear step, or leave_chat to end the scene.`,
+          ? `LIVE CHAT: You are speaking with ${partner}. ${interruptedContext} Make clear social or practical progress, or end the chat.`
+          : `LIVE CHAT: You are speaking with ${partner}. Use chat to make clear social or practical progress with one step, or leave_chat to end the scene.`,
       });
 
       if (speakerPlan.status === 'rejected') {
@@ -420,6 +473,8 @@ export const manualTick = action({
     const engagedAgents = new Set<string>(sceneParticipants);
     const interruptedOpeners = new Set<string>();
     const interruptedOpenerNotes = new Map<string, string>();
+    const waitingSceneOpeners = new Set<string>();
+    const waitingSceneOpenerNotes = new Map<string, string>();
 
     const liveIncomingByTarget = new Map<string, Array<{ fromAgent: string; text: string; actionDoc: any }>>();
     for (const plan of actionablePlans) {
@@ -495,13 +550,16 @@ export const manualTick = action({
             : typeof targetPlanned.message === 'string'
             ? targetPlanned.message
             : '';
+          const openingOfferPayloadJson = buildSceneOpeningOfferPayload(targetPlanned as Record<string, unknown>);
           await ctx.runMutation(internal.rocklaw.bridge.createLiveChatScene, {
             agentA: targetName,
             agentB: mutualIncoming.fromAgent,
             location: targetDoc.location,
-            nextSpeaker: mutualIncoming.fromAgent,
+            nextSpeaker: targetName,
             openingSpeaker: targetName,
             openingText,
+            openingOfferRef: openingOfferPayloadJson ? SCENE_OPENING_OFFER_REF : undefined,
+            openingOfferPayloadJson,
             interruptedSpeaker: mutualIncoming.fromAgent,
             interruptedText: mutualIncoming.text,
             interruptedActionJson: JSON.stringify(mutualIncoming.actionDoc),
@@ -571,12 +629,19 @@ export const manualTick = action({
           : null;
       if (chosenSender && incoming.some((entry) => entry.fromAgent === chosenSender)) {
         const targetDoc = agentByName.get(targetName);
+        const chosenIncoming = incoming.find((entry) => entry.fromAgent === chosenSender) ?? null;
         if (targetDoc) {
+          const openingText = chosenIncoming?.text ?? '';
+          const openingOfferPayloadJson = buildSceneOpeningOfferPayload((chosenIncoming?.actionDoc ?? null) as Record<string, unknown> | null);
           await ctx.runMutation(internal.rocklaw.bridge.createLiveChatScene, {
             agentA: targetName,
             agentB: chosenSender,
             location: targetDoc.location,
-            nextSpeaker: chosenSender,
+            nextSpeaker: targetName,
+            openingSpeaker: chosenSender,
+            openingText,
+            openingOfferRef: openingOfferPayloadJson ? SCENE_OPENING_OFFER_REF : undefined,
+            openingOfferPayloadJson,
             tick,
             day,
           });
@@ -585,6 +650,11 @@ export const manualTick = action({
         deferredChatReasons.delete(chosenSender);
         engagedAgents.add(targetName);
         engagedAgents.add(chosenSender);
+        waitingSceneOpeners.add(chosenSender);
+        waitingSceneOpenerNotes.set(
+          chosenSender,
+          `${targetName} accepted your live opener and is replying now. Wait for their response on the next tick.`,
+        );
       }
       incoming
         .filter((entry) => entry.fromAgent !== chosenSender)
@@ -622,6 +692,49 @@ export const manualTick = action({
               validation: {
                 outcome: 'success',
                 note: interruptedOpenerNotes.get(name) ?? 'Your live opener was interrupted and stored as scene context.',
+              },
+            }),
+          });
+        }
+        continue;
+      }
+      if (waitingSceneOpeners.has(name) && actionDoc.action === 'chat') {
+        if (typeof actionDoc.target === 'string') {
+          const openerText =
+            typeof actionDoc.text === 'string'
+              ? actionDoc.text
+              : typeof actionDoc.message === 'string'
+              ? actionDoc.message
+              : '';
+          if (openerText.trim()) {
+            await ctx.runMutation(internal.rocklaw.bridge.recordLiveChatMessage, {
+              fromAgent: name,
+              toAgent: actionDoc.target,
+              text: openerText,
+              tick,
+              day,
+            });
+          }
+        }
+        await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+          agentName: name,
+          line: `- Day ${day} ${timeOfDay}: live chat opened with ${actionDoc.target} (waiting for their reply)`,
+        });
+        const agentDoc = agentByName.get(name);
+        if (agentDoc) {
+          await ctx.runAction(internal.rocklaw.bridgeNode.appendTickDebugRecord, {
+            workspacePath: agentDoc.workspacePath,
+            recordJson: JSON.stringify({
+              timestamp: new Date().toISOString(),
+              phase: 'completed',
+              agentName: name,
+              tick,
+              day,
+              timeOfDay,
+              parsedAction: actionDoc,
+              validation: {
+                outcome: 'success',
+                note: waitingSceneOpenerNotes.get(name) ?? 'Your live opener was accepted; wait for the reply on the next tick.',
               },
             }),
           });
@@ -696,13 +809,14 @@ function summariseManualAction(
     case 'rest': narrative = `You took a rest`; break;
     case 'sleep': narrative = `You went to sleep`; break;
     case 'eat': narrative = `You ate ${action.item}`; break;
+    case 'use': narrative = `You used ${action.item}`; break;
     case 'pray': narrative = `You offered a prayer`; break;
     case 'work': narrative = `You worked${action.item ? ` and produced ${action.quantity || 1} ${action.item}` : ''}`; break;
     case 'harvest': narrative = `You harvested crops`; break;
     case 'plant': narrative = `You planted crops`; break;
     case 'water': narrative = `You watered the fields`; break;
     case 'check_field': narrative = `You checked the fields`; break;
-    case 'gather': narrative = `You gathered herbs`; break;
+    case 'gather': narrative = `You gathered herb`; break;
     case 'brew': narrative = `You brewed ${action.quantity || 1} ${action.item}`; break;
     case 'play': narrative = `You played`; break;
     case 'leave_chat': narrative = `You left the conversation`; break;

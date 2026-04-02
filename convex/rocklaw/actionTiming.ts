@@ -11,6 +11,7 @@ export const ACTION_DURATIONS: Record<string, number> = {
   leave_chat: 1,
   say: 1,
   eat: 1,
+  use: 1,
   pray: 1,
   play: 1,
   buy_place: 1,
@@ -38,6 +39,7 @@ export function describeActionForHumans(action: ActionLike | null | undefined): 
     case 'work':
     case 'brew':
     case 'eat':
+    case 'use':
       return action.item ? `${action.action} ${action.item}` : action.action;
     case 'move':
       return action.location ?? action.target ? `moving to ${action.location ?? action.target}` : 'moving';

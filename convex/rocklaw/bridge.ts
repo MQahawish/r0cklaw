@@ -11,7 +11,21 @@ import { v } from 'convex/values';
 import { internalMutation, internalQuery } from '../_generated/server';
 import { internal } from '../_generated/api';
 import { TICK_INTERVAL_MS } from './engine';
-import { ROLE_ECONOMIC_ACTIONS, getRecipe, getService, hungerRestoreFor, isEdible } from './economy';
+import {
+  ROLE_ECONOMIC_ACTIONS,
+  canonicalizeItemEntries,
+  canonicalizeItemId,
+  canonicalizeItemQuantities,
+  formatItemLabel,
+  formatItemQuantity,
+  getRecipes,
+  getRecipe,
+  getService,
+  healthRestoreFor,
+  hungerRestoreFor,
+  isEdible,
+  isUsable,
+} from './economy';
 import { describeActionForHumans, getActionDuration } from './actionTiming';
 import { isSleepPeriod, timeOfDayForTick } from './dayCycle';
 import { derivePlaceQuote } from './placeMarkets';
@@ -34,9 +48,9 @@ export type RocklawAction = {
   duration_ticks?: number;
   thought?: string;
   message?: string;
+  journal?: string;
   consumes: unknown[];
   produces: unknown[];
-  memory_note?: string;
 };
 
 type TransactionItem = { item: string; quantity: number };
@@ -58,7 +72,7 @@ type WorldValidation =
   | { ok: false; note: string }
   | {
       ok: true;
-      workKind?: 'blacksmith' | 'plant' | 'water' | 'harvest' | 'gather' | 'brew';
+      workKind?: 'blacksmith' | 'plant' | 'water' | 'harvest' | 'gather' | 'brew' | 'mill' | 'bake';
       resolvedLocation?: string;
       resolvedTarget?: string;
       consumes?: Array<{ item: string; quantity: number }>;
@@ -94,22 +108,77 @@ const EFFORT_COSTS: Record<string, number> = {
   buy_place: 1, sell_place: 1, deliver_place: 2,
   trade: 2, accept_transaction: 1, reject_transaction: 1, wait: 0, observe: 1, write: 2, pray: 0,
   recall: 0,
-  eat: 0, rest: -18, sleep: -70,
+  eat: 0, use: 1, rest: -18, sleep: -70,
 };
 
-const BLACKSMITH_WORK_PRIORITY = ['horseshoe', 'tools', 'knife', 'iron_ingot'] as const;
-const FARMER_WORK_CROPS = ['grain', 'vegetables'] as const;
-const HERBALIST_WORK_OUTPUTS = ['herbs', 'medicine'] as const;
+const BLACKSMITH_WORK_PRIORITY = ['horseshoe', 'tool', 'knife', 'iron_ingot'] as const;
+const FARMER_WORK_CROPS = ['grain', 'vegetable'] as const;
+const HERBALIST_WORK_OUTPUTS = ['herb', 'medicine'] as const;
+const INNKEEPER_WORK_OUTPUTS = ['bread', 'flour'] as const;
+const PROMPT_ACTION_HINT_MAX_LINES = 8;
+const PROMPT_ACTION_HINT_MAX_OPTIONS_PER_GROUP = 3;
+const LIVE_CHAT_FULL_TRANSCRIPT_MAX_LINES = 8;
+const LIVE_CHAT_RECENT_TRANSCRIPT_MAX_LINES = 6;
+const SCENE_OPENING_OFFER_REF = 'scene-offer-1';
+const SCENE_OPENING_OFFER_INTENTS = new Set(['buy', 'sell', 'trade', 'give', 'pay']);
+
+function trimPromptPreview(text: string, maxLength = 48): string {
+  const compact = text.replace(/\s+/g, ' ').trim();
+  if (compact.length <= maxLength) return compact;
+  return `${compact.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function capPromptOptions(values: string[]): string[] {
+  return Array.from(new Set(values)).slice(0, PROMPT_ACTION_HINT_MAX_OPTIONS_PER_GROUP);
+}
+
+function formatPromptHintLine(label: string, values: string[]): string | null {
+  const capped = capPromptOptions(values);
+  if (capped.length === 0) return null;
+  return `- ${label}: ${capped.join(', ')}`;
+}
+
+function formatBoundedQuantityHint(base: string, maxQuantity: number): string | null {
+  if (!Number.isFinite(maxQuantity) || maxQuantity < 1) return null;
+  if (maxQuantity === 1) return `${base} x1`;
+  return `${base} x1-${maxQuantity}`;
+}
+
+function isSceneOpeningOfferRef(rawTarget: string | null | undefined) {
+  return (rawTarget ?? '').trim().toLowerCase() === SCENE_OPENING_OFFER_REF;
+}
+
+function canonicalizeTransactionItemId(item: string | null | undefined): string | null | undefined {
+  const canonical = canonicalizeItemId(item ?? undefined);
+  if (canonical === 'coin_purse') return 'coin';
+  return canonical;
+}
+
+function applyProducedItemBonus(
+  produces: Array<{ item: string; quantity: number }> | undefined,
+  item: string,
+  bonus: number,
+) {
+  if (!Array.isArray(produces) || bonus <= 0) return produces;
+  return produces.map((entry) =>
+    entry.item === item ? { ...entry, quantity: entry.quantity + bonus } : entry,
+  );
+}
+
+function hasInventoryItem(agentDoc: any, item: string, quantity = 1): boolean {
+  return inventoryHasAtLeast(agentDoc.inventory, item, quantity);
+}
 
 function feasibleBlacksmithOutputs(agentDoc: any): string[] {
   if (agentDoc.role !== 'Blacksmith') return [];
   const feasible: string[] = [];
   for (const output of BLACKSMITH_WORK_PRIORITY) {
-    const recipe = getRecipe('work', output);
-    if (!recipe) continue;
-    if (agentDoc.location !== recipe.location) continue;
-    if (formatRequirementShortfall(agentDoc.inventory, recipe.consumes)) continue;
-    feasible.push(output);
+    const recipes = getRecipes('work', output);
+    if (recipes.length === 0) continue;
+    const feasibleRecipe = recipes.find((recipe) =>
+      agentDoc.location === recipe.location && !formatRequirementShortfall(agentDoc.inventory, recipe.consumes),
+    );
+    if (feasibleRecipe) feasible.push(output);
   }
   return feasible;
 }
@@ -133,12 +202,541 @@ async function feasibleHerbalistWorkOutputs(ctx: any, agentDoc: any): Promise<st
   if (agentDoc.role !== 'Herbalist') return [];
   const feasible: string[] = [];
   const patches = await getHerbPatchesAtLocation(ctx, agentDoc.location);
-  if (patches.some((entry: any) => entry.available > 0)) feasible.push('herbs');
+  if (patches.some((entry: any) => entry.available > 0)) feasible.push('herb');
   const medicineRecipe = getRecipe('brew', 'medicine');
   if (medicineRecipe && agentDoc.location === medicineRecipe.location && !formatRequirementShortfall(agentDoc.inventory, medicineRecipe.consumes)) {
     feasible.push('medicine');
   }
   return feasible;
+}
+
+async function feasibleInnkeeperWorkOutputs(agentDoc: any): Promise<string[]> {
+  if (agentDoc.role !== 'Innkeeper' || agentDoc.location !== 'bakery') return [];
+  const feasible: string[] = [];
+  for (const output of INNKEEPER_WORK_OUTPUTS) {
+    const recipes = getRecipes('work', output);
+    if (recipes.some((recipe) => recipe.location === 'bakery' && !formatRequirementShortfall(agentDoc.inventory, recipe.consumes))) {
+      feasible.push(output);
+    }
+  }
+  return feasible;
+}
+
+async function getPendingTalkInvitation(ctx: any, agentDoc: any) {
+  const received = await ctx.db
+    .query('rl_interactions')
+    .withIndex('recipient_status', (q: any) => q.eq('toAgent', agentDoc.name).eq('status', 'active'))
+    .collect();
+
+  const invitations: Array<{ fromAgent: string; text: string; createdDay: number; createdTick: number }> = [];
+  for (const interaction of received) {
+    if (interaction.kind !== 'talk') continue;
+    const fromAgent = await getAgentByName(ctx, interaction.fromAgent);
+    if (!fromAgent || fromAgent.location !== agentDoc.location) continue;
+    const payload = interaction.payloadJson ? JSON.parse(interaction.payloadJson) as { text?: string; message?: string } : {};
+    invitations.push({
+      fromAgent: interaction.fromAgent,
+      text: (payload.text ?? payload.message ?? '').trim(),
+      createdDay: interaction.createdDay ?? 0,
+      createdTick: interaction.createdTick ?? 0,
+    });
+  }
+
+  invitations.sort((a, b) => a.createdDay - b.createdDay || a.createdTick - b.createdTick || a.fromAgent.localeCompare(b.fromAgent));
+  return invitations[0] ?? null;
+}
+
+async function getScenePartnerPendingTransactions(ctx: any, agentName: string, partner: string) {
+  const incoming = await ctx.db
+    .query('rl_transactions')
+    .withIndex('recipient_status', (q: any) => q.eq('toAgent', agentName).eq('status', 'pending'))
+    .collect();
+
+  return incoming
+    .filter((txn: any) => txn.fromAgent === partner)
+    .sort((a: any, b: any) => a.createdDay - b.createdDay || a.createdTick - b.createdTick || a.txnId.localeCompare(b.txnId))
+    .map((txn: any, index: number) => ({
+      ...txn,
+      responseRef: `offer-${index + 1}`,
+    }));
+}
+
+async function supersedePendingTransactionsBetweenAgents(
+  ctx: any,
+  agentA: string,
+  agentB: string,
+  tick: number,
+  day: number,
+  reason: string,
+) {
+  const pending = await ctx.db
+    .query('rl_transactions')
+    .filter((q: any) =>
+      q.and(
+        q.eq(q.field('status'), 'pending'),
+        q.or(
+          q.and(q.eq(q.field('fromAgent'), agentA), q.eq(q.field('toAgent'), agentB)),
+          q.and(q.eq(q.field('fromAgent'), agentB), q.eq(q.field('toAgent'), agentA)),
+        ),
+      ),
+    )
+    .collect();
+
+  for (const txn of pending) {
+    await ctx.db.patch(txn._id, {
+      status: 'superseded',
+      resolvedTick: tick,
+      resolvedDay: day,
+      outcomeNote: reason,
+    });
+    await setInteractionOutcomeByTransactionId(ctx, txn.txnId, {
+      status: 'failed',
+      resolvedTick: tick,
+      resolvedDay: day,
+      outcomeNote: reason,
+    });
+  }
+}
+
+async function buildPromptActionHints(ctx: any, agentDoc: any, tick?: number): Promise<string[]> {
+  const lines: string[] = [];
+  const liveScene = await getLiveChatSceneForAgent(ctx, agentDoc.name);
+
+  if (liveScene) {
+    const partner = getScenePartner(liveScene, agentDoc.name);
+    const canSpeakNow = typeof tick === 'number'
+      ? liveScene.openedTick === tick || liveScene.nextSpeaker === agentDoc.name
+      : liveScene.nextSpeaker === agentDoc.name;
+    if (canSpeakNow) {
+      lines.push(`- chat: continue with ${partner}`);
+      const openingOffer = await getSceneOpeningOfferForRecipient(ctx, liveScene, agentDoc);
+      if (openingOffer) {
+        lines.push(`- chat: accept_transaction or reject_transaction (${openingOffer.offerRef})`);
+      }
+      const actionableOffers = await getScenePartnerPendingTransactions(ctx, agentDoc.name, partner);
+      if (actionableOffers.length > 0) {
+        const offerRefs = actionableOffers
+          .slice(0, PROMPT_ACTION_HINT_MAX_OPTIONS_PER_GROUP)
+          .map((txn: any) => txn.responseRef);
+        lines.push(`- chat: accept_transaction or reject_transaction (${offerRefs.join(', ')})`);
+      }
+    }
+    lines.push('- leave_chat');
+    return lines.slice(0, PROMPT_ACTION_HINT_MAX_LINES);
+  }
+
+  const opener = await getPendingTalkInvitation(ctx, agentDoc);
+  if (opener) {
+    const preview = opener.text ? ` ("${trimPromptPreview(opener.text)}")` : '';
+    lines.push(`- chat: respond to ${opener.fromAgent}${preview}`);
+  }
+
+  if (agentDoc.role === 'Blacksmith') {
+    const outputs = feasibleBlacksmithOutputs(agentDoc);
+    const line = formatPromptHintLine('work', outputs.length > 0 ? ['best available', ...outputs] : []);
+    if (line) lines.push(line);
+  } else if (agentDoc.role === 'Farmer') {
+    const outputs = await feasibleFarmerWorkOutputs(ctx, agentDoc);
+    const cropOutputs = outputs.filter((entry) => entry !== 'field_maintenance');
+    const hints = outputs.includes('field_maintenance') ? ['best available', ...cropOutputs] : cropOutputs;
+    const line = formatPromptHintLine('work', hints);
+    if (line) lines.push(line);
+  } else if (agentDoc.role === 'Herbalist') {
+    const outputs = await feasibleHerbalistWorkOutputs(ctx, agentDoc);
+    const line = formatPromptHintLine('work', outputs.length > 0 ? ['best available', ...outputs] : []);
+    if (line) lines.push(line);
+  } else if (agentDoc.role === 'Innkeeper') {
+    const outputs = await feasibleInnkeeperWorkOutputs(agentDoc);
+    const line = formatPromptHintLine('work', outputs.length > 0 ? ['best available', ...outputs] : []);
+    if (line) lines.push(line);
+  }
+
+  const usableInventoryHints = Object.entries(parseInventoryRecord(agentDoc.inventory))
+    .filter(([item, quantity]) => quantity > 0 && isUsable(item))
+    .map(([item]) => item);
+  const useLine = formatPromptHintLine('use', usableInventoryHints);
+  if (useLine) lines.push(useLine);
+
+  const nearbyPlaceStocks = await ctx.db
+    .query('rl_place_stocks')
+    .withIndex('place', (q: any) => q.eq('placeName', agentDoc.location))
+    .collect();
+  const nearbyPlaceMarket = await ctx.db
+    .query('rl_place_markets')
+    .withIndex('placeName', (q: any) => q.eq('placeName', agentDoc.location))
+    .unique();
+  const prices = await ctx.db.query('rl_market_prices').collect();
+  const priceByItem = new Map(prices.map((price: any) => [price.item, price.price]));
+  const inventory = parseInventoryRecord(agentDoc.inventory);
+  const buyPlaceHints: string[] = [];
+  const sellPlaceHints: string[] = [];
+  const deliverPlaceHints: string[] = [];
+
+  for (const stock of nearbyPlaceStocks) {
+    const market = nearbyPlaceMarket ?? {
+      placeName: stock.placeName,
+      treasury: 0,
+      buySpreadPct: 0.15,
+      sellSpreadPct: 0.15,
+      targetStockRatio: 0.5,
+    };
+    const quotedPrice = priceByItem.get(stock.item);
+    const quote = derivePlaceQuote(stock, market, typeof quotedPrice === 'number' ? quotedPrice : undefined);
+    if (stock.sells && quote.canCurrentlySell && typeof quote.askPrice === 'number' && quote.askPrice > 0 && agentDoc.coin >= quote.askPrice && stock.quantity > 0) {
+      const maxAffordable = Math.floor(agentDoc.coin / quote.askPrice);
+      const maxBuyQuantity = Math.min(stock.quantity, maxAffordable);
+      const hint = formatBoundedQuantityHint(`${stock.item} from ${stock.placeName}`, maxBuyQuantity);
+      if (hint) buyPlaceHints.push(hint);
+    }
+    if (stock.buys && quote.canCurrentlyBuy && typeof quote.bidPrice === 'number' && quote.bidPrice > 0 && (inventory[stock.item] ?? 0) > 0 && quote.maxAffordableQuantity >= 1) {
+      const inventoryQuantity = inventory[stock.item] ?? 0;
+      const capacityLimit = quote.remainingCapacity === null ? Number.POSITIVE_INFINITY : quote.remainingCapacity;
+      const maxSellQuantity = Math.min(inventoryQuantity, quote.maxAffordableQuantity, capacityLimit);
+      const hint = formatBoundedQuantityHint(`${stock.item} to ${stock.placeName}`, maxSellQuantity);
+      if (hint) sellPlaceHints.push(hint);
+    }
+    const remainingCapacity = quote.remainingCapacity;
+    if ((inventory[stock.item] ?? 0) > 0 && (remainingCapacity === null || remainingCapacity > 0)) {
+      const inventoryQuantity = inventory[stock.item] ?? 0;
+      const maxDeliverQuantity = remainingCapacity === null
+        ? inventoryQuantity
+        : Math.min(inventoryQuantity, remainingCapacity);
+      const hint = formatBoundedQuantityHint(`${stock.item} to ${stock.placeName}`, maxDeliverQuantity);
+      if (hint) deliverPlaceHints.push(hint);
+    }
+  }
+
+  const buyLine = formatPromptHintLine('buy_place', buyPlaceHints);
+  if (buyLine) lines.push(buyLine);
+  const sellLine = formatPromptHintLine('sell_place', sellPlaceHints);
+  if (sellLine) lines.push(sellLine);
+  const deliverLine = formatPromptHintLine('deliver_place', deliverPlaceHints);
+  if (deliverLine) lines.push(deliverLine);
+
+  const visibleAgents = await ctx.db
+    .query('rl_agents')
+    .withIndex('location', (q: any) => q.eq('location', agentDoc.location))
+    .collect();
+  const socialKnowledge = await ctx.db
+    .query('rl_social_knowledge')
+    .withIndex('observer', (q: any) => q.eq('observerAgent', agentDoc.name))
+    .collect();
+  const sentMessages = await ctx.db
+    .query('rl_chat_messages')
+    .withIndex('sender_sent', (q: any) => q.eq('fromAgent', agentDoc.name))
+    .collect();
+  const receivedMessages = await ctx.db
+    .query('rl_chat_messages')
+    .withIndex('recipient_sent', (q: any) => q.eq('toAgent', agentDoc.name))
+    .collect();
+  const knownTargets = new Set<string>();
+  for (const other of visibleAgents) {
+    if (other.name !== agentDoc.name) knownTargets.add(other.name);
+  }
+  for (const entry of socialKnowledge) {
+    if (entry.subjectAgent !== agentDoc.name) knownTargets.add(entry.subjectAgent);
+  }
+  for (const entry of [...sentMessages, ...receivedMessages]) {
+    knownTargets.add(entry.fromAgent === agentDoc.name ? entry.toAgent : entry.fromAgent);
+  }
+  if (opener) knownTargets.delete(opener.fromAgent);
+  const chatLine = formatPromptHintLine('chat', Array.from(knownTargets).sort((a, b) => a.localeCompare(b)));
+  if (chatLine) lines.push(chatLine);
+
+  const locations = await ctx.db.query('rl_locations').collect();
+  const moveLine = formatPromptHintLine(
+    'move',
+    locations
+      .map((entry: any) => entry.name)
+      .filter((name: string) => name !== agentDoc.location)
+      .sort((a: string, b: string) => a.localeCompare(b)),
+  );
+  if (moveLine) lines.push(moveLine);
+
+  if (agentDoc.energy < 60) {
+    lines.push('- rest');
+  }
+  const currentTimeOfDay = typeof tick === 'number' ? timeOfDayForTick(tick) : null;
+  if ((currentTimeOfDay !== null && isSleepPeriod(currentTimeOfDay)) || agentDoc.energy < 20) {
+    lines.push('- sleep');
+  }
+  lines.push('- say');
+
+  return lines.slice(0, PROMPT_ACTION_HINT_MAX_LINES);
+}
+
+function buildTradeableInventoryHints(agentDoc: any): string[] {
+  const inventory = parseInventoryRecord(agentDoc.inventory);
+  return Object.entries(inventory)
+    .filter(([item, quantity]) => item !== 'coin' && quantity > 0)
+    .sort((a, b) => Number(b[1]) - Number(a[1]) || a[0].localeCompare(b[0]))
+    .slice(0, PROMPT_ACTION_HINT_MAX_OPTIONS_PER_GROUP)
+    .map(([item, quantity]) => formatItemQuantity(item, quantity));
+}
+
+async function evaluateTransactionAcceptability(ctx: any, txn: any, recipientAgent: any) {
+  const offer = parseTransactionItems(txn.offerJson);
+  const request = parseTransactionItems(txn.requestJson);
+  return evaluateExchangeAcceptability(ctx, txn.fromAgent, offer, request, recipientAgent);
+}
+
+async function evaluateExchangeAcceptability(
+  ctx: any,
+  proposerName: string,
+  offer: TransactionItem[],
+  request: TransactionItem[],
+  recipientAgent: any,
+) {
+  const proposer = await getAgentByName(ctx, proposerName);
+  if (!proposer) {
+    return { ok: false, reason: `${proposerName} is no longer available.` };
+  }
+
+  const proposerInv = parseInventoryRecord(proposer.inventory);
+  const recipientInv = parseInventoryRecord(recipientAgent.inventory);
+
+  for (const item of offer) {
+    if (item.item === 'coin') {
+      if (proposer.coin < item.quantity) {
+        return { ok: false, reason: `${proposerName} no longer has ${item.quantity}c available.` };
+      }
+      continue;
+    }
+    if (getService(item.item)) {
+      if (!canProvideService(proposer, item.item)) {
+        return { ok: false, reason: `${proposerName} cannot currently provide ${item.item}.` };
+      }
+      continue;
+    }
+    if ((proposerInv[item.item] ?? 0) < item.quantity) {
+      return { ok: false, reason: `${proposerName} no longer has enough ${item.item}.` };
+    }
+  }
+
+  for (const item of request) {
+    if (item.item === 'coin') {
+      if (recipientAgent.coin < item.quantity) {
+        return { ok: false, reason: `You only have ${recipientAgent.coin}c, not ${item.quantity}c.` };
+      }
+      continue;
+    }
+    if ((recipientInv[item.item] ?? 0) < item.quantity) {
+      return { ok: false, reason: `You only have ${formatItemQuantity(item.item, recipientInv[item.item] ?? 0)}.` };
+    }
+  }
+
+  return { ok: true, reason: 'yes' };
+}
+
+function buildOfferAndRequestForIntent(parsed: RocklawAction): { offer: TransactionItem[]; request: TransactionItem[] } {
+      const chatIntent = getChatCommerceIntent(parsed);
+  switch (chatIntent) {
+    case 'give':
+      return {
+        offer: parsed.item && typeof parsed.quantity === 'number' && parsed.quantity > 0
+          ? [{ item: parsed.item, quantity: parsed.quantity }]
+          : [],
+        request: [],
+      };
+    case 'pay':
+      return {
+        offer: typeof parsed.amount === 'number' && parsed.amount > 0
+          ? [{ item: 'coin', quantity: parsed.amount }]
+          : [],
+        request: [],
+      };
+    default:
+      return buildTransactionTerms(parsed);
+  }
+}
+
+function getSceneOpeningOfferParsed(scene: any): RocklawAction | null {
+  if (!scene?.openingOfferPayloadJson) return null;
+  try {
+    return normaliseAction(JSON.parse(scene.openingOfferPayloadJson) as RocklawAction);
+  } catch {
+    return null;
+  }
+}
+
+async function getSceneOpeningOfferForRecipient(ctx: any, scene: any, recipientAgent: any) {
+  const parsed = getSceneOpeningOfferParsed(scene);
+  if (!parsed) return null;
+  const proposerName = scene.openingSpeaker;
+  if (!proposerName || proposerName === recipientAgent.name) return null;
+  if (scene.nextSpeaker !== recipientAgent.name) return null;
+  const intent = getChatCommerceIntent(parsed);
+  if (!intent || !SCENE_OPENING_OFFER_INTENTS.has(intent)) return null;
+  const { offer, request } = buildOfferAndRequestForIntent(parsed);
+  return {
+    proposerName,
+    offerRef: scene.openingOfferRef ?? SCENE_OPENING_OFFER_REF,
+    parsed,
+    offer,
+    request,
+  };
+}
+
+async function clearSceneOpeningOffer(ctx: any, scene: any) {
+  if (!scene) return;
+  await ctx.db.patch(scene._id, {
+    openingOfferRef: undefined,
+    openingOfferPayloadJson: undefined,
+  });
+}
+
+async function createPendingTransactionFromParsedOffer(
+  ctx: any,
+  proposerName: string,
+  recipientName: string,
+  location: string,
+  parsed: RocklawAction,
+  tick: number,
+  day: number,
+) {
+  const intent = getChatCommerceIntent(parsed);
+  const terms = buildOfferAndRequestForIntent(parsed);
+  const kind = intent === 'buy' || intent === 'sell' ? intent : 'trade';
+  const txnId = createTransactionId(kind, proposerName, tick, day);
+  await ctx.db.insert('rl_transactions', {
+    txnId,
+    fromAgent: proposerName,
+    toAgent: recipientName,
+    kind,
+    offerJson: serialiseTransactionItems(terms.offer),
+    requestJson: serialiseTransactionItems(terms.request),
+    message: parsed.text ?? parsed.message,
+    status: 'pending',
+    createdTick: tick,
+    createdDay: day,
+    expiresTick: tick + OFFER_EXPIRY_TICKS,
+  });
+  await createActiveInteraction(ctx, {
+    kind: kind as 'buy' | 'sell' | 'trade',
+    fromAgent: proposerName,
+    toAgent: recipientName,
+    location,
+    tick,
+    day,
+    payload: {
+      offer: terms.offer,
+      request: terms.request,
+      message: parsed.text ?? parsed.message,
+    },
+    transactionId: txnId,
+  });
+  return txnId;
+}
+
+async function buildLiveChatTradeFacts(ctx: any, agentDoc: any): Promise<string[]> {
+  const liveScene = await getLiveChatSceneForAgent(ctx, agentDoc.name);
+  if (!liveScene) return [];
+  const partner = getScenePartner(liveScene, agentDoc.name);
+  const lines: string[] = [];
+
+  lines.push('Live trade facts now:');
+  lines.push(`- you have now: ${buildTradeableInventoryHints(agentDoc).join(', ') || 'no goods available'}, ${agentDoc.coin}c`);
+  lines.push(`- you can pay now: up to ${agentDoc.coin}c total`);
+  lines.push('- you cannot offer more goods or coin than you currently hold');
+
+  const openingOffer = await getSceneOpeningOfferForRecipient(ctx, liveScene, agentDoc);
+  if (openingOffer) {
+    const acceptability = await evaluateExchangeAcceptability(
+      ctx,
+      openingOffer.proposerName,
+      openingOffer.offer,
+      openingOffer.request,
+      agentDoc,
+    );
+    lines.push(
+      `- opening live offer from ${openingOffer.proposerName}: ${openingOffer.offerRef} -> offers ${formatTransactionItems(openingOffer.offer)} for ${formatTransactionItems(openingOffer.request)}`,
+    );
+    lines.push(`- you can accept it now: ${acceptability.ok ? 'yes' : `no (${acceptability.reason})`}`);
+  }
+
+  const actionableOffers = await getScenePartnerPendingTransactions(ctx, agentDoc.name, partner);
+  const currentOffer = actionableOffers[actionableOffers.length - 1];
+  if (currentOffer) {
+    const acceptability = await evaluateTransactionAcceptability(ctx, currentOffer, agentDoc);
+    lines.push(
+      `- current actionable offer from ${partner}: ${currentOffer.responseRef} -> offers ${formatTransactionItems(parseTransactionItems(currentOffer.offerJson))} for ${formatTransactionItems(parseTransactionItems(currentOffer.requestJson))}`,
+    );
+    lines.push(`- you can accept it now: ${acceptability.ok ? 'yes' : `no (${acceptability.reason})`}`);
+  }
+
+  return lines;
+}
+
+function isAtOrAfterSceneOpen(message: any, scene: any): boolean {
+  if (message.sentDay > scene.openedDay) return true;
+  if (message.sentDay < scene.openedDay) return false;
+  return message.sentTick >= scene.openedTick;
+}
+
+function formatSceneTranscriptLine(entry: any): string {
+  const speaker = entry.fromAgent === '[system]' ? '[system]' : entry.fromAgent;
+  return `- ${speaker}: ${entry.text}`;
+}
+
+function pickLiveSceneTranscriptEntries(messages: any[]): { lines: string[]; truncated: boolean } {
+  const formatted = messages.map((entry) => ({
+    key: `${entry.sentDay}:${entry.sentTick}:${entry.fromAgent}:${entry.text}`,
+    line: formatSceneTranscriptLine(entry),
+    day: entry.sentDay,
+    tick: entry.sentTick,
+  }));
+
+  if (formatted.length <= LIVE_CHAT_FULL_TRANSCRIPT_MAX_LINES) {
+    return { lines: formatted.map((entry) => entry.line), truncated: false };
+  }
+
+  const recent = formatted.slice(-LIVE_CHAT_RECENT_TRANSCRIPT_MAX_LINES);
+  const recentKeys = new Set(recent.map((entry) => entry.key));
+  const olderSystem = formatted.filter((entry) =>
+    entry.line.startsWith('- [system]:') && !recentKeys.has(entry.key),
+  );
+  const merged = [...olderSystem, ...recent]
+    .sort((a, b) => a.day - b.day || a.tick - b.tick);
+  return { lines: merged.map((entry) => entry.line), truncated: true };
+}
+
+async function buildLiveChatPromptContext(ctx: any, agentDoc: any) {
+  const scene = await getLiveChatSceneForAgent(ctx, agentDoc.name);
+  if (!scene) return null;
+
+  const partner = getScenePartner(scene, agentDoc.name);
+  const threadKey = createChatThreadKey(agentDoc.name, partner);
+  const allMessages = await ctx.db
+    .query('rl_chat_messages')
+    .withIndex('thread_sent', (q: any) => q.eq('threadKey', threadKey))
+    .collect();
+
+  const sceneMessages = allMessages
+    .filter((entry: any) =>
+      entry.deliveryMode === 'live'
+      && ((entry.sceneId && entry.sceneId === scene.sceneId) || (!entry.sceneId && isAtOrAfterSceneOpen(entry, scene)))
+    )
+    .sort(compareChatMessageOrder);
+
+  const latestPartnerMessage = [...sceneMessages]
+    .reverse()
+    .find((entry: any) => entry.fromAgent === partner)?.text ?? null;
+
+  const transcript = pickLiveSceneTranscriptEntries(sceneMessages);
+  const openingOffer = await getSceneOpeningOfferForRecipient(ctx, scene, agentDoc);
+
+  return {
+    partner,
+    location: scene.location,
+    yourTurn: scene.nextSpeaker === agentDoc.name,
+    latestPartnerMessage,
+    transcriptLines: transcript.lines,
+    transcriptTruncated: transcript.truncated,
+    openingOfferRef: openingOffer?.offerRef ?? null,
+    openingOfferSummary: openingOffer
+      ? `offers ${formatTransactionItems(openingOffer.offer)} for ${formatTransactionItems(openingOffer.request)}`
+      : null,
+  };
 }
 
 function resolveBlacksmithWorkRecipe(agentDoc: any, requestedItem?: string | null) {
@@ -147,24 +745,31 @@ function resolveBlacksmithWorkRecipe(agentDoc: any, requestedItem?: string | nul
   }
 
   if (requestedItem) {
-    const recipe = getRecipe('work', requestedItem);
+    const isKnownOutput = BLACKSMITH_WORK_PRIORITY.includes(requestedItem as (typeof BLACKSMITH_WORK_PRIORITY)[number]);
+    const recipe = getRecipes('work', requestedItem).find((entry) =>
+      agentDoc.location === entry.location && !formatRequirementShortfall(agentDoc.inventory, entry.consumes),
+    ) ?? null;
     if (!recipe) {
       const feasible = feasibleBlacksmithOutputs(agentDoc);
       return {
         recipe: null as ReturnType<typeof getRecipe>,
-        note: feasible.length > 0
-          ? `Blacksmith work cannot produce ${requestedItem}. Feasible outputs right now: ${feasible.join(', ')}.`
-          : `Blacksmith work cannot produce ${requestedItem}. Choose horseshoe, tools, knife, or iron_ingot.`,
+        note: isKnownOutput
+          ? feasible.length > 0
+            ? `${requestedItem} is a valid blacksmith output, but you cannot make it right now. Feasible outputs right now: ${feasible.join(', ')}.`
+            : `${requestedItem} is a valid blacksmith output, but you lack the needed inputs or are not at the forge right now. Gather inputs or move to the forge.`
+          : feasible.length > 0
+            ? `Blacksmith work cannot produce ${requestedItem}. Feasible outputs right now: ${feasible.join(', ')}.`
+            : `Blacksmith work cannot produce ${requestedItem}. Choose horseshoe, tool, knife, or iron_ingot.`,
       };
     }
     return { recipe, note: null as string | null };
   }
 
   for (const output of BLACKSMITH_WORK_PRIORITY) {
-    const recipe = getRecipe('work', output);
+    const recipe = getRecipes('work', output).find((entry) =>
+      agentDoc.location === entry.location && !formatRequirementShortfall(agentDoc.inventory, entry.consumes),
+    ) ?? null;
     if (!recipe) continue;
-    if (agentDoc.location !== recipe.location) continue;
-    if (formatRequirementShortfall(agentDoc.inventory, recipe.consumes)) continue;
     return { recipe, note: null as string | null };
   }
 
@@ -186,6 +791,7 @@ async function resolveFarmerWork(ctx: any, agentDoc: any, requestedItem?: string
   const readyField = (crop?: string | null) => fields.find((entry: any) => entry.stage === 'ready' && entry.cropItem && (!crop || entry.cropItem === crop));
   const growingField = fields.find((entry: any) => entry.stage === 'growing');
   const fallowField = fields.find((entry: any) => entry.stage === 'fallow');
+  const harvestBonus = hasInventoryItem(agentDoc, 'tool', 1) ? 1 : 0;
 
   if (requestedItem) {
     if (!FARMER_WORK_CROPS.includes(requestedItem as (typeof FARMER_WORK_CROPS)[number])) {
@@ -194,12 +800,12 @@ async function resolveFarmerWork(ctx: any, agentDoc: any, requestedItem?: string
         validation: null as WorldValidation | null,
         note: feasible.length > 0
           ? `Farmer work cannot target ${requestedItem}. Feasible work right now: ${feasible.join(', ')}.`
-          : `Farmer work cannot target ${requestedItem}. Choose grain or vegetables, or use bare work for the best available field task.`,
+          : `Farmer work cannot target ${requestedItem}. Choose grain or vegetable, or use bare work for the best available field task.`,
       };
     }
     const harvestField = readyField(requestedItem);
     if (harvestField) {
-      const quantity = requestedItem === 'grain' ? 4 : 3;
+      const quantity = (requestedItem === 'grain' ? 4 : 3) + harvestBonus;
       return {
         validation: {
           ok: true as const,
@@ -222,7 +828,7 @@ async function resolveFarmerWork(ctx: any, agentDoc: any, requestedItem?: string
       };
     }
     if (!inventoryHasAtLeast(agentDoc.inventory, requestedItem, 1)) {
-      const inv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+      const inv = parseInventoryRecord(agentDoc.inventory);
       const feasible = await feasibleFarmerWorkOutputs(ctx, agentDoc);
       return {
         validation: null as WorldValidation | null,
@@ -246,7 +852,7 @@ async function resolveFarmerWork(ctx: any, agentDoc: any, requestedItem?: string
 
   const anyReadyField = readyField();
   if (anyReadyField && anyReadyField.cropItem) {
-    const quantity = anyReadyField.cropItem === 'grain' ? 4 : 3;
+    const quantity = (anyReadyField.cropItem === 'grain' ? 4 : 3) + harvestBonus;
     return {
       validation: {
         ok: true as const,
@@ -294,6 +900,53 @@ async function resolveFarmerWork(ctx: any, agentDoc: any, requestedItem?: string
   };
 }
 
+async function resolveInnkeeperWork(agentDoc: any, requestedItem?: string | null) {
+  if (agentDoc.role !== 'Innkeeper') {
+    return { validation: null as WorldValidation | null, note: `${agentDoc.role} cannot use work as a role action.` };
+  }
+  if (agentDoc.location !== 'bakery') {
+    return { validation: null as WorldValidation | null, note: 'Innkeeper work is only available at the bakery right now.' };
+  }
+
+  const outputs = requestedItem ? [requestedItem] : [...INNKEEPER_WORK_OUTPUTS];
+  for (const output of outputs) {
+    if (!INNKEEPER_WORK_OUTPUTS.includes(output as (typeof INNKEEPER_WORK_OUTPUTS)[number])) {
+      const feasible = await feasibleInnkeeperWorkOutputs(agentDoc);
+      return {
+        validation: null as WorldValidation | null,
+        note: feasible.length > 0
+          ? `Innkeeper work cannot target ${output}. Feasible work right now: ${feasible.join(', ')}.`
+          : 'Innkeeper work currently supports flour or bread at the bakery.',
+      };
+    }
+    const recipe = getRecipes('work', output).find((entry) =>
+      entry.location === 'bakery' && !formatRequirementShortfall(agentDoc.inventory, entry.consumes),
+    );
+    if (!recipe) continue;
+    const breadBonus = output === 'bread' && hasInventoryItem(agentDoc, 'knife', 1) ? 1 : 0;
+    return {
+      validation: {
+        ok: true as const,
+        workKind: output === 'bread' ? 'bake' as const : 'mill' as const,
+        consumes: recipe.consumes,
+        produces: applyProducedItemBonus(recipe.produces, output, breadBonus),
+        note: breadBonus > 0
+          ? `${recipe.note} Your knife helps you prep faster and stretch the batch.`
+          : recipe.note,
+      },
+      note: null as string | null,
+    };
+  }
+
+  const feasible = await feasibleInnkeeperWorkOutputs(agentDoc);
+  return {
+    validation: null as WorldValidation | null,
+    note: feasible.length > 0
+      ? `Innkeeper work cannot target ${requestedItem}. Feasible work right now: ${feasible.join(', ')}.`
+      : 'No valid bakery work is available right now. Bring grain or flour to the bakery first.',
+  };
+}
+
 async function resolveHerbalistWork(ctx: any, agentDoc: any, requestedItem?: string | null) {
   if (agentDoc.role !== 'Herbalist') {
     return { validation: null as WorldValidation | null, note: `${agentDoc.role} cannot use work as a role action.` };
@@ -314,17 +967,17 @@ async function resolveHerbalistWork(ctx: any, agentDoc: any, requestedItem?: str
         validation: null as WorldValidation | null,
         note: feasible.length > 0
           ? `Herbalist work cannot target ${requestedItem}. Feasible work right now: ${feasible.join(', ')}.`
-          : `Herbalist work cannot target ${requestedItem}. Choose herbs or medicine, or use bare work.`,
+          : `Herbalist work cannot target ${requestedItem}. Choose herb or medicine, or use bare work.`,
       };
     }
-    if (requestedItem === 'herbs') {
+    if (requestedItem === 'herb') {
       if (!patch) {
         const feasible = await feasibleHerbalistWorkOutputs(ctx, agentDoc);
         return {
           validation: null as WorldValidation | null,
           note: feasible.length > 0
-            ? `No gatherable herbs are available here right now. Feasible herbal work right now: ${feasible.join(', ')}.`
-            : 'No gatherable herbs are available here right now.',
+            ? `No gatherable herb is available here right now. Feasible herbal work right now: ${feasible.join(', ')}.`
+            : 'No gatherable herb is available here right now.',
         };
       }
       const quantity = Math.min(2, patch.available);
@@ -395,7 +1048,7 @@ async function resolveHerbalistWork(ctx: any, agentDoc: any, requestedItem?: str
 
   return {
     validation: null as WorldValidation | null,
-    note: 'No valid herbal work is available right now. Move to a herb patch or the shrine, or gather more herbs first.',
+    note: 'No valid herbal work is available right now. Move to a herb patch or the shrine, or gather more herb first.',
   };
 }
 
@@ -414,6 +1067,26 @@ const CHAT_COMMERCE_INTENTS = new Set([
   'reject_transaction',
 ]) as Set<string>;
 
+const CHAT_SOCIAL_INTENTS = new Set([
+  'lie',
+  'threaten',
+]) as Set<string>;
+
+const SAY_SOCIAL_INTENTS = new Set([
+  'gossip',
+]) as Set<string>;
+
+const SPEECH_INTENTS = new Set([
+  ...CHAT_COMMERCE_INTENTS,
+  ...CHAT_SOCIAL_INTENTS,
+  ...SAY_SOCIAL_INTENTS,
+]) as Set<string>;
+
+const CHAT_SPEECH_INTENTS = new Set([
+  ...CHAT_COMMERCE_INTENTS,
+  ...CHAT_SOCIAL_INTENTS,
+]) as Set<string>;
+
 const ROLE_GATED_ACTIONS = new Set(
   Object.values(ROLE_ECONOMIC_ACTIONS).flatMap((actions) => actions),
 );
@@ -426,12 +1099,27 @@ function normaliseIntent(value: unknown): string | null | undefined {
   const normalized = normaliseScalarString(value);
   if (normalized === undefined || normalized === null) return normalized;
   const lowered = normalized.toLowerCase();
-  return CHAT_COMMERCE_INTENTS.has(lowered) ? lowered : normalized;
+  return SPEECH_INTENTS.has(lowered) ? lowered : normalized;
 }
 
 function getChatIntent(parsed: RocklawAction): string | null {
   const intent = typeof parsed.intent === 'string' ? parsed.intent.trim().toLowerCase() : '';
+  return CHAT_SPEECH_INTENTS.has(intent) ? intent : null;
+}
+
+function getChatCommerceIntent(parsed: RocklawAction): string | null {
+  const intent = typeof parsed.intent === 'string' ? parsed.intent.trim().toLowerCase() : '';
   return CHAT_COMMERCE_INTENTS.has(intent) ? intent : null;
+}
+
+function getSpeechIntent(parsed: RocklawAction): string | null {
+  const intent = typeof parsed.intent === 'string' ? parsed.intent.trim().toLowerCase() : '';
+  return SPEECH_INTENTS.has(intent) ? intent : null;
+}
+
+function formatSpeechIntentNote(intent: string | null | undefined): string {
+  if (!intent) return '';
+  return ` intent:${intent}`;
 }
 
 // ── Inventory helpers ─────────────────────────────────────────────────────────
@@ -455,6 +1143,7 @@ function parseItemList(items: unknown[]): Record<string, number> {
       name = normalised.value.trim();
       qty = normalised.qty;
     }
+    name = canonicalizeItemId(name) ?? name;
     result[name] = (result[name] ?? 0) + qty;
   }
   return result;
@@ -475,7 +1164,7 @@ function normaliseItemEntry(entry: unknown): { value: string; qty: number; colon
         ? parseInt(qtyValue, 10)
         : 1;
       return {
-        value: itemName,
+        value: canonicalizeItemId(itemName) ?? itemName,
         qty: Number.isFinite(qty) && qty > 0 ? qty : 1,
         colonIdx: -1,
       };
@@ -526,12 +1215,13 @@ function normaliseAction(parsed: RocklawAction): RocklawAction {
   const action = parsed.action;
   const target = normaliseScalarString(parsed.target);
   const location = normaliseScalarString(parsed.location);
-  const item = normaliseScalarString(parsed.item);
+  const item = canonicalizeItemId(normaliseScalarString(parsed.item) ?? undefined);
   const intent = normaliseIntent(parsed.intent);
   const offerRef = normaliseScalarString(parsed.offer_ref);
   const text = typeof parsed.text === 'string' ? parsed.text.trim() : undefined;
   const topic = typeof parsed.topic === 'string' ? parsed.topic.trim() : undefined;
   const thought = typeof parsed.thought === 'string' ? parsed.thought.trim() : undefined;
+  const journal = typeof parsed.journal === 'string' ? parsed.journal.trim() : undefined;
   const quantity = normaliseNumber(parsed.quantity);
   const amount = normaliseNumber(parsed.amount);
   const consumes = dedupeStringList(
@@ -556,6 +1246,7 @@ function normaliseAction(parsed: RocklawAction): RocklawAction {
     offer_ref: offerRef,
     topic,
     thought,
+    journal,
     item,
     quantity,
     amount,
@@ -572,10 +1263,10 @@ function normaliseAction(parsed: RocklawAction): RocklawAction {
   if ((action === 'chat' || action === 'say' || action === 'message' || action === 'talk' || action === 'write' || action === 'pray' || action === 'eavesdrop') && !normalized.text && parsed.message) {
     normalized.text = parsed.message;
   }
-  if ((action === 'work' || action === 'craft' || action === 'repair' || action === 'smelt' || action === 'eat') && !normalized.item && target) {
+  if ((action === 'work' || action === 'craft' || action === 'repair' || action === 'smelt' || action === 'eat' || action === 'use') && !normalized.item && target) {
     normalized.item = target;
   }
-  if ((action === 'eat' || action === 'work' || action === 'craft' || action === 'smelt') && normalized.quantity == null && normalized.item) {
+  if ((action === 'eat' || action === 'use' || action === 'work' || action === 'craft' || action === 'smelt') && normalized.quantity == null && normalized.item) {
     normalized.quantity = 1;
   }
   if (action === 'chat' && (intent === 'buy' || intent === 'sell' || intent === 'give') && normalized.quantity == null && normalized.item) {
@@ -586,8 +1277,8 @@ function normaliseAction(parsed: RocklawAction): RocklawAction {
     if (typeof consumed.coin === 'number') normalized.amount = consumed.coin;
   }
   if (action === 'chat' && intent === 'trade') {
-    normalized.offer = Array.isArray(parsed.offer) ? normaliseEntityList(parsed.offer) : undefined;
-    normalized.request = Array.isArray(parsed.request) ? normaliseEntityList(parsed.request) : undefined;
+    normalized.offer = Array.isArray(parsed.offer) ? canonicalizeItemEntries(normaliseEntityList(parsed.offer) ?? []) : undefined;
+    normalized.request = Array.isArray(parsed.request) ? canonicalizeItemEntries(normaliseEntityList(parsed.request) ?? []) : undefined;
   }
 
   const hasInventoryDelta = normalized.consumes.length > 0 || normalized.produces.length > 0;
@@ -617,6 +1308,7 @@ function normaliseAction(parsed: RocklawAction): RocklawAction {
         break;
       case 'give':
       case 'eat':
+      case 'use':
         if (normalized.item && typeof normalized.quantity === 'number' && normalized.quantity > 0) {
           normalized.consumes = [{ item: normalized.item, quantity: normalized.quantity }];
         }
@@ -647,7 +1339,7 @@ function applyInventoryChanges(
   produces: unknown[],
   _action: string,
 ): { newInventory: string; newCoin: number } {
-  const inv = JSON.parse(inventoryJson) as Record<string, number>;
+  const inv = canonicalizeItemQuantities(JSON.parse(inventoryJson) as Record<string, number>);
   let newCoin = coin;
 
   const toConsume = parseItemList(consumes);
@@ -681,20 +1373,25 @@ function transferToRecipient(
   return applyInventoryChanges(inventoryJson, coin, [], produces, 'transfer');
 }
 
+function parseInventoryRecord(inventoryJson: string): Record<string, number> {
+  return canonicalizeItemQuantities(JSON.parse(inventoryJson) as Record<string, number>);
+}
+
 function inventoryHasAtLeast(inventoryJson: string, item: string, required: number): boolean {
-  const inv = JSON.parse(inventoryJson) as Record<string, number>;
-  return (inv[item] ?? 0) >= required;
+  const canonicalItem = canonicalizeItemId(item) ?? item;
+  const inv = canonicalizeItemQuantities(JSON.parse(inventoryJson) as Record<string, number>);
+  return (inv[canonicalItem] ?? 0) >= required;
 }
 
 function formatInventoryShortfall(inventoryJson: string, consumes: unknown[]): string | null {
-  const inv = JSON.parse(inventoryJson) as Record<string, number>;
+  const inv = canonicalizeItemQuantities(JSON.parse(inventoryJson) as Record<string, number>);
   const needed = parseItemList(consumes);
 
   for (const [item, qty] of Object.entries(needed)) {
     if (item === 'coin') continue;
     const have = inv[item] ?? 0;
     if (have < qty) {
-      return `Not enough ${item}: need ${qty}, have ${have}.`;
+      return `Not enough ${formatItemLabel(item, qty)}: need ${qty}, have ${have}.`;
     }
   }
 
@@ -702,8 +1399,8 @@ function formatInventoryShortfall(inventoryJson: string, consumes: unknown[]): s
 }
 
 function inventoryHasItems(inventoryJson: string, required: Array<{ item: string; quantity: number }>): boolean {
-  const inv = JSON.parse(inventoryJson) as Record<string, number>;
-  return required.every((entry) => (inv[entry.item] ?? 0) >= entry.quantity);
+  const inv = canonicalizeItemQuantities(JSON.parse(inventoryJson) as Record<string, number>);
+  return required.every((entry) => (inv[canonicalizeItemId(entry.item) ?? entry.item] ?? 0) >= entry.quantity);
 }
 
 function formatRequirementShortfall(inventoryJson: string, required: Array<{ item: string; quantity: number }>): string | null {
@@ -991,8 +1688,20 @@ async function createChatMessage(
   },
 ) {
   const threadKey = createChatThreadKey(args.fromAgent, args.toAgent);
+  let sceneId: string | undefined;
+  let sceneOrder: number | undefined;
+  if (args.deliveryMode === 'live') {
+    const liveScene = await getLiveChatSceneBetweenAgents(ctx, args.fromAgent, args.toAgent);
+    if (liveScene) {
+      sceneId = liveScene.sceneId;
+      sceneOrder = (liveScene.lastMessageOrder ?? 0) + 1;
+      await ctx.db.patch(liveScene._id, { lastMessageOrder: sceneOrder });
+    }
+  }
   await ctx.db.insert('rl_chat_messages', {
     threadKey,
+    sceneId,
+    sceneOrder,
     fromAgent: args.fromAgent,
     toAgent: args.toAgent,
     text: args.text,
@@ -1004,6 +1713,67 @@ async function createChatMessage(
   return threadKey;
 }
 
+async function getLiveChatSceneBetweenAgents(ctx: any, agentA: string, agentB: string) {
+  const viaA = await ctx.db
+    .query('rl_chat_scenes')
+    .withIndex('agentA_status', (q: any) => q.eq('agentA', agentA).eq('status', 'live'))
+    .collect();
+  const direct = viaA.find((scene: any) => scene.agentB === agentB);
+  if (direct) return direct;
+
+  const viaB = await ctx.db
+    .query('rl_chat_scenes')
+    .withIndex('agentA_status', (q: any) => q.eq('agentA', agentB).eq('status', 'live'))
+    .collect();
+  return viaB.find((scene: any) => scene.agentB === agentA) ?? null;
+}
+
+async function getMostRecentClosedSceneBetweenAgents(ctx: any, agentA: string, agentB: string) {
+  const [closedViaA, closedViaB] = await Promise.all([
+    ctx.db
+      .query('rl_chat_scenes')
+      .withIndex('agentA_status', (q: any) => q.eq('agentA', agentA).eq('status', 'closed'))
+      .collect(),
+    ctx.db
+      .query('rl_chat_scenes')
+      .withIndex('agentA_status', (q: any) => q.eq('agentA', agentB).eq('status', 'closed'))
+      .collect(),
+  ]);
+  const matching = [...closedViaA, ...closedViaB]
+    .filter((scene: any) =>
+      (scene.agentA === agentA && scene.agentB === agentB)
+      || (scene.agentA === agentB && scene.agentB === agentA),
+    )
+    .sort((a: any, b: any) =>
+      (b.closedDay ?? -1) - (a.closedDay ?? -1)
+      || (b.closedTick ?? -1) - (a.closedTick ?? -1),
+    );
+  return matching[0] ?? null;
+}
+
+function compareChatMessageOrder(a: any, b: any) {
+  return (
+    a.sentDay - b.sentDay
+    || a.sentTick - b.sentTick
+    || (a.sceneOrder ?? 0) - (b.sceneOrder ?? 0)
+  );
+}
+
+function describeSuspiciousDealLikeChat(text: string | undefined) {
+  const trimmed = text?.trim();
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase();
+  const hasDealVerb =
+    /\b(i can offer|i can sell|i can buy|i can trade|i'll take|i will take|deal|for \d+|\bfor\b)/.test(lower);
+  const hasEconomicObject =
+    /\b(coin|coins|grain|bread|ale|coal|iron ore|iron_ore|horseshoe|medicine|tool|hammer|axe|knife|herb|meal)\b/.test(lower);
+  const hasQuantity = /\b\d+\b/.test(lower) || /\b(one|two|three|four|five|six|seven|eight|nine|ten|twenty)\b/.test(lower);
+  if (hasDealVerb && hasEconomicObject && hasQuantity) {
+    return 'Plain chat sounded like a concrete deal, but no structured economic intent was attached. No binding offer was created.';
+  }
+  return null;
+}
+
 async function createSceneSystemMessage(
   ctx: any,
   agentA: string,
@@ -1013,8 +1783,18 @@ async function createSceneSystemMessage(
   day: number,
 ) {
   const threadKey = createChatThreadKey(agentA, agentB);
+  let sceneId: string | undefined;
+  let sceneOrder: number | undefined;
+  const liveScene = await getLiveChatSceneBetweenAgents(ctx, agentA, agentB);
+  if (liveScene) {
+    sceneId = liveScene.sceneId;
+    sceneOrder = (liveScene.lastMessageOrder ?? 0) + 1;
+    await ctx.db.patch(liveScene._id, { lastMessageOrder: sceneOrder });
+  }
   await ctx.db.insert('rl_chat_messages', {
     threadKey,
+    sceneId,
+    sceneOrder,
     fromAgent: '[system]',
     toAgent: agentB,
     text,
@@ -1030,13 +1810,13 @@ function buildSceneVisibleActionText(parsed: RocklawAction, partner: string): st
   if (explicit) return explicit;
   switch (parsed.action === 'chat' ? getChatIntent(parsed) : parsed.action) {
     case 'buy':
-      return `I want to buy ${parsed.quantity ?? 1} ${parsed.item ?? 'item'} from you for ${parsed.amount ?? 0} coin.`;
+      return `I want to buy ${formatItemQuantity(parsed.item ?? 'item', parsed.quantity ?? 1)} from you for ${parsed.amount ?? 0} coin.`;
     case 'sell':
-      return `I can sell you ${parsed.quantity ?? 1} ${parsed.item ?? 'item'} for ${parsed.amount ?? 0} coin.`;
+      return `I can sell you ${formatItemQuantity(parsed.item ?? 'item', parsed.quantity ?? 1)} for ${parsed.amount ?? 0} coin.`;
     case 'trade':
       return `I want to propose a trade with you.`;
     case 'give':
-      return `I am giving you ${parsed.quantity ?? 1} ${parsed.item ?? 'item'}.`;
+      return `I am giving you ${formatItemQuantity(parsed.item ?? 'item', parsed.quantity ?? 1)}.`;
     case 'pay':
       return `I am paying you ${parsed.amount ?? 0} coin.`;
     case 'accept_transaction':
@@ -1218,7 +1998,7 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
       };
     }
     if (parsed.action === 'chat') {
-      const chatIntent = getChatIntent(parsed);
+      const chatIntent = getChatCommerceIntent(parsed);
       if (parsed.target !== partner) {
         return {
           ok: false,
@@ -1301,13 +2081,13 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
     if (agentDoc.role === 'Farmer' && ['check_field', 'plant', 'water', 'harvest'].includes(parsed.action)) {
       return {
         ok: false,
-        note: 'Farmer production now uses work. Use bare work for the best field task, or work with grain or vegetables when you need a specific crop.',
+        note: 'Farmer production now uses work. Use bare work for the best field task, or work with grain or vegetable when you need a specific crop.',
       };
     }
     if (agentDoc.role === 'Herbalist' && ['gather', 'brew'].includes(parsed.action)) {
       return {
         ok: false,
-        note: 'Herbalist production now uses work. Use bare work for the best herbal task, or work with herbs or medicine when you need a specific output.',
+        note: 'Herbalist production now uses work. Use bare work for the best herbal task, or work with herb or medicine when you need a specific output.',
       };
     }
     return {
@@ -1325,7 +2105,8 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
       return { ok: true, resolvedLocation: locationDoc.name };
     }
     case 'chat': {
-      const chatIntent = getChatIntent(parsed);
+      const chatIntent = getChatCommerceIntent(parsed);
+      const speechIntent = getSpeechIntent(parsed);
       if (!parsed.target) {
         return { ok: false, note: 'chat requires a target agent. Use a known person from TURN.md. Chats are one-to-one only.' };
       }
@@ -1334,20 +2115,34 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
       if (!targetAgent) return { ok: false, note: `Target agent not found: ${parsed.target}.` };
       const knownAlready = await hasKnownContact(ctx, agentDoc.name, parsed.target);
       const visibleNow = targetAgent.location === agentDoc.location;
+      const targetActivePartners = await getActiveTalkPartnersForAgent(ctx, parsed.target);
+      const targetAlreadyChattingWithOther = targetActivePartners.some((partner: string) => partner !== agentDoc.name);
       if (!knownAlready && !visibleNow) {
         return { ok: false, note: `You can only chat known contacts from TURN.md. You have not met ${parsed.target} yet.` };
       }
       if (!(parsed.text ?? parsed.message)) {
         return { ok: false, note: 'chat requires text.' };
       }
+      if (speechIntent === 'gossip') {
+        return { ok: false, note: 'gossip is public speech. Use say with intent:"gossip" instead of chat.' };
+      }
       if (chatIntent && !visibleNow) {
         return { ok: false, note: sceneOnlyActionNote(chatIntent) };
+      }
+      if (chatIntent && targetAlreadyChattingWithOther) {
+        return { ok: false, note: `chat intent "${chatIntent}" is only valid when ${parsed.target} is here and available for a live chat right now.` };
       }
       return { ok: true };
     }
     case 'say':
       if (parsed.target) return { ok: false, note: 'say is local speech and does not take a target. Use chat for one-to-one communication.' };
       if (!(parsed.text ?? parsed.message)) return { ok: false, note: 'say requires text.' };
+      if (parsed.intent === 'lie' || parsed.intent === 'threaten') {
+        return { ok: false, note: `${parsed.intent} is direct pressure or concealment. Use chat with that person instead of say.` };
+      }
+      if (parsed.intent && parsed.intent !== 'gossip') {
+        return { ok: false, note: `say only supports intent:"gossip" as a social intent.` };
+      }
       return { ok: true };
     case 'pay':
     case 'buy':
@@ -1393,7 +2188,7 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
       if (!parsed.item) return { ok: false, note: 'sell_place requires an item.' };
       if (quantity < 1) return { ok: false, note: 'sell_place requires a positive quantity.' };
       if (!inventoryHasAtLeast(agentDoc.inventory, parsed.item, quantity)) {
-        const inv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+        const inv = parseInventoryRecord(agentDoc.inventory);
         return { ok: false, note: `Not enough ${parsed.item}: need ${quantity}, have ${inv[parsed.item] ?? 0}.` };
       }
       const targetPlace = parsed.target ?? parsed.location;
@@ -1430,7 +2225,7 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
       if (!parsed.item) return { ok: false, note: 'deliver_place requires an item.' };
       if (quantity < 1) return { ok: false, note: 'deliver_place requires a positive quantity.' };
       if (!inventoryHasAtLeast(agentDoc.inventory, parsed.item, quantity)) {
-        const inv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+        const inv = parseInventoryRecord(agentDoc.inventory);
         return { ok: false, note: `Not enough ${parsed.item}: need ${quantity}, have ${inv[parsed.item] ?? 0}.` };
       }
       const targetPlace = parsed.target ?? parsed.location;
@@ -1465,8 +2260,14 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
                 ok: true,
                 workKind: 'blacksmith',
                 consumes: resolved.recipe.consumes,
-                produces: resolved.recipe.produces,
-                note: resolved.recipe.note,
+                produces: applyProducedItemBonus(
+                  resolved.recipe.produces,
+                  resolved.recipe.output,
+                  resolved.recipe.output !== 'horseshoe' && hasInventoryItem(agentDoc, 'horseshoe', 1) ? 1 : 0,
+                ),
+                note: resolved.recipe.output !== 'horseshoe' && hasInventoryItem(agentDoc, 'horseshoe', 1)
+                  ? `${resolved.recipe.note} Your spare horseshoe helps you keep the forge aligned.`
+                  : resolved.recipe.note,
               }
             : null;
         } else if (agentDoc.role === 'Farmer') {
@@ -1475,6 +2276,10 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
           workNote = resolved.note;
         } else if (agentDoc.role === 'Herbalist') {
           const resolved = await resolveHerbalistWork(ctx, agentDoc, parsed.item ?? parsed.target);
+          workValidation = resolved.validation;
+          workNote = resolved.note;
+        } else if (agentDoc.role === 'Innkeeper') {
+          const resolved = await resolveInnkeeperWork(agentDoc, parsed.item ?? parsed.target);
           workValidation = resolved.validation;
           workNote = resolved.note;
         } else {
@@ -1513,11 +2318,11 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
       const field = fields.find((entry: any) => entry.stage === 'fallow');
       if (!field) return { ok: false, note: 'No fallow field is available to plant right now.' };
       const cropItem = parsed.item ?? 'grain';
-      if (!['grain', 'vegetables'].includes(cropItem)) {
-        return { ok: false, note: 'plant currently supports grain or vegetables.' };
+      if (!['grain', 'vegetable'].includes(cropItem)) {
+        return { ok: false, note: 'plant currently supports grain or vegetable.' };
       }
       if (!inventoryHasAtLeast(agentDoc.inventory, cropItem, 1)) {
-        const inv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+        const inv = parseInventoryRecord(agentDoc.inventory);
         return { ok: false, note: `Not enough ${cropItem}: need 1, have ${inv[cropItem] ?? 0}.` };
       }
       return { ok: true, fieldKey: field.fieldKey, cropItem, consumes: [{ item: cropItem, quantity: 1 }], note: `Plant ${cropItem} in ${field.fieldKey}.` };
@@ -1551,7 +2356,7 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
       const patches = await getHerbPatchesAtLocation(ctx, agentDoc.location);
       const patch = patches.find((entry: any) => entry.available > 0);
       if (!patch) {
-        return { ok: false, note: 'No gatherable herbs are available here right now.' };
+        return { ok: false, note: 'No gatherable herb is available here right now.' };
       }
       const quantity = Math.min(2, patch.available);
       return {
@@ -1564,7 +2369,7 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
     case 'identify':
       if (!parsed.item) return { ok: false, note: 'identify requires an item.' };
       if (!inventoryHasAtLeast(agentDoc.inventory, parsed.item, 1)) {
-        const inv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+        const inv = parseInventoryRecord(agentDoc.inventory);
         return { ok: false, note: `Not enough ${parsed.item}: need 1, have ${inv[parsed.item] ?? 0}.` };
       }
       return { ok: true };
@@ -1581,6 +2386,9 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
         : { ok: false, note: 'rest is only useful when you are meaningfully tired.' };
     case 'sleep': {
       const timeOfDay = typeof tick === 'number' ? timeOfDayForTick(tick) : null;
+      if (!parsed.journal || parsed.journal.trim().length === 0) {
+        return { ok: false, note: 'sleep requires a short `journal` paragraph summarising the day.' };
+      }
       return ((timeOfDay !== null && isSleepPeriod(timeOfDay)) || agentDoc.energy < 20)
         ? { ok: true }
         : { ok: false, note: 'sleep is only appropriate in the evening, at night, or when you are critically exhausted.' };
@@ -1596,13 +2404,21 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
       if (!parsed.item) return { ok: false, note: 'Eat requires an item.' };
       if (!isEdible(parsed.item)) return { ok: false, note: `${parsed.item} is not edible.` };
       if (!inventoryHasAtLeast(agentDoc.inventory, parsed.item, parsed.quantity ?? 1)) {
-        const inv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+        const inv = parseInventoryRecord(agentDoc.inventory);
         if (parsed.item === 'meal') {
           return {
             ok: false,
             note: `Not enough meal: need ${parsed.quantity ?? 1}, have ${inv[parsed.item] ?? 0}. Accept or buy one first.`,
           };
         }
+        return { ok: false, note: `Not enough ${parsed.item}: need ${parsed.quantity ?? 1}, have ${inv[parsed.item] ?? 0}.` };
+      }
+      return { ok: true };
+    case 'use':
+      if (!parsed.item) return { ok: false, note: 'use requires an item.' };
+      if (!isUsable(parsed.item)) return { ok: false, note: `${parsed.item} cannot be used directly.` };
+      if (!inventoryHasAtLeast(agentDoc.inventory, parsed.item, parsed.quantity ?? 1)) {
+        const inv = parseInventoryRecord(agentDoc.inventory);
         return { ok: false, note: `Not enough ${parsed.item}: need ${parsed.quantity ?? 1}, have ${inv[parsed.item] ?? 0}.` };
       }
       return { ok: true };
@@ -1626,6 +2442,21 @@ async function validateChatIntentSideEffect(
 
   if (intent === 'accept_transaction' || intent === 'reject_transaction') {
     if (!parsed.offer_ref) return { ok: false, note: `chat intent "${intent}" requires offer_ref.` };
+    if (isSceneOpeningOfferRef(parsed.offer_ref)) {
+      const openingOffer = await getSceneOpeningOfferForRecipient(ctx, scene, agentDoc);
+      if (!openingOffer) {
+        return { ok: false, note: `Unknown pending offer: ${parsed.offer_ref}.` };
+      }
+      const proposer = await ctx.db
+        .query('rl_agents')
+        .withIndex('name', (q: any) => q.eq('name', openingOffer.proposerName))
+        .unique();
+      if (!proposer) return { ok: false, note: 'The other party no longer exists.' };
+      if (proposer.location !== agentDoc.location) {
+        return { ok: false, note: `${proposer.name} is no longer here. In-person offers can only be answered while the local scene is still live.` };
+      }
+      return { ok: true };
+    }
     const txn = await resolvePendingTransactionReference(ctx, agentDoc.name, parsed.offer_ref);
     if (!txn) {
       const referencedTxn = await findTransactionByTargetReference(ctx, parsed.offer_ref);
@@ -1688,7 +2519,7 @@ async function validateChatIntentSideEffect(
         return { ok: false, note: 'Meal service is unavailable here until you have bread and ale at the inn.' };
       }
     } else if (!inventoryHasAtLeast(agentDoc.inventory, parsed.item!, parsed.quantity!)) {
-      const sellerInv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+      const sellerInv = parseInventoryRecord(agentDoc.inventory);
       return {
         ok: false,
         note: `Not enough ${parsed.item}: need ${parsed.quantity}, have ${sellerInv[parsed.item!] ?? 0}.`,
@@ -1703,7 +2534,7 @@ async function validateChatIntentSideEffect(
       if (item === 'coin') {
         if (agentDoc.coin < qty) return { ok: false, note: `Not enough coin: need ${qty}c, have ${agentDoc.coin}c.` };
       } else if (!inventoryHasAtLeast(agentDoc.inventory, item, qty)) {
-        const proposerInv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+        const proposerInv = parseInventoryRecord(agentDoc.inventory);
         return { ok: false, note: `Not enough ${item}: need ${qty}, have ${proposerInv[item] ?? 0}.` };
       }
     }
@@ -2131,11 +2962,42 @@ async function sendChatAction(
     return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, `Target agent not found: ${parsed.target}.`);
   }
 
+  if ((deliveryOverride ?? 'deferred') === 'deferred') {
+    const recentClosedScene = await getMostRecentClosedSceneBetweenAgents(ctx, agentDoc.name, parsed.target!);
+    if (recentClosedScene && typeof recentClosedScene.closedTick === 'number' && tick <= recentClosedScene.closedTick + 1) {
+      await ctx.db.insert('rl_actions_log', {
+        agentName: agentDoc.name,
+        action: parsed.action,
+        target: parsed.target ?? undefined,
+        location: agentDoc.location,
+        message: text,
+        tick,
+        day,
+        outcome: 'success',
+        outcomeNote: `Suppressed deferred follow-up to ${parsed.target} because your live chat just closed on the previous tick.`,
+      });
+      await ctx.db.patch(agentDoc._id, {
+        energy: newEnergy,
+        health: newHealth,
+        hunger: finalHunger,
+        busy: false,
+        busyUntilTick: undefined,
+      });
+      return {
+        outcome: 'success',
+        note: `${parsed.target} just left your live chat. Wait a beat before following up again.`,
+      };
+    }
+  }
+
   await markUnreadChatFromContactRead(ctx, agentDoc.name, parsed.target!, tick, day);
   const targetActivePartners = await getActiveTalkPartnersForAgent(ctx, parsed.target!);
   const targetAlreadyChattingWithOther = targetActivePartners.some((partner: string) => partner !== agentDoc.name);
   const deliveryMode: 'live' | 'deferred' = deliveryOverride
     ?? ((targetAgent.location === agentDoc.location && !targetAlreadyChattingWithOther) ? 'live' : 'deferred');
+  const suspiciousDealLikeNote = !getChatIntent(parsed)
+    ? describeSuspiciousDealLikeChat(text)
+    : null;
   await createChatMessage(ctx, {
     fromAgent: agentDoc.name,
     toAgent: parsed.target!,
@@ -2155,7 +3017,9 @@ async function sendChatAction(
       tick,
       day,
       outcome: 'success',
-      outcomeNote: `Live chat message sent to ${parsed.target}.`,
+      outcomeNote: suspiciousDealLikeNote
+        ? `Live chat message sent to ${parsed.target}. ${suspiciousDealLikeNote}`
+        : `Live chat message sent to ${parsed.target}.`,
     });
 
     await ctx.db.patch(agentDoc._id, {
@@ -2181,7 +3045,9 @@ async function sendChatAction(
     tick,
     day,
     outcome: 'success',
-    outcomeNote: deferredReason ?? `Deferred chat sent to ${parsed.target}.`,
+    outcomeNote: suspiciousDealLikeNote
+      ? `${deferredReason ?? `Deferred chat sent to ${parsed.target}.`} ${suspiciousDealLikeNote}`
+      : deferredReason ?? `Deferred chat sent to ${parsed.target}.`,
   });
 
   await ctx.db.patch(agentDoc._id, {
@@ -2238,6 +3104,17 @@ async function createPendingTransaction(
   finalHunger: number,
 ) {
   const terms = buildTransactionTerms(parsed);
+  const liveScene = await getLiveChatSceneForAgent(ctx, agentDoc.name);
+  if (liveScene && getScenePartner(liveScene, agentDoc.name) === parsed.target) {
+    await supersedePendingTransactionsBetweenAgents(
+      ctx,
+      agentDoc.name,
+      parsed.target!,
+      tick,
+      day,
+      `Superseded by a newer ${parsed.action} offer in the same live chat.`,
+    );
+  }
   const txnId = createTransactionId(parsed.action, agentDoc.name, tick, day);
   await ctx.db.insert('rl_transactions', {
     txnId,
@@ -2306,6 +3183,52 @@ async function resolveTransactionResponse(
   options?: { skipSceneVisibleMessage?: boolean },
 ) {
   const reference = parsed.offer_ref ?? parsed.target ?? '';
+  if (isSceneOpeningOfferRef(reference)) {
+    const scene = await getLiveChatSceneForAgent(ctx, agentDoc.name);
+    const openingOffer = scene ? await getSceneOpeningOfferForRecipient(ctx, scene, agentDoc) : null;
+    if (!scene || !openingOffer) {
+      return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, `Unknown pending offer: ${reference}.`);
+    }
+    const proposer = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q: any) => q.eq('name', openingOffer.proposerName))
+      .unique();
+    if (!proposer) {
+      await clearSceneOpeningOffer(ctx, scene);
+      return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, 'The other party no longer exists.');
+    }
+    if (proposer.location !== agentDoc.location) {
+      await clearSceneOpeningOffer(ctx, scene);
+      return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, `${proposer.name} is no longer here. In-person offers can only be answered while the local scene is still live.`);
+    }
+
+    const openerTxnId = await createPendingTransactionFromParsedOffer(
+      ctx,
+      proposer.name,
+      agentDoc.name,
+      scene.location,
+      openingOffer.parsed,
+      tick,
+      day,
+    );
+    await clearSceneOpeningOffer(ctx, scene);
+    const replayedParsed: RocklawAction = {
+      ...parsed,
+      offer_ref: openerTxnId,
+      target: proposer.name,
+    };
+    return resolveTransactionResponse(
+      ctx,
+      agentDoc,
+      replayedParsed,
+      tick,
+      day,
+      newEnergy,
+      newHealth,
+      finalHunger,
+      options,
+    );
+  }
   const txn = await resolvePendingTransactionReference(ctx, agentDoc.name, reference);
 
   if (!txn) {
@@ -2443,8 +3366,8 @@ async function resolveTransactionResponse(
 
   const offer = parseTransactionItems(txn.offerJson);
   const request = parseTransactionItems(txn.requestJson);
-  const proposerInv = JSON.parse(proposer.inventory) as Record<string, number>;
-  const recipientInv = JSON.parse(agentDoc.inventory) as Record<string, number>;
+  const proposerInv = parseInventoryRecord(proposer.inventory);
+  const recipientInv = parseInventoryRecord(agentDoc.inventory);
 
   for (const item of offer) {
     if (item.item === 'coin') {
@@ -2625,6 +3548,36 @@ export const getAgent = internalQuery({
   },
 });
 
+export const getPromptActionHints = internalQuery({
+  args: {
+    agentName: v.string(),
+    tick: v.optional(v.number()),
+  },
+  handler: async (ctx, { agentName, tick }) => {
+    const agentDoc = await ctx.db.query('rl_agents').withIndex('name', (q) => q.eq('name', agentName)).unique();
+    if (!agentDoc) return [];
+    return buildPromptActionHints(ctx, agentDoc, tick);
+  },
+});
+
+export const getLiveChatTradeFacts = internalQuery({
+  args: { agentName: v.string() },
+  handler: async (ctx, { agentName }) => {
+    const agentDoc = await ctx.db.query('rl_agents').withIndex('name', (q) => q.eq('name', agentName)).unique();
+    if (!agentDoc) return [];
+    return buildLiveChatTradeFacts(ctx, agentDoc);
+  },
+});
+
+export const getLiveChatPromptContext = internalQuery({
+  args: { agentName: v.string() },
+  handler: async (ctx, { agentName }) => {
+    const agentDoc = await ctx.db.query('rl_agents').withIndex('name', (q) => q.eq('name', agentName)).unique();
+    if (!agentDoc) return null;
+    return buildLiveChatPromptContext(ctx, agentDoc);
+  },
+});
+
 export const getActiveTalkPartners = internalQuery({
   args: { agentName: v.string() },
   handler: async (ctx, { agentName }) => {
@@ -2664,6 +3617,8 @@ export const createLiveChatScene = internalMutation({
     nextSpeaker: v.string(),
     openingSpeaker: v.optional(v.string()),
     openingText: v.optional(v.string()),
+    openingOfferRef: v.optional(v.string()),
+    openingOfferPayloadJson: v.optional(v.string()),
     interruptedSpeaker: v.optional(v.string()),
     interruptedText: v.optional(v.string()),
     interruptedActionJson: v.optional(v.string()),
@@ -2677,6 +3632,8 @@ export const createLiveChatScene = internalMutation({
     nextSpeaker,
     openingSpeaker,
     openingText,
+    openingOfferRef,
+    openingOfferPayloadJson,
     interruptedSpeaker,
     interruptedText,
     interruptedActionJson,
@@ -2697,17 +3654,42 @@ export const createLiveChatScene = internalMutation({
       nextSpeaker,
       openedTick: tick,
       openedDay: day,
+      lastMessageOrder: 0,
       lastActiveTick: tick,
       lastActiveDay: day,
       stallTurns: 0,
       openingSpeaker,
       openingText,
+      openingOfferRef,
+      openingOfferPayloadJson,
       interruptedSpeaker,
       interruptedText,
       interruptedActionJson,
       interruptedContextPending: Boolean(interruptedSpeaker && interruptedText),
     });
     return sceneId;
+  },
+});
+
+export const recordLiveChatMessage = internalMutation({
+  args: {
+    fromAgent: v.string(),
+    toAgent: v.string(),
+    text: v.string(),
+    tick: v.number(),
+    day: v.number(),
+  },
+  handler: async (ctx, { fromAgent, toAgent, text, tick, day }) => {
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+    return await createChatMessage(ctx, {
+      fromAgent,
+      toAgent,
+      text: trimmed,
+      deliveryMode: 'live',
+      tick,
+      day,
+    });
   },
 });
 
@@ -2849,7 +3831,11 @@ const OFFER_EXPIRY_TICKS = 3;
 const INTERACTION_EXPIRY_TICKS = 2;
 
 function entityListToItems(entries: unknown[] | undefined): TransactionItem[] {
-  return normaliseEntityList(entries) ?? [];
+  const items = normaliseEntityList(entries) ?? [];
+  return items.map((entry) => ({
+    ...entry,
+    item: canonicalizeTransactionItemId(entry.item) ?? entry.item,
+  }));
 }
 
 function buildTransactionTerms(parsed: RocklawAction): { offer: TransactionItem[]; request: TransactionItem[] } {
@@ -2857,11 +3843,15 @@ function buildTransactionTerms(parsed: RocklawAction): { offer: TransactionItem[
     case 'buy':
       return {
         offer: typeof parsed.amount === 'number' && parsed.amount > 0 ? [{ item: 'coin', quantity: parsed.amount }] : [],
-        request: parsed.item && typeof parsed.quantity === 'number' && parsed.quantity > 0 ? [{ item: parsed.item, quantity: parsed.quantity }] : [],
+        request: parsed.item && typeof parsed.quantity === 'number' && parsed.quantity > 0
+          ? [{ item: canonicalizeTransactionItemId(parsed.item) ?? parsed.item, quantity: parsed.quantity }]
+          : [],
       };
     case 'sell':
       return {
-        offer: parsed.item && typeof parsed.quantity === 'number' && parsed.quantity > 0 ? [{ item: parsed.item, quantity: parsed.quantity }] : [],
+        offer: parsed.item && typeof parsed.quantity === 'number' && parsed.quantity > 0
+          ? [{ item: canonicalizeTransactionItemId(parsed.item) ?? parsed.item, quantity: parsed.quantity }]
+          : [],
         request: typeof parsed.amount === 'number' && parsed.amount > 0 ? [{ item: 'coin', quantity: parsed.amount }] : [],
       };
     case 'trade':
@@ -2881,7 +3871,12 @@ function serialiseTransactionItems(items: TransactionItem[]): string {
 function parseTransactionItems(itemsJson: string): TransactionItem[] {
   try {
     const parsed = JSON.parse(itemsJson) as TransactionItem[];
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed)
+      ? canonicalizeItemEntries(parsed.map((entry) => ({
+          ...entry,
+          item: canonicalizeTransactionItemId(entry.item) ?? entry.item,
+        })))
+      : [];
   } catch {
     return [];
   }
@@ -2889,7 +3884,7 @@ function parseTransactionItems(itemsJson: string): TransactionItem[] {
 
 function formatTransactionItems(items: TransactionItem[]): string {
   if (items.length === 0) return 'nothing';
-  return items.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
+  return canonicalizeItemEntries(items).map((entry) => formatItemQuantity(entry.item, entry.quantity)).join(', ');
 }
 
 function createTransactionId(kind: string, fromAgent: string, tick: number, day: number): string {
@@ -2921,6 +3916,140 @@ export const setAgentPendingNote = internalMutation({
       .withIndex('name', (q) => q.eq('name', agentName))
       .unique();
     if (agent) await ctx.db.patch(agent._id, { pendingNote: note });
+  },
+});
+
+export const configureOpenRouterFreeAgent = internalMutation({
+  args: {
+    agentName: v.string(),
+    currentModel: v.string(),
+    fallbackModel: v.string(),
+    fallbackProvider: v.optional(v.string()),
+    candidatesJson: v.string(),
+  },
+  handler: async (ctx, { agentName, currentModel, fallbackModel, fallbackProvider, candidatesJson }) => {
+    const agent = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q) => q.eq('name', agentName))
+      .unique();
+    if (!agent) return false;
+    await ctx.db.patch(agent._id, {
+      providerOverride: 'openrouter',
+      modelOverride: currentModel,
+      openrouterFreeEnabled: true,
+      openrouterFreeCandidatesJson: candidatesJson,
+      openrouterFreeCurrentIndex: 0,
+      openrouterFreeFailureCount: 0,
+      openrouterFreeFallbackActivated: false,
+      openrouterFreeFallbackModel: fallbackModel,
+      openrouterFreeFallbackProvider: fallbackProvider ?? 'openrouter',
+    });
+    return true;
+  },
+});
+
+export const clearOpenRouterFreeAgent = internalMutation({
+  args: { agentName: v.string() },
+  handler: async (ctx, { agentName }) => {
+    const agent = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q) => q.eq('name', agentName))
+      .unique();
+    if (!agent) return false;
+    await ctx.db.patch(agent._id, {
+      openrouterFreeEnabled: undefined,
+      openrouterFreeCandidatesJson: undefined,
+      openrouterFreeCurrentIndex: undefined,
+      openrouterFreeFailureCount: undefined,
+      openrouterFreeFallbackActivated: undefined,
+      openrouterFreeFallbackModel: undefined,
+      openrouterFreeFallbackProvider: undefined,
+    });
+    return true;
+  },
+});
+
+export const resetOpenRouterFreeFailureState = internalMutation({
+  args: { agentName: v.string() },
+  handler: async (ctx, { agentName }) => {
+    const agent = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q) => q.eq('name', agentName))
+      .unique();
+    if (!agent?.openrouterFreeEnabled) return false;
+    if ((agent.openrouterFreeFailureCount ?? 0) === 0) return true;
+    await ctx.db.patch(agent._id, { openrouterFreeFailureCount: 0 });
+    return true;
+  },
+});
+
+export const registerOpenRouterFreeFailure = internalMutation({
+  args: {
+    agentName: v.string(),
+    failureKind: v.union(
+      v.literal('transport_failed'),
+      v.literal('parse_failed'),
+      v.literal('invalid_action'),
+    ),
+  },
+  handler: async (ctx, { agentName, failureKind }) => {
+    const agent = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q) => q.eq('name', agentName))
+      .unique();
+    if (!agent?.openrouterFreeEnabled) return null;
+
+    const threshold = failureKind === 'transport_failed' ? 1 : 2;
+    const nextFailureCount = (agent.openrouterFreeFailureCount ?? 0) + 1;
+    const candidates = (() => {
+      try {
+        const parsed = JSON.parse(agent.openrouterFreeCandidatesJson ?? '[]') as string[];
+        return Array.isArray(parsed) ? parsed.filter((entry) => typeof entry === 'string' && entry.trim()) : [];
+      } catch {
+        return [] as string[];
+      }
+    })();
+
+    if (nextFailureCount < threshold) {
+      await ctx.db.patch(agent._id, { openrouterFreeFailureCount: nextFailureCount });
+      return null;
+    }
+
+    const currentIndex = agent.openrouterFreeCurrentIndex ?? 0;
+    const nextCandidate = candidates[currentIndex + 1];
+    if (!agent.openrouterFreeFallbackActivated && nextCandidate) {
+      await ctx.db.patch(agent._id, {
+        providerOverride: 'openrouter',
+        modelOverride: nextCandidate,
+        openrouterFreeCurrentIndex: currentIndex + 1,
+        openrouterFreeFailureCount: 0,
+      });
+      return {
+        mode: 'rotate',
+        provider: 'openrouter',
+        model: nextCandidate,
+        previousModel: agent.modelOverride ?? candidates[currentIndex] ?? null,
+      };
+    }
+
+    if (!agent.openrouterFreeFallbackActivated && agent.openrouterFreeFallbackModel) {
+      const fallbackProvider = agent.openrouterFreeFallbackProvider ?? 'openrouter';
+      await ctx.db.patch(agent._id, {
+        providerOverride: fallbackProvider,
+        modelOverride: agent.openrouterFreeFallbackModel,
+        openrouterFreeFailureCount: 0,
+        openrouterFreeFallbackActivated: true,
+      });
+      return {
+        mode: 'fallback',
+        provider: fallbackProvider,
+        model: agent.openrouterFreeFallbackModel,
+        previousModel: agent.modelOverride ?? candidates[currentIndex] ?? null,
+      };
+    }
+
+    await ctx.db.patch(agent._id, { openrouterFreeFailureCount: nextFailureCount });
+    return null;
   },
 });
 
@@ -3009,7 +4138,7 @@ async function executeResolvedAction(
       tick,
       day,
       outcome: 'failed',
-      outcomeNote: failNote,
+      outcomeNote: `${failNote}${formatSpeechIntentNote(getSpeechIntent(parsed))}`,
     });
 
     await ctx.db.patch(agentDoc._id, {
@@ -3088,7 +4217,9 @@ async function executeResolvedAction(
     : undefined;
 
   const eatingHungerReduction = parsed.action === 'eat' ? hungerRestoreFor(parsed.item) : 0;
+  const useHealthRestore = parsed.action === 'use' ? healthRestoreFor(parsed.item) * (parsed.quantity ?? 1) : 0;
   const finalHunger = Math.max(0, newHunger - eatingHungerReduction);
+  const finalHealth = Math.min(100, newHealth + useHealthRestore);
 
   if (parsed.action === 'buy' || parsed.action === 'sell' || parsed.action === 'trade') {
     const result = await createPendingTransaction(
@@ -3098,7 +4229,7 @@ async function executeResolvedAction(
       tick,
       day,
       newEnergy,
-      newHealth,
+      finalHealth,
       finalHunger,
     );
     if (result?.outcome === 'success') {
@@ -3141,7 +4272,7 @@ async function executeResolvedAction(
     });
     await ctx.db.patch(agentDoc._id, {
       energy: newEnergy,
-      health: newHealth,
+      health: finalHealth,
       hunger: finalHunger,
       ...clearBusyStatePatch(),
     });
@@ -3173,7 +4304,7 @@ async function executeResolvedAction(
       tick,
       day,
       newEnergy,
-      newHealth,
+      finalHealth,
       finalHunger,
     );
     if (result?.outcome === 'success') {
@@ -3186,6 +4317,16 @@ async function executeResolvedAction(
     const chatIntent = getChatIntent(parsed);
     if (chatIntent && chatDeliveryOverride === 'live') {
       const partner = parsed.target!;
+      const liveScene = await getLiveChatSceneForAgent(ctx, agentDoc.name);
+      const isOpeningOfferTurn =
+        Boolean(
+          liveScene
+          && liveScene.openingSpeaker === agentDoc.name
+          && !liveScene.lastSpeaker
+          && liveScene.nextSpeaker === partner
+          && liveScene.openingOfferPayloadJson
+          && isSceneOpeningOfferRef(liveScene.openingOfferRef ?? null),
+        );
       await markUnreadChatFromContactRead(ctx, agentDoc.name, partner, tick, day);
       await createChatMessage(ctx, {
         fromAgent: agentDoc.name,
@@ -3231,7 +4372,29 @@ async function executeResolvedAction(
       let result:
         | { outcome?: string; note?: string }
         | undefined;
-      if (chatIntent === 'buy' || chatIntent === 'sell' || chatIntent === 'trade') {
+      if (isOpeningOfferTurn) {
+        await ctx.db.insert('rl_actions_log', {
+          agentName,
+          action: 'chat',
+          target: partner,
+          location: agentDoc.location,
+          message: parsed.text ?? parsed.message,
+          tick,
+          day,
+          outcome: 'success',
+          outcomeNote: `Opening offer ${liveScene?.openingOfferRef ?? SCENE_OPENING_OFFER_REF} is now visible to ${partner}.${formatSpeechIntentNote(chatIntent)}`,
+        });
+        await ctx.db.patch(agentDoc._id, {
+          energy: newEnergy,
+          health: finalHealth,
+          hunger: finalHunger,
+          ...clearBusyStatePatch(),
+        });
+        result = {
+          outcome: 'success',
+          note: `Opening offer ${liveScene?.openingOfferRef ?? SCENE_OPENING_OFFER_REF} is now visible to ${partner}.`,
+        };
+      } else if (chatIntent === 'buy' || chatIntent === 'sell' || chatIntent === 'trade') {
         result = await createPendingTransaction(
           ctx,
           agentDoc,
@@ -3239,7 +4402,7 @@ async function executeResolvedAction(
           tick,
           day,
           newEnergy,
-          newHealth,
+          finalHealth,
           finalHunger,
         );
       } else if (chatIntent === 'accept_transaction' || chatIntent === 'reject_transaction') {
@@ -3250,7 +4413,7 @@ async function executeResolvedAction(
           tick,
           day,
           newEnergy,
-          newHealth,
+          finalHealth,
           finalHunger,
           { skipSceneVisibleMessage: true },
         );
@@ -3263,7 +4426,7 @@ async function executeResolvedAction(
           await createSceneSystemMessage(ctx, agentDoc.name, partner, buildGenericSceneIntentFailure(chatIntent), tick, day);
           await ctx.db.patch(agentDoc._id, {
             energy: newEnergy,
-            health: newHealth,
+            health: finalHealth,
             hunger: finalHunger,
             ...clearBusyStatePatch(),
           });
@@ -3294,11 +4457,11 @@ async function executeResolvedAction(
           tick,
           day,
           outcome: 'success',
-          outcomeNote: `${chatIntent} completed in live chat.`,
+          outcomeNote: `${chatIntent} completed in live chat.${formatSpeechIntentNote(chatIntent)}`,
         });
         await ctx.db.patch(agentDoc._id, {
           energy: newEnergy,
-          health: newHealth,
+          health: finalHealth,
           hunger: finalHunger,
           ...clearBusyStatePatch(),
         });
@@ -3318,7 +4481,7 @@ async function executeResolvedAction(
       tick,
       day,
       newEnergy,
-      newHealth,
+      finalHealth,
       finalHunger,
       chatDeliveryOverride,
       chatDeferredReason,
@@ -3382,7 +4545,7 @@ async function executeResolvedAction(
       tick,
       day,
       newEnergy,
-      newHealth,
+      finalHealth,
       finalHunger,
     );
   }
@@ -3473,12 +4636,22 @@ async function executeResolvedAction(
     tick,
     day,
     outcome: 'success',
-    outcomeNote,
+    outcomeNote: `${outcomeNote ?? ''}${(parsed.action === 'chat' || parsed.action === 'say') ? formatSpeechIntentNote(getSpeechIntent(parsed)) : ''}`.trim() || undefined,
   });
+
+  if (parsed.action === 'sleep' && parsed.journal) {
+    await ctx.db.insert('rl_journal_entries', {
+      agentName,
+      day,
+      tick,
+      timeOfDay: timeOfDayForTick(tick),
+      summary: parsed.journal,
+    });
+  }
 
   await ctx.db.patch(agentDoc._id, {
     energy: newEnergy,
-    health: newHealth,
+    health: finalHealth,
     hunger: finalHunger,
     location: newLocation,
     inventory: newInventory,
@@ -3486,7 +4659,7 @@ async function executeResolvedAction(
     ...clearBusyStatePatch(),
   });
 
-  if (['buy', 'sell', 'buy_place', 'sell_place', 'deliver_place', 'work', 'craft', 'smelt', 'brew', 'give', 'trade', 'eat', 'plant', 'harvest', 'gather'].includes(parsed.action)) {
+  if (['buy', 'sell', 'buy_place', 'sell_place', 'deliver_place', 'work', 'craft', 'smelt', 'brew', 'give', 'trade', 'eat', 'use', 'plant', 'harvest', 'gather'].includes(parsed.action)) {
     await ctx.scheduler.runAfter(0, internal.rocklaw.priceEngine.recalculate, {});
   }
 

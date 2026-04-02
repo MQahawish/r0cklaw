@@ -1,5 +1,5 @@
 default_provider = "openrouter"
-default_model = "google/gemini-2.5-flash"
+default_model = "qwen/qwen3.6-plus-preview:free"
 default_temperature = 0.8
 
 [agent]

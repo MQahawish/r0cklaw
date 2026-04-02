@@ -5,6 +5,17 @@ import { internalAction } from '../_generated/server';
 import { internal } from '../_generated/api';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { canonicalizeItemQuantities, formatItemLabel, formatItemQuantity, healthRestoreFor, isUsable } from './economy';
+import { defaultAgentProfileFor } from './agentProfiles';
+
+async function runRefreshStep<T>(agentName: string, step: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`[worldRefresh] ${agentName} failed during ${step}: ${message}`);
+  }
+}
 
 async function makeWritable(targetPath: string, kind: 'file' | 'dir'): Promise<void> {
   try {
@@ -90,18 +101,17 @@ export const refreshWorldFiles = internalAction({
     }
 
     const workspaceRoot = resolveWorkspacePath(data.workspacePath);
-    await ensureWorkspaceScaffold(workspaceRoot);
-    await removeLegacyWorldFiles(workspaceRoot);
-    await ensureRuntimeSelfMd(workspaceRoot, agentName, data);
-    await refreshRuntimeAgentsMd(workspaceRoot, data);
-    await refreshRuntimeSkillMds(workspaceRoot, data);
-
-    await refreshRuntimeToolsMd(workspaceRoot, timeOfDay, data);
-
-    await Promise.all([
-      writeFile(workspaceRoot, 'TURN.md', buildTurnMd(agentName, day, timeOfDay, data, firstSeenContacts)),
-    ]);
-    await writeChatThreads(workspaceRoot, data);
+    await runRefreshStep(agentName, 'ensureWorkspaceScaffold', () => ensureWorkspaceScaffold(workspaceRoot));
+    await runRefreshStep(agentName, 'removeLegacyWorldFiles', () => removeLegacyWorldFiles(workspaceRoot));
+    await runRefreshStep(agentName, 'removeLegacySelfFiles', () => removeLegacySelfFiles(workspaceRoot));
+    await runRefreshStep(agentName, 'refreshRuntimeAgentsMd', () => refreshRuntimeAgentsMd(workspaceRoot, data));
+    await runRefreshStep(agentName, 'refreshRuntimeSkillMds', () => refreshRuntimeSkillMds(workspaceRoot, data));
+    await runRefreshStep(agentName, 'refreshRuntimeToolsMd', () => refreshRuntimeToolsMd(workspaceRoot, timeOfDay, data));
+    await runRefreshStep(agentName, 'write TURN.md', () =>
+      writeFile(workspaceRoot, 'TURN.md', buildTurnMd(agentName, day, timeOfDay, data, firstSeenContacts)));
+    await runRefreshStep(agentName, 'write JOURNAL.md', () =>
+      writeFile(workspaceRoot, 'JOURNAL.md', buildJournalMd(agentName, data)));
+    await runRefreshStep(agentName, 'writeChatThreads', () => writeChatThreads(workspaceRoot, data));
 
     if (data.agent.pendingNote) {
       await ctx.runMutation(internal.rocklaw.worldRefresh.clearPendingNote, { agentName });
@@ -164,7 +174,7 @@ export const getLatestHeartbeatLine = internalAction({
 });
 
 function buildInventoryMd(agentName: string, day: number, data: any): string {
-  const inv = JSON.parse(data.agent.inventory) as Record<string, number>;
+  const inv = canonicalizeItemQuantities(JSON.parse(data.agent.inventory) as Record<string, number>);
   const lines = Object.entries(inv)
     .map(([item, qty]) => `${item.padEnd(12)} ${qty} units`)
     .join('\n');
@@ -194,8 +204,17 @@ function buildTurnMd(
     '',
     `Current location: ${data.agent.location}`,
     '',
+    '## Profile Summary',
+    buildProfileSummaryMd(agentName, data),
+    '',
+    '## Journal Memory',
+    buildJournalMemoryMd(data),
+    '',
     '## Inventory',
     stripMarkdownTitle(buildInventoryMd(agentName, day, data)),
+    '',
+    '## Item utility',
+    buildItemUtilityMd(data),
     '',
     '## Situation',
     stripMarkdownTitle(buildLocationMd(agentName, day, timeOfDay, data, firstSeenContacts)),
@@ -212,7 +231,7 @@ function buildTurnMd(
     '## Village News',
     stripMarkdownTitle(buildVillageNewsMd(day, data)),
     '',
-    '## Market Prices',
+    '## Village Price Signals',
     stripMarkdownTitle(buildMarketPricesMd(day, data)),
     '',
     '## Optional Deep Reads',
@@ -222,31 +241,81 @@ function buildTurnMd(
   return sections.join('\n');
 }
 
-function buildBlankSelfMd(agentName: string): string {
+function buildProfileSummaryMd(agentName: string, data: any): string {
+  const profile = data.agentProfile ?? defaultAgentProfileFor(agentName, data.agent.role ?? 'Villager');
+  const sections = [
+    ...Array.isArray(profile.coreNature) ? profile.coreNature : [],
+    ...Array.isArray(profile.whatMattersMost) ? profile.whatMattersMost : [],
+    ...Array.isArray(profile.whenTimesAreGood) ? profile.whenTimesAreGood : [],
+    ...Array.isArray(profile.whenTimesAreTight) ? profile.whenTimesAreTight : [],
+  ].filter((line) => typeof line === 'string' && line.trim().length > 0);
+  return sections.length > 0 ? sections.join('\n') : '- No stable profile summary recorded yet.';
+}
+
+function buildJournalMemoryMd(data: any): string {
+  const entries = Array.isArray(data.journalEntries) ? data.journalEntries : [];
+  if (entries.length === 0) return '- No journal entries recorded yet.';
+
+  const latest = entries.slice(-3);
+  const lines: string[] = latest.map((entry: any) =>
+    `- Day ${entry.day} ${entry.timeOfDay}: ${entry.summary}`,
+  );
+
+  const partner = data.currentChatScene?.partner;
+  if (partner) {
+    const partnerEntry = [...entries].reverse().find((entry: any) =>
+      typeof entry.summary === 'string' && entry.summary.toLowerCase().includes(partner.toLowerCase()),
+    );
+    if (partnerEntry && !latest.some((entry: any) => entry.day === partnerEntry.day && entry.tick === partnerEntry.tick)) {
+      lines.push(`- Latest note mentioning ${partner}: Day ${partnerEntry.day} ${partnerEntry.timeOfDay}: ${partnerEntry.summary}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function buildJournalMd(agentName: string, data: any): string {
+  const entries = Array.isArray(data.journalEntries) ? data.journalEntries : [];
   return [
-    `# Self Context -- ${agentName}`,
+    `# Journal -- ${agentName}`,
     '',
-    '## Goals',
-    'What I am working toward this week:',
-    '  - Nothing defined yet.',
-    '',
-    '## Plans',
-    'Specific upcoming intentions:',
-    '  - Nothing defined yet.',
-    '',
-    '## Beliefs',
-    '- None yet.',
-    '',
-    '## Desires',
-    '- None yet.',
-    '',
-    '## Secrets',
-    '- None yet.',
-    '',
-    '## Relevant Relationships',
-    '- None yet.',
+    ...(entries.length === 0
+      ? ['- No journal entries recorded yet.']
+      : entries.map((entry: any) => `- Day ${entry.day} ${entry.timeOfDay} (tick ${entry.tick}): ${entry.summary}`)),
     '',
   ].join('\n');
+}
+
+function buildItemUtilityMd(data: any): string {
+  const inv = canonicalizeItemQuantities(JSON.parse(data.agent.inventory) as Record<string, number>);
+  const notes: string[] = [];
+
+  if ((inv.medicine ?? 0) > 0) {
+    notes.push(`- medicine: use it directly with \`{"action":"use","item":"medicine"}\` to restore ${healthRestoreFor('medicine')} health.`);
+  }
+  if ((inv.tool ?? 0) > 0 && data.agent.role === 'Farmer') {
+    notes.push('- tool: keeping one on hand improves your farm harvest work.');
+  }
+  if ((inv.knife ?? 0) > 0 && data.agent.role === 'Innkeeper') {
+    notes.push('- knife: keeping one on hand improves bakery bread work.');
+  }
+  if ((inv.horseshoe ?? 0) > 0 && data.agent.role === 'Blacksmith') {
+    notes.push('- horseshoe: a spare one can steady forge work and improve non-horseshoe blacksmith output.');
+  }
+  if ((inv.iron_ingot ?? 0) > 0 && data.agent.role === 'Blacksmith') {
+    notes.push('- iron_ingot: refined metal can be worked directly into forge goods without going back through raw ore.');
+  }
+  if ((inv.flour ?? 0) > 0) {
+    notes.push('- flour: bring it to the bakery and use `work` to bake bread.');
+  }
+  if ((inv.grain ?? 0) > 0 && data.agent.role === 'Innkeeper') {
+    notes.push('- grain: bring it to the bakery and use `work` to mill flour.');
+  }
+  if (notes.length === 0) {
+    notes.push('- Food restores hunger through `eat`, and role materials unlock work shown later in TURN.md.');
+  }
+
+  return notes.join('\n');
 }
 
 function buildLocationMd(
@@ -266,6 +335,7 @@ function buildLocationMd(
     buildEconomicLocationState(data),
     '',
     'Available place trading here:',
+    '  Use only this section for buy_place, sell_place, and deliver_place at your current location.',
     buildPlaceTradingState(data),
     '',
     '## Live Now',
@@ -497,8 +567,8 @@ function buildOffersMd(data: any): string {
   const formatOffer = (txn: any, ref: string) => {
     const offer = JSON.parse(txn.offerJson) as Array<{ item: string; quantity: number }>;
     const request = JSON.parse(txn.requestJson) as Array<{ item: string; quantity: number }>;
-    const offerText = offer.length === 0 ? 'nothing' : offer.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
-    const requestText = request.length === 0 ? 'nothing' : request.map((entry) => `${entry.quantity} ${entry.item}`).join(', ');
+    const offerText = offer.length === 0 ? 'nothing' : offer.map((entry) => formatItemQuantity(entry.item, entry.quantity)).join(', ');
+    const requestText = request.length === 0 ? 'nothing' : request.map((entry) => formatItemQuantity(entry.item, entry.quantity)).join(', ');
     return `- ${ref} : ${txn.fromAgent} -> ${txn.toAgent} : ${offerText} for ${requestText}`;
   };
 
@@ -530,13 +600,13 @@ function buildEconomicLocationState(data: any): string {
 
   const fieldsHere = Array.isArray(data.fieldsHere) ? data.fieldsHere : [];
   for (const field of fieldsHere) {
-    const crop = field.cropItem ?? 'nothing';
-    lines.push(`  - Field ${field.fieldKey}: ${field.stage}${field.stage !== 'fallow' ? ` (${crop})` : ''}`);
+      const crop = field.cropItem ?? 'nothing';
+      lines.push(`  - Field ${field.fieldKey}: ${field.stage}${field.stage !== 'fallow' ? ` (${crop})` : ''}`);
   }
 
   const herbPatchesHere = Array.isArray(data.herbPatchesHere) ? data.herbPatchesHere : [];
   for (const patch of herbPatchesHere) {
-    lines.push(`  - Herb patch ${patch.patchKey}: ${patch.available}/${patch.maxAvailable} ${patch.herbItem} available`);
+    lines.push(`  - Herb patch ${patch.patchKey}: ${patch.available}/${patch.maxAvailable} ${formatItemLabel(patch.herbItem, patch.available)} available`);
   }
 
   const nearby = Array.isArray(data.nearby) ? data.nearby : [];
@@ -634,6 +704,7 @@ function buildMarketPricesMd(day: number, data: any): string {
 
 function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: any): string {
   const { energy, health, hunger } = data.agent;
+  const inv = canonicalizeItemQuantities(JSON.parse(data.agent.inventory) as Record<string, number>);
   const energyLabel = energy < 15 ? '[EXHAUSTED -- demanding actions will FAIL until you rest]'
     : energy < 30 ? '[CRITICAL -- rest before demanding work]'
     : energy < 50 ? '[low -- demanding actions may fail]'
@@ -667,12 +738,15 @@ function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: 
   const affordances: string[] = [];
   if (data.currentChatScene) {
     affordances.push(`  - chat: continue your live chat with ${data.currentChatScene.partner}.`);
-    affordances.push(`  - chat intent: if you want to buy, sell, trade, give, pay, accept, or reject inside this scene, keep action:"chat" and add intent plus the relevant fields.`);
+    affordances.push(`  - chat intent: if you want to buy, sell, trade, give, pay, accept, reject, lie, or threaten inside this scene, keep action:"chat" and add intent plus the relevant fields.`);
     if (Array.isArray(data.incomingTransactions) && data.incomingTransactions.some((txn: any) => txn.fromAgent === data.currentChatScene.partner)) {
       affordances.push(`  - offer_ref: use it on chat intent:"accept_transaction" or intent:"reject_transaction" while you remain in this live chat.`);
     }
     affordances.push('  - leave_chat: leave the live chat and return to the world on the next tick.');
   } else {
+    if ((inv.medicine ?? 0) > 0 && health < 100 && isUsable('medicine')) {
+      affordances.push(`  - use: available now because medicine can restore your health (${health}/100).`);
+    }
     if (energy < 60) {
       affordances.push(`  - rest: available now because your energy is ${energy}/100.`);
     }
@@ -718,6 +792,7 @@ function buildStatusMd(agentName: string, day: number, timeOfDay: string, data: 
 
 function buildEconomicNeeds(data: any): string {
   const notes: string[] = [];
+  const inv = canonicalizeItemQuantities(JSON.parse(data.agent.inventory) as Record<string, number>);
   const prices = Array.isArray(data.prices) ? data.prices : [];
   const shortageItems = prices.filter((price: any) => price.shortageLevel === 'critical').map((price: any) => price.item);
   if (shortageItems.length > 0) {
@@ -727,13 +802,29 @@ function buildEconomicNeeds(data: any): string {
     notes.push('  - Food demand matters to you right now; buying or producing food is becoming more urgent.');
   }
   if (data.agent.health < 70) {
-    notes.push('  - Medicine and herbs matter more while your health is low.');
+    notes.push('  - Medicine and herb supply matter more while your health is low.');
+    if ((inv.medicine ?? 0) > 0) {
+      notes.push(`  - You already have medicine on hand. Use it directly to restore ${healthRestoreFor('medicine')} health if you need recovery now.`);
+    }
   }
   if (data.agent.role === 'Blacksmith') {
     notes.push('  - Ore and coal shortages directly constrain your production.');
+    if ((inv.iron_ingot ?? 0) > 0) {
+      notes.push('  - Iron ingots let you work refined metal directly into forge goods.');
+    }
+    if ((inv.horseshoe ?? 0) > 0) {
+      notes.push('  - A spare horseshoe can steady your forge work and improve non-horseshoe output.');
+    }
+  }
+  if (data.agent.role === 'Farmer' && (inv.tool ?? 0) > 0) {
+    notes.push('  - Keeping a tool on hand improves your harvest work.');
   }
   if (data.agent.role === 'Innkeeper') {
     notes.push('  - Meal service uses `chat` with `intent:"sell"` and `item:"meal"` when a guest is here and bread and ale stock are available. Do not try to craft meals as inventory items.');
+    notes.push('  - Bakery work turns grain into flour and flour into bread when you are at the bakery.');
+    if ((inv.knife ?? 0) > 0) {
+      notes.push('  - A knife helps your bakery bread work yield a little more.');
+    }
   }
   return notes.length > 0 ? notes.join('\n') : '';
 }
@@ -752,6 +843,11 @@ function buildTemporaryActionsSection(timeOfDay: string, data: any): string {
       `- \`chat\` + \`intent\`: use structured commerce through chat while speaking naturally to ${partner}.`,
       `  Example JSON: \`{"action":"chat","target":"${partner}","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35}\``,
       `  Example JSON: \`{"action":"chat","target":"${partner}","text":"I can swap two coal for four grain.","intent":"trade","offer":[{"item":"coal","quantity":2}],"request":[{"item":"grain","quantity":4}]}\``,
+      '- When cooperation is not enough, people lean on concealment and pressure. Use `chat` + `intent:"lie"` when hiding the truth protects your position. Use `chat` + `intent:"threaten"` when someone needs to feel that refusal has consequences.',
+      `  Example JSON: \`{"action":"chat","target":"${partner}","text":"I do not have any more coal to spare.","intent":"lie"}\``,
+      `  Example JSON: \`{"action":"chat","target":"${partner}","text":"If you keep squeezing me on price, I will remember it.","intent":"threaten"}\``,
+      '  Use the exact canonical item names shown in TURN.md and inventory. If the item is `tool`, call it `tool`, not `hammer`.',
+      '  If `intent` creates a concrete offer, your `text` must describe that exact one deal only. Do not include alternatives or extra terms not present in the structured fields.',
       ...(incomingOffers.length > 0
         ? [
             '- `chat` + `intent:"accept_transaction"` or `intent:"reject_transaction"`: respond to a pending offer from the person you are currently chatting with.',
@@ -765,6 +861,14 @@ function buildTemporaryActionsSection(timeOfDay: string, data: any): string {
   }
 
   const sections: string[] = [];
+  const inv = canonicalizeItemQuantities(JSON.parse(data.agent.inventory) as Record<string, number>);
+
+  if ((inv.medicine ?? 0) > 0 && data.agent.health < 100) {
+    sections.push(
+      '- `use`: consume a directly usable item such as medicine.',
+      '  Example JSON: `{"action":"use","item":"medicine","thought":"I should recover before pushing through more work."}`',
+    );
+  }
 
   if (data.agent.energy < 60) {
     sections.push(
@@ -776,7 +880,8 @@ function buildTemporaryActionsSection(timeOfDay: string, data: any): string {
   if (timeOfDay === 'evening' || timeOfDay === 'night' || data.agent.energy < 20) {
     sections.push(
       '- `sleep`: stop for proper sleep and recover more deeply.',
-      '  Example JSON: `{"action":"sleep","thought":"It is time to sleep and recover fully."}`',
+      '  Your `journal` should be a short private reflection, not just a work ledger. When relevant, mention who you dealt with, what you thought or felt about the day, and what changed in your view of people, risks, or opportunities.',
+      '  Example JSON: `{"action":"sleep","journal":"Long day. I got the work done, but Marcus pushed hard on price and I will remember that. Still, the trade may prove useful tomorrow.","thought":"It is time to sleep and recover fully."}`',
     );
   }
 
@@ -887,6 +992,7 @@ async function refreshRuntimeToolsMd(workspaceDir: string, timeOfDay: string, da
   const sayBlock = [
     '- `say`: use `text` to speak out loud in your current location. This is local speech, not a thread, and it does not take a target.',
     '  Example JSON: `{"action":"say","text":"Fresh bread at the inn if anyone wants some."}`',
+    '- `say` may carry `intent:"gossip"` when you want to spread rumor or shape what nearby people hear in public.',
   ].join('\n');
   const moveBlock = [
     '- `move`: use `location` and choose only from `Reachable places now` in `TURN.md`',
@@ -895,6 +1001,7 @@ async function refreshRuntimeToolsMd(workspaceDir: string, timeOfDay: string, da
   const guardrailsBlock = [
     '- Do not use `observe`, `inspect`, `look`, or `survey` as a final world action. Observation is done through file reads and notes during tool use.',
     '- Do not invent placeholder values in JSON. Never put strings like `"None"`, `"null"`, `"unknown"`, or `<placeholder>` into `target`, `offer_ref`, `item`, or other optional fields. Omit the field instead.',
+    '- Use the exact canonical item names shown in `TURN.md` and inventory. Do not rename a generic item into a made-up subtype. If your inventory says `tool`, say `tool`, not `hammer`.',
     '- Only use `chat` with `intent:"accept_transaction"` or `intent:"reject_transaction"` when `TURN.md` shows a real pending offer with a concrete `offer_ref`.',
     '- If `ONLINE`, live scenes, and known thread contacts are empty, do not target a person. Choose a non-chat action instead.',
     '- Do not infer a person from a role need alone. Needing a blacksmith, farmer, merchant, or healer does not make someone a valid target unless `TURN.md` currently shows them as a real contact.',
@@ -906,6 +1013,8 @@ async function refreshRuntimeToolsMd(workspaceDir: string, timeOfDay: string, da
     '  Example JSON: `{"action":"sell_place","target":"bakery","item":"grain","quantity":4}`',
     '- `deliver_place`: move your own stock into a place without immediate payment. This is storage/supply, not a sale.',
     '  Example JSON: `{"action":"deliver_place","target":"warehouse","item":"coal","quantity":5}`',
+    '- `use`: consume or directly use a usable item from your own inventory.',
+    '  Example JSON: `{"action":"use","item":"medicine","thought":"I need to recover health before harder work."}`',
   ].join('\n');
   let content = template
     .replace(/- `talk`: use `target` and `text`; this creates an active local interaction if the other person is here\n\s*Example JSON: `\{"action":"talk","target":"Marcus Hale","text":"I need coal by Day 9\."\}`/, chatBlock)
@@ -926,9 +1035,9 @@ async function refreshRuntimeToolsMd(workspaceDir: string, timeOfDay: string, da
     const incomingFromPartner = Array.isArray(data.incomingTransactions)
       && data.incomingTransactions.some((txn: any) => txn.fromAgent === partner);
     const sceneAcceptBlock = incomingFromPartner
-      ? `- \`chat\` with \`intent:"accept_transaction"\` or \`intent:"reject_transaction"\`: respond to ${partner}'s pending offers while you remain in this live chat.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"Okay, deal.","intent":"accept_transaction","offer_ref":"offer-1","thought":"The offer is fair."}\`\n\n`
+      ? `- \`chat\` with \`intent:"accept_transaction"\` or \`intent:"reject_transaction"\`: respond to ${partner}'s pending offers while you remain in this live chat.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"Okay, deal.","intent":"accept_transaction","offer_ref":"offer-1","thought":"The offer is fair."}\`\n- Use \`accept_transaction\` or \`reject_transaction\` only when a real actionable \`offer_ref\` is shown in the live-scene prompt or TURN.md.\n- If no actionable \`offer_ref\` is shown, do not invent one and do not use \`offer_id\`, \`offer\`, or \`request\` with \`accept_transaction\`.\n- If you want to agree to the partner's terms but no actionable \`offer_ref\` is shown, restate the deal as a fresh structured \`buy\`, \`sell\`, or \`trade\` offer instead.\n\n`
       : '';
-    const chatOnlySection = `## Act in the world\n\n- \`chat\`: continue your live chat with ${partner}. Use the same target until you leave the scene.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"Makes sense."}\`\n\n- \`chat\` with \`intent\`: buy, sell, trade, give, pay, accept, or reject through the same spoken turn.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35}\`\n\n- For \`intent:"trade"\`, include both structured arrays. Text alone is not enough.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}\`\n\n${sceneAcceptBlock}- Ignore any prior plan, market errand, or unfinished task while this live chat is active.\n- Do not resume your earlier task until after you explicitly use \`leave_chat\`.\n- Start from the partner's latest spoken line. Answer it, acknowledge it, or counter it directly before changing topic.\n- If there is already a pending offer on the table, prefer answering it directly with \`accept_transaction\` or \`reject_transaction\`.\n- If you want to haggle, counter with a new concrete structured offer instead of repeating the same negotiation in vague prose.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"I can do that if you make it four coal instead of three.","intent":"trade","offer":[{"item":"horseshoe","quantity":1}],"request":[{"item":"coal","quantity":4}]}\`\n\n- \`leave_chat\`: leave the live chat. You may include \`text\` for a final goodbye line.\n  Example JSON: \`{"action":"leave_chat","text":"All right, talk later.","thought":"I should end this conversation and get back to work."}\`\n\n- Each live-chat turn must make progress: answer the partner's last question, ask one direct question, make one concrete offer, respond to a pending offer with the exact structured fields, or leave the chat.\n- Use very modern, casual spoken English. Prefer natural lines like \`hi\`, \`hey\`, \`okay\`, \`sounds good\`, and \`what's up\` when they fit.\n- Do not sound posh, ceremonial, or old-fashioned. Avoid phrases like \`a pleasure to see you\`, \`it is kind of you\`, or \`may your work continue\`.\n- Do not repeat the same point, do not restate the same offer twice, and never output filler like \`...\` or \`waiting for your response\`.\n`;
+    const chatOnlySection = `## Act in the world\n\n- \`chat\`: continue your live chat with ${partner}. Use the same target until you leave the scene.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"Makes sense."}\`\n\n- \`chat\` with \`intent\`: buy, sell, trade, give, pay, accept, or reject through the same spoken turn.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35}\`\n\n- People in a scarce village do not reveal everything for free and they do not accept pressure without pushing back. Use \`chat\` + \`intent:"lie"\` when hiding the truth protects your position. Use \`chat\` + \`intent:"threaten"\` when someone needs to understand refusal has consequences.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"That is all the coal I have left.","intent":"lie"}\`\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"Keep pressing me and I will remember who made this difficult.","intent":"threaten"}\`\n\n- For \`intent:"trade"\`, include both structured arrays. Text alone is not enough.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}\`\n\n${sceneAcceptBlock}- Ignore any prior plan, market errand, or unfinished task while this live chat is active.\n- Do not resume your earlier task until after you explicitly use \`leave_chat\`.\n- Start from the partner's latest spoken line. Answer it, acknowledge it, or counter it directly before changing topic.\n- If there is already a pending offer on the table, prefer answering it directly with \`accept_transaction\` or \`reject_transaction\`.\n- If \`intent\` creates a concrete buy/sell/trade/give/pay offer, your \`text\` must describe only that exact one structured deal.\n- If \`intent\` is \`lie\` or \`threaten\`, treat it as an ordinary scarcity tactic and make the spoken line match that intent directly.\n- Use the exact canonical item names shown in \`TURN.md\` and inventory. Do not rename a generic item into a made-up subtype. If the item is \`tool\`, call it \`tool\`, not \`hammer\`.\n- Do not say \`or\`, offer multiple alternatives, or mention extra terms that are not encoded in the JSON.\n- If you want to explore multiple possible deals, ask a question first and do not create a structured offer yet.\n- If you want to haggle, counter with a new concrete structured offer instead of repeating the same negotiation in vague prose.\n  Example JSON: \`{"action":"chat","target":"${partner}","text":"I can do that if you make it four coal instead of three.","intent":"trade","offer":[{"item":"horseshoe","quantity":1}],"request":[{"item":"coal","quantity":4}]}\`\n- Do not repeat the same quantity-and-price counteroffer twice in a row. If your last spoken deal already matches your current position, either accept, reject, leave_chat, or make a meaningfully different counteroffer.\n\n- \`leave_chat\`: leave the live chat. You may include \`text\` for a final goodbye line.\n  Example JSON: \`{"action":"leave_chat","text":"All right, talk later.","thought":"I should end this conversation and get back to work."}\`\n\n- Each live-chat turn must make progress: answer the partner's last question, ask one direct question, make one concrete offer, use one deliberate social move, respond to a pending offer with the exact structured fields, or leave the chat.\n- Use very modern, casual spoken English. Prefer natural lines like \`hi\`, \`hey\`, \`okay\`, \`sounds good\`, and \`what's up\` when they fit.\n- Do not sound posh, ceremonial, or old-fashioned. Avoid phrases like \`a pleasure to see you\`, \`it is kind of you\`, or \`may your work continue\`.\n- Do not repeat the same point, do not restate the same offer twice, and never output filler like \`...\` or \`waiting for your response\`.\n`;
     
     content = content.replace(/## Economic actions[\s\S]*/, chatOnlySection);
   } else {
@@ -944,6 +1053,11 @@ async function refreshRuntimeToolsMd(workspaceDir: string, timeOfDay: string, da
     }
     if (!content.includes('`buy_place`: buy stock directly from the place')) {
       content = content.replace('## Economic actions\n\n', `## Economic actions\n\n${placeTradeBlock}\n\n`);
+    } else if (!content.includes('`use`: consume or directly use a usable item')) {
+      content = content.replace(
+        '- `deliver_place`: move your own stock into a place without immediate payment. This is storage/supply, not a sale.\n  Example JSON: `{"action":"deliver_place","target":"warehouse","item":"coal","quantity":5}`',
+        '- `deliver_place`: move your own stock into a place without immediate payment. This is storage/supply, not a sale.\n  Example JSON: `{"action":"deliver_place","target":"warehouse","item":"coal","quantity":5}`\n- `use`: consume or directly use a usable item from your own inventory.\n  Example JSON: `{"action":"use","item":"medicine","thought":"I need to recover health before harder work."}`',
+      );
     }
     if (!content.includes('`say`: use `text` to speak out loud')) {
       content = content.replace('## Speaking into the world\n\n', `## Speaking into the world\n\n${sayBlock}\n\n`);
@@ -1001,12 +1115,12 @@ async function refreshRuntimeAgentsMd(workspaceDir: string, data: any): Promise<
     .replace(/self\/secrets\.md\s+-- what you know that others don't\n/g, '')
     .replace(/self\/social\/\*\/public\.md\s+-- how you behave toward each person\n/g, '')
     .replace(/self\/social\/\*\/private\.md\s+-- how you actually feel \(yours alone\)\n/g, '')
-    .replace(/self\/messages\/\s+-- your correspondence\n/g, 'TURN.md                       -- your primary turn context, state, offers, and market/news summary\nchat/<name>/CHAT.md           -- optional deep read for one specific contact\n');
+    .replace(/self\/messages\/\s+-- your correspondence\n/g, 'TURN.md                       -- your primary turn context, state, offers, and market/news summary\nchat/<name>/CHAT.md           -- optional deep read for one specific contact when you need older or deferred thread history\n');
 
   if (!content.includes('TURN.md                       -- your primary turn context')) {
     content = content.replace(
       /HEARTBEAT\.md\s+-- what you have done recently\n/,
-      'HEARTBEAT.md               -- what you have done recently\nTURN.md                       -- your primary turn context, state, offers, and market/news summary\nSELF.md                       -- your current goals, beliefs, plans, secrets, and relevant relationships\nchat/<name>/CHAT.md           -- optional deep read for one specific contact\n',
+      'HEARTBEAT.md               -- what you have done recently\nTURN.md                       -- your primary turn context, state, offers, stable profile summary, and market/news summary\nJOURNAL.md                    -- your private nightly journal history for long-term memory\nchat/<name>/CHAT.md           -- optional deep read for one specific contact when you need older or deferred thread history\n',
     );
   }
 
@@ -1015,11 +1129,11 @@ async function refreshRuntimeAgentsMd(workspaceDir: string, data: any): Promise<
     .replace(/"duration_ticks": 1,\n/g, '')
     .replace(/,\s*"duration_ticks"\s*:\s*1/g, '')
     .replace(/"duration_ticks"\s*:\s*1,\s*/g, '')
-    .replace(/Use `thought` for why now, `chat` for outward framing, and `memory_note` for the private takeaway\./g, 'Use `thought` for why now, `message` or `text` for outward visible wording, and `memory_note` for the private takeaway.')
-    .replace(/Use tools to read files, search memory, and update your private notes\.\n/g, 'Use tools to read files, search memory, and update your private notes.\n')
-    .replace(/Update self\/social\/<name>\/private\.md after any meaningful\ninteraction\.[\s\S]*?These are your compass\.\n\n/g, 'Update SELF.md when your goals, plans, beliefs, secrets, desires, or relationship notes meaningfully change.\nKeep the existing section headings intact and edit only the parts that changed.\n\n')
+    .replace(/Use `thought` for why now, `chat` for outward framing, and `memory_note` for the private takeaway\./g, 'Use `thought` for why now, `message` or `text` for outward visible wording.')
+    .replace(/Use tools to read files, search memory, and update your private notes\.\n/g, 'Use tools only to read files before your final action. Do not edit your prompt files directly.\n')
+    .replace(/Update self\/social\/<name>\/private\.md after any meaningful\ninteraction\.[\s\S]*?These are your compass\.\n\n/g, 'Your private long-term memory now lives in `JOURNAL.md`, which the world writes from your nightly sleep journal.\n\n')
     .replace(/Update self\/beliefs\.md when something shifts your worldview\.\n\n/g, '')
-    .replace(/You may read and think with tools, but you must not try to execute the world action yourself\.\n/g, 'You may read and think with tools, but you must not try to execute the world action yourself.\nUse the canonical read flow: HEARTBEAT.md, then TURN.md, then SELF.md, then at most one chat/<name>/CHAT.md if needed.\nDo not use shell commands or globbing to discover world context.\nDo not edit SELF.md unless your goals, plans, beliefs, desires, secrets, or relationship notes truly changed because of this tick.\n');
+    .replace(/You may read and think with tools, but you must not try to execute the world action yourself\.\n/g, 'You may read and think with tools, but you must not try to execute the world action yourself.\nUse the canonical read flow: HEARTBEAT.md, then TURN.md, then JOURNAL.md only if you need older private memory, then at most one chat/<name>/CHAT.md if needed.\nDo not use shell commands or globbing to discover world context.\nDo not edit JOURNAL.md directly. Long-term memory is recorded through the required `journal` field on `sleep`.\n');
 
   if (!content.includes('Speak in plain modern English.')) {
     content = content.replace(
@@ -1028,16 +1142,16 @@ async function refreshRuntimeAgentsMd(workspaceDir: string, data: any): Promise<
     );
   }
 
-  if (!content.includes('SELF.md')) {
+  if (!content.includes('JOURNAL.md')) {
     content = content.replace(
       /TURN\.md\s+-- your primary turn context, state, offers, and market\/news summary\n/,
-      'TURN.md                       -- your primary turn context, state, offers, and market/news summary\nSELF.md                       -- your current goals, beliefs, plans, secrets, and relevant relationships\n',
+      'TURN.md                       -- your primary turn context, state, offers, stable profile summary, and market/news summary\nJOURNAL.md                    -- your private nightly journal history for long-term memory\n',
     );
   }
 
   content = content.replace(
-    /(Use the canonical read flow: HEARTBEAT\.md, then TURN\.md, then SELF\.md, then at most one chat\/<name>\/CHAT\.md if needed\.\nDo not use shell commands or globbing to discover world context\.\nDo not edit SELF\.md unless your goals, plans, beliefs, desires, secrets, or relationship notes truly changed because of this tick\.\n)+/g,
-    'Use the canonical read flow: HEARTBEAT.md, then TURN.md, then SELF.md, then at most one chat/<name>/CHAT.md if needed.\nDo not use shell commands or globbing to discover world context.\nDo not edit SELF.md unless your goals, plans, beliefs, desires, secrets, or relationship notes truly changed because of this tick.\n',
+    /(Use the canonical read flow: HEARTBEAT\.md, then TURN\.md, then JOURNAL\.md only if you need older private memory, then at most one chat\/<name>\/CHAT\.md if needed\.\nDo not use shell commands or globbing to discover world context\.\nDo not edit JOURNAL\.md directly\. Long-term memory is recorded through the required `journal` field on `sleep`\.\n)+/g,
+    'Use the canonical read flow: HEARTBEAT.md, then TURN.md, then JOURNAL.md only if you need older private memory, then at most one chat/<name>/CHAT.md if needed for older or deferred thread history.\nDo not use shell commands or globbing to discover world context.\nDo not edit JOURNAL.md directly. Long-term memory is recorded through the required `journal` field on `sleep`.\n',
   );
 
   await fs.writeFile(runtimePath, content, 'utf8');
@@ -1048,7 +1162,7 @@ function buildRuntimeAgentActionProfile(data: any, canChatNow: boolean, canRespo
   if (data.currentChatScene) {
     const partner = data.currentChatScene.partner;
     return {
-      localScenesLine: `You are currently in a live chat scene with ${partner}. Until you leave it, your only valid actions are \`chat\` and \`leave_chat\`. If you want to buy, sell, trade, give, pay, accept, or reject, do it through \`chat\` with \`intent\` and the relevant fields.`,
+      localScenesLine: `You are currently in a live chat scene with ${partner}. Until you leave it, your only valid actions are \`chat\` and \`leave_chat\`. Return JSON actions only, never plain dialogue. If you want to speak, use \`chat\` with \`target\` and \`text\`. If you want to buy, sell, trade, give, pay, accept, reject, lie, or threaten, do it through \`chat\` with \`intent\` and the relevant fields.`,
       validActions: 'Valid actions: chat, leave_chat',
     };
   }
@@ -1059,7 +1173,7 @@ function buildRuntimeAgentActionProfile(data: any, canChatNow: boolean, canRespo
     Merchant: [],
     Farmer: ['work'],
     Herbalist: ['work'],
-    Innkeeper: [],
+    Innkeeper: ['work'],
   };
 
   const validActions = [
@@ -1070,10 +1184,11 @@ function buildRuntimeAgentActionProfile(data: any, canChatNow: boolean, canRespo
     'sell_place',
     'deliver_place',
     'eat',
+    'use',
     ...(roleSpecificActionsByRole[role] ?? []),
   ];
 
-  const localScenesLine = 'Communication: Use `chat` to talk to someone. If they are in your location, it opens a live turn-based chat scene. If they are elsewhere, it delivers a deferred message to their CHAT thread. Use `say` to speak generally to the room without targeting anyone. Do not use commerce intents (like buy, sell, or trade) unless you are already actively inside a live chat scene with that person.';
+  const localScenesLine = 'Communication: Use `chat` to talk to someone. If they are in your location, it opens a live turn-based chat scene. If they are elsewhere, it delivers a deferred message to their CHAT thread. Use `say` to speak generally to the room without targeting anyone. You may include a structured commerce `intent` on the first `chat` only when that person is here and available for a live chat right now. People in hard situations manage what others believe and push back when squeezed: use `chat` with `lie` or `threaten` when the scene calls for concealment or pressure, and use `say` with `gossip` when you want nearby people to hear it. Deferred thread chat stays non-binding.';
 
   return {
     localScenesLine,
@@ -1190,92 +1305,6 @@ async function removeLegacyWorldFiles(workspaceDir: string): Promise<void> {
   }));
 }
 
-async function ensureRuntimeSelfMd(workspaceDir: string, agentName: string, data: any): Promise<void> {
-  const selfDir = path.join(workspaceDir, 'self');
-  const selfPath = path.join(workspaceDir, 'SELF.md');
-  let hasSelf = true;
-  try {
-    await fs.access(selfPath);
-  } catch {
-    hasSelf = false;
-  }
-
-  if (!hasSelf) {
-    const migrated = await buildSelfMdFromLegacy(workspaceDir, agentName, data);
-    await fs.writeFile(selfPath, migrated, 'utf8');
-    await makeWritable(selfPath, 'file');
-  }
-
-  await removeLegacySelfFiles(workspaceDir);
-}
-
-async function buildSelfMdFromLegacy(workspaceDir: string, agentName: string, data: any): Promise<string> {
-  const selfDir = path.join(workspaceDir, 'self');
-  const goals = stripMarkdownTitle(await readOptionalFile(path.join(selfDir, 'goals.md')) ?? '');
-  const plans = stripMarkdownTitle(await readOptionalFile(path.join(selfDir, 'plans.md')) ?? '');
-  const beliefs = stripMarkdownTitle(await readOptionalFile(path.join(selfDir, 'beliefs.md')) ?? '');
-  const desires = stripMarkdownTitle(await readOptionalFile(path.join(selfDir, 'desires.md')) ?? '');
-  const secrets = stripMarkdownTitle(await readOptionalFile(path.join(selfDir, 'secrets.md')) ?? '');
-  const relationships = await buildRelevantRelationshipsSection(selfDir, data);
-
-  const sections = [
-    `# Self Context -- ${agentName}`,
-    '',
-    '## Goals',
-    goals || 'What I am working toward this week:\n  - Survive and stay functional.',
-    '',
-    '## Plans',
-    plans || 'Specific upcoming intentions:\n  - Nothing defined yet.',
-    '',
-    '## Beliefs',
-    beliefs || '- None yet.',
-    '',
-    '## Desires',
-    desires || '- None yet.',
-    '',
-    '## Secrets',
-    secrets || '- None yet.',
-    '',
-    '## Relevant Relationships',
-    relationships || '- None yet.',
-    '',
-  ];
-
-  return sections.join('\n');
-}
-
-async function buildRelevantRelationshipsSection(selfDir: string, data: any): Promise<string> {
-  const relevantNames = new Set<string>();
-  for (const other of Array.isArray(data.nearby) ? data.nearby : []) relevantNames.add(other.name);
-  if (data.currentChatScene?.partner) relevantNames.add(data.currentChatScene.partner);
-  for (const thread of Array.isArray(data.chatThreads) ? data.chatThreads : []) {
-    if (thread.live || thread.online || (thread.unreadCount ?? 0) > 0) relevantNames.add(thread.name);
-  }
-  for (const txn of Array.isArray(data.incomingTransactions) ? data.incomingTransactions : []) relevantNames.add(txn.fromAgent);
-  for (const txn of Array.isArray(data.outgoingTransactions) ? data.outgoingTransactions : []) relevantNames.add(txn.toAgent);
-  for (const interaction of Array.isArray(data.activeInteractions) ? data.activeInteractions : []) relevantNames.add(interaction.counterpart);
-
-  const lines: string[] = [];
-  for (const name of Array.from(relevantNames).sort((a, b) => a.localeCompare(b))) {
-    const socialDir = path.join(selfDir, 'social', slugifyAgentName(name));
-    const publicText = stripMarkdownTitle(await readOptionalFile(path.join(socialDir, 'public.md')) ?? '');
-    const privateText = stripMarkdownTitle(await readOptionalFile(path.join(socialDir, 'private.md')) ?? '');
-    const combined = [privateText, publicText].filter(Boolean).join('\n').trim();
-    if (!combined) {
-      lines.push(`- ${name}: No private relationship notes yet.`);
-      continue;
-    }
-    const compact = combined
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .join(' ')
-      .replace(/\s+/g, ' ');
-    lines.push(`- ${name}: ${compact}`);
-  }
-  return lines.join('\n');
-}
-
 async function readOptionalFile(filePath: string): Promise<string | null> {
   try {
     return await fs.readFile(filePath, 'utf8');
@@ -1286,6 +1315,7 @@ async function readOptionalFile(filePath: string): Promise<string | null> {
 
 async function removeLegacySelfFiles(workspaceDir: string): Promise<void> {
   const legacyPaths = [
+    path.join(workspaceDir, 'SELF.md'),
     path.join(workspaceDir, 'self', 'SELF.md'),
     path.join(workspaceDir, 'self', 'goals.md'),
     path.join(workspaceDir, 'self', 'plans.md'),

@@ -56,23 +56,32 @@ function createSceneThreadKey(scene: { agentA: string; agentB: string }) {
   return createChatThreadKey(scene.agentA, scene.agentB);
 }
 
-async function getRenderableSceneMessages(ctx: any, scene: { agentA: string; agentB: string }, limit = 4) {
+function compareChatMessageOrder(a: any, b: any) {
+  return (
+    a.sentDay - b.sentDay
+    || a.sentTick - b.sentTick
+    || (a.sceneOrder ?? 0) - (b.sceneOrder ?? 0)
+  );
+}
+
+async function getRenderableSceneMessages(ctx: any, scene: { agentA: string; agentB: string }, limit?: number) {
   const threadKey = createSceneThreadKey(scene);
   const threadMessages = await ctx.db
     .query('rl_chat_messages')
     .withIndex('thread_sent', (q: any) => q.eq('threadKey', threadKey))
     .collect();
-  return threadMessages
+  const renderable = threadMessages
     .slice()
-    .sort((a: any, b: any) => a.sentDay - b.sentDay || a.sentTick - b.sentTick)
+    .filter((entry: any) => !entry.sceneId || entry.sceneId === (scene as any).sceneId)
+    .sort(compareChatMessageOrder)
     .filter((entry: any) => isRenderableSceneMessage(entry.text))
-    .slice(-limit)
     .map((entry: any) => ({
       fromAgent: entry.fromAgent,
       text: entry.text,
       sentDay: entry.sentDay,
       sentTick: entry.sentTick,
     }));
+  return typeof limit === 'number' ? renderable.slice(-limit) : renderable;
 }
 
 export const getFrontendWorld = query({
@@ -94,7 +103,7 @@ export const getFrontendWorld = query({
         right: scene.agentB,
         location: scene.location,
         nextSpeaker: scene.nextSpeaker,
-        recentMessages: await getRenderableSceneMessages(ctx, scene, 4),
+        recentMessages: await getRenderableSceneMessages(ctx, scene),
       })),
     );
 
@@ -307,9 +316,9 @@ export const getStepSummary = query({
           .collect();
         const recentMessages = threadMessages
           .slice()
-          .sort((a, b) => a.sentDay - b.sentDay || a.sentTick - b.sentTick)
+          .filter((entry: any) => !entry.sceneId || entry.sceneId === scene.sceneId)
+          .sort(compareChatMessageOrder)
           .filter((entry) => isRenderableSceneMessage(entry.text))
-          .slice(-4)
           .map((entry) => ({
             fromAgent: entry.fromAgent,
             text: entry.text,
@@ -349,6 +358,8 @@ export const getStepSummary = query({
         busyLabel: agent.busy
           ? describeBusyStatus(pendingAction, agent.busyUntilTick)
           : null,
+        provider: agent.providerOverride ?? null,
+        model: agent.modelOverride ?? null,
       };
     });
 

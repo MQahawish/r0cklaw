@@ -6,7 +6,16 @@
 import { mutation, internalMutation } from '../_generated/server';
 import { internal } from '../_generated/api';
 import { v } from 'convex/values';
-import { SEEDED_FIELDS, SEEDED_HERB_PATCHES, SEEDED_PLACE_MARKETS, SEEDED_PLACE_STOCKS } from './economy';
+import {
+  SEEDED_FIELDS,
+  SEEDED_HERB_PATCHES,
+  SEEDED_PLACE_MARKETS,
+  SEEDED_PLACE_STOCKS,
+  canonicalizeItemEntries,
+  canonicalizeItemQuantities,
+  canonicalizeItemId,
+} from './economy';
+import { AGENT_PROFILE_SEEDS, defaultAgentProfileFor } from './agentProfiles';
 import { DayPeriod, nextDayPeriod } from './dayCycle';
 
 // Agent roster with initial state
@@ -33,7 +42,7 @@ const AGENT_ROSTER = [
     name: 'Finn',
     role: 'Farmer',
     location: 'farm',
-    inventory: JSON.stringify({ grain: 15, iron_ore: 8, vegetables: 10 }),
+    inventory: JSON.stringify({ grain: 15, iron_ore: 8, vegetable: 10 }),
     coin: 30,
     gatewayPort: 42619,
     workspacePath: 'agents/finn/workspace',
@@ -42,7 +51,7 @@ const AGENT_ROSTER = [
     name: 'Lena Marsh',
     role: 'Herbalist',
     location: 'shrine',
-    inventory: JSON.stringify({ herbs: 12, medicine: 5, bread: 1 }),
+    inventory: JSON.stringify({ herb: 12, medicine: 5, bread: 1 }),
     coin: 15,
     gatewayPort: 42620,
     workspacePath: 'agents/lena/workspace',
@@ -74,6 +83,8 @@ const LOCATIONS = [
 export const initRocklaw = mutation({
   args: { force: v.optional(v.boolean()), agentNames: v.optional(v.array(v.string())) },
   handler: async (ctx, { force, agentNames }) => {
+    await ensureCanonicalItemIdsInternal(ctx);
+
     // Guard: don't run twice unless forced
     const existing = await ctx.db.query('rl_world_state').first();
     if (existing && !force) {
@@ -185,6 +196,24 @@ export const initRocklaw = mutation({
       } else {
         await ctx.db.insert('rl_agents', fields);
       }
+
+      const existingProfile = await ctx.db
+        .query('rl_agent_profiles')
+        .withIndex('agentName', (q) => q.eq('agentName', agentData.name))
+        .unique();
+      const profileSeed = AGENT_PROFILE_SEEDS[agentData.name] ?? defaultAgentProfileFor(agentData.name, agentData.role);
+      const profileFields = {
+        agentName: agentData.name,
+        coreNature: profileSeed.coreNature,
+        whatMattersMost: profileSeed.whatMattersMost,
+        whenTimesAreGood: profileSeed.whenTimesAreGood,
+        whenTimesAreTight: profileSeed.whenTimesAreTight,
+      };
+      if (existingProfile) {
+        await ctx.db.patch(existingProfile._id, profileFields);
+      } else {
+        await ctx.db.insert('rl_agent_profiles', profileFields);
+      }
     }
 
     // Seed reputation for all agents at neutral score (50)
@@ -215,7 +244,17 @@ export const initRocklaw = mutation({
   },
 });
 
+export const ensureCanonicalItemIds = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    await ensureCanonicalItemIdsInternal(ctx);
+    return { status: 'ok' };
+  },
+});
+
 async function clearRocklawTables(ctx: any) {
+  await deleteAll(ctx, 'rl_journal_entries');
+  await deleteAll(ctx, 'rl_agent_profiles');
   await deleteAll(ctx, 'rl_social_knowledge');
   await deleteAll(ctx, 'rl_fields');
   await deleteAll(ctx, 'rl_herb_patches');
@@ -242,6 +281,98 @@ async function deleteAll(ctx: any, table: string) {
   const rows = await ctx.db.query(table).collect();
   for (const row of rows) {
     await ctx.db.delete(row._id);
+  }
+}
+
+async function ensureCanonicalItemIdsInternal(ctx: any) {
+  const existing = await ctx.db
+    .query('rl_systems_state')
+    .withIndex('system', (q: any) => q.eq('systemName', 'migration').eq('key', 'canonical_item_ids_v1'))
+    .unique();
+  if (existing?.value === 'done') return;
+
+  const agents = await ctx.db.query('rl_agents').collect();
+  for (const agent of agents) {
+    const inventory = canonicalizeItemQuantities(JSON.parse(agent.inventory ?? '{}') as Record<string, number>);
+    await ctx.db.patch(agent._id, { inventory: JSON.stringify(inventory) });
+  }
+
+  const fields = await ctx.db.query('rl_fields').collect();
+  for (const field of fields) {
+    const cropItem = canonicalizeItemId(field.cropItem ?? undefined) ?? field.cropItem;
+    if (cropItem !== field.cropItem) {
+      await ctx.db.patch(field._id, { cropItem });
+    }
+  }
+
+  const herbPatches = await ctx.db.query('rl_herb_patches').collect();
+  for (const patch of herbPatches) {
+    const herbItem = canonicalizeItemId(patch.herbItem) ?? patch.herbItem;
+    if (herbItem !== patch.herbItem) {
+      await ctx.db.patch(patch._id, { herbItem });
+    }
+  }
+
+  const placeStocks = await ctx.db.query('rl_place_stocks').collect();
+  for (const stock of placeStocks) {
+    const item = canonicalizeItemId(stock.item) ?? stock.item;
+    if (item !== stock.item) {
+      await ctx.db.patch(stock._id, { item });
+    }
+  }
+
+  const marketPrices = await ctx.db.query('rl_market_prices').collect();
+  for (const row of marketPrices) {
+    const item = canonicalizeItemId(row.item) ?? row.item;
+    if (item !== row.item) {
+      await ctx.db.patch(row._id, { item });
+    }
+  }
+
+  const priceHistory = await ctx.db.query('rl_price_history').collect();
+  for (const row of priceHistory) {
+    const item = canonicalizeItemId(row.item) ?? row.item;
+    if (item !== row.item) {
+      await ctx.db.patch(row._id, { item });
+    }
+  }
+
+  const transactions = await ctx.db.query('rl_transactions').collect();
+  for (const txn of transactions) {
+    const offer = canonicalizeItemEntries(JSON.parse(txn.offerJson ?? '[]') as Array<{ item: string; quantity: number }>);
+    const request = canonicalizeItemEntries(JSON.parse(txn.requestJson ?? '[]') as Array<{ item: string; quantity: number }>);
+    await ctx.db.patch(txn._id, {
+      offerJson: JSON.stringify(offer),
+      requestJson: JSON.stringify(request),
+    });
+  }
+
+  const interactions = await ctx.db.query('rl_interactions').collect();
+  for (const interaction of interactions) {
+    const payload = interaction.payloadJson ? JSON.parse(interaction.payloadJson) as Record<string, unknown> : {};
+    let changed = false;
+    if (Array.isArray(payload.offer)) {
+      payload.offer = canonicalizeItemEntries(payload.offer as Array<{ item: string; quantity: number }>);
+      changed = true;
+    }
+    if (Array.isArray(payload.request)) {
+      payload.request = canonicalizeItemEntries(payload.request as Array<{ item: string; quantity: number }>);
+      changed = true;
+    }
+    if (changed) {
+      await ctx.db.patch(interaction._id, { payloadJson: JSON.stringify(payload) });
+    }
+  }
+
+  if (existing) {
+    await ctx.db.patch(existing._id, { value: 'done', updatedAt: Date.now() });
+  } else {
+    await ctx.db.insert('rl_systems_state', {
+      systemName: 'migration',
+      key: 'canonical_item_ids_v1',
+      value: 'done',
+      updatedAt: Date.now(),
+    });
   }
 }
 

@@ -23,7 +23,6 @@ const zeroClawPromptFiles = [
   "AGENTS.md",
   "TOOLS.md",
   "USER.md",
-  "MEMORY.md",
 ];
 const divider = "-".repeat(78);
 const zeroClawScaffolding = [
@@ -264,7 +263,6 @@ function formatParsedAction(action, validation) {
   if (Array.isArray(action.request) && action.request.length > 0) {
     lines.push(`request=${JSON.stringify(action.request)}`);
   }
-  if (action.memory_note) lines.push(`memory_note=${action.memory_note}`);
   if (validation) {
     lines.push("");
     lines.push(`validation=${validation.outcome}${validation.note ? ` | ${validation.note}` : ""}`);

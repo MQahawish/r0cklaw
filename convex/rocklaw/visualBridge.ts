@@ -46,7 +46,7 @@ const ACTION_EMOJI: Record<string, string> = {
   give: '🎁', pay: '💸',
   move: '🚶', observe: '👁️', write: '✍️', pray: '🙏',
   leave_message: '✉️', recall: '💭',
-  eat: '🍞', rest: '😌', sleep: '😴',
+  eat: '🍞', use: '💊', rest: '😌', sleep: '😴',
 };
 
 // ── helpers ──────────────────────────────────────────────────────────────────

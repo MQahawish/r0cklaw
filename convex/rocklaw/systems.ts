@@ -151,7 +151,7 @@ export const PRESETS: Record<string, { label: string; description: string; value
   },
   drought: {
     label: 'Drought',
-    description: 'Grain and herbs are the new gold. Trade tension runs high.',
+    description: 'Grain and herb supply are the new gold. Trade tension runs high.',
     values: {
       economy: { scarcity_multiplier: 2.0, base_price_multiplier: 1.25 },
       narrative: { auto_event_tension_threshold: 60 },

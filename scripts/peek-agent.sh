@@ -20,8 +20,8 @@ LOG="/tmp/zeroclaw-$AGENT.log"
 echo "=== $AGENT: TURN.md ==="
 sed -n '1,220p' "$WORKSPACE/TURN.md" 2>/dev/null || echo "(missing)"
 echo
-echo "=== $AGENT: SELF.md ==="
-sed -n '1,220p' "$WORKSPACE/SELF.md" 2>/dev/null || echo "(missing)"
+echo "=== $AGENT: JOURNAL.md ==="
+sed -n '1,220p' "$WORKSPACE/JOURNAL.md" 2>/dev/null || echo "(missing)"
 echo
 echo "=== $AGENT: last tick debug entries ==="
 tail -n 10 "$TICK_DEBUG" 2>/dev/null || echo "(no tick debug entries yet)"

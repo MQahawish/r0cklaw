@@ -127,6 +127,82 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 ## Single-Agent Debug
 
+## One-Shot Rocklaw Runs
+
+Use the unified launcher when you want one command that can mix:
+- fresh vs current world
+- seeded vs blank-self profiles
+- all agents vs a subset vs one agent
+- local vs cloud provider presets
+- optional automatic warmup ticks
+
+Basic forms:
+
+Fresh world with all agents:
+
+```bash
+npm run run:rocklaw -- --fresh
+```
+
+Fresh world with blank-self for all agents:
+
+```bash
+npm run run:rocklaw:blank
+```
+
+Fresh world with one agent only:
+
+```bash
+npm run run:rocklaw -- --fresh --agents elena
+```
+
+Fresh world with a subset of agents:
+
+```bash
+npm run run:rocklaw -- --fresh --agents elena,finn,lena
+```
+
+Fresh blank-self run with 6 automatic world ticks:
+
+```bash
+npm run run:rocklaw -- --fresh --blank-self --auto 6
+```
+
+Fresh blank-self run for Elena only with 6 automatic world ticks:
+
+```bash
+npm run run:rocklaw -- --fresh --blank-self --agents elena --auto 6
+```
+
+Fresh run for a subset on OpenRouter Gemini Flash:
+
+```bash
+npm run run:rocklaw -- --fresh --agents elena,finn --provider openrouter-gemini-flash --auto 4
+```
+
+Fresh run for one agent on the local `llama.cpp` stack:
+
+```bash
+npm run run:rocklaw -- --fresh --blank-self --agents elena --provider local --auto 6
+```
+
+Provider presets currently supported by the one-shot launcher:
+
+- `keep`
+- `local`
+- `openrouter-gemini-flash`
+- `openrouter-gemini-pro`
+- `openrouter-gpt41-mini`
+- `openai-mini`
+- `openai-main`
+
+For `--provider local`, the launcher checks both of these before doing any world setup:
+
+- `http://127.0.0.1:8080/v1/models` for `llama-server`
+- `http://127.0.0.1:8090/v1/models` for the local debug proxy
+
+If either is down, the command stops early and tells you what to start.
+
 Prepare one agent only in the background, keep current world:
 
 ```bash

@@ -4,7 +4,7 @@
  */
 
 import { internalMutation } from '../_generated/server';
-import { demandPressureForItem } from './economy';
+import { canonicalizeItemQuantities, demandPressureForItem } from './economy';
 
 // Base prices and village-wide supply thresholds
 const ITEM_CONFIG: Record<string, { basePrice: number; criticalSupply: number; moderateSupply: number }> = {
@@ -15,10 +15,10 @@ const ITEM_CONFIG: Record<string, { basePrice: number; criticalSupply: number; m
   ale:       { basePrice: 5,  criticalSupply: 3,  moderateSupply: 10 },
   horseshoe: { basePrice: 14, criticalSupply: 2,  moderateSupply: 8  },
   medicine:  { basePrice: 12, criticalSupply: 3,  moderateSupply: 10 },
-  tools:     { basePrice: 18, criticalSupply: 2,  moderateSupply: 6  },
+  tool:      { basePrice: 18, criticalSupply: 2,  moderateSupply: 6  },
   axe:       { basePrice: 20, criticalSupply: 1,  moderateSupply: 5  },
   knife:     { basePrice: 10, criticalSupply: 2,  moderateSupply: 8  },
-  herbs:     { basePrice: 6,  criticalSupply: 3,  moderateSupply: 12 },
+  herb:      { basePrice: 6,  criticalSupply: 3,  moderateSupply: 12 },
   meal:      { basePrice: 8,  criticalSupply: 2,  moderateSupply: 10 },
 };
 
@@ -49,7 +49,7 @@ export const recalculate = internalMutation({
 
     for (const [item, config] of Object.entries(ITEM_CONFIG)) {
       const agentSupply = agents.reduce((sum, agent) => {
-        const inv = JSON.parse(agent.inventory) as Record<string, number>;
+        const inv = canonicalizeItemQuantities(JSON.parse(agent.inventory) as Record<string, number>);
         return sum + (inv[item] ?? 0);
       }, 0);
       const placeSupply = placeStocks.reduce((sum, stock) => (

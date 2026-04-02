@@ -8,6 +8,8 @@
     "dev:rocklaw:fresh": "./scripts/dev-rocklaw-local.sh --fresh",
     "lab:rocklaw": "./scripts/lab-rocklaw.sh",
     "lab:rocklaw:blank": "./scripts/lab-rocklaw.sh --fresh --blank-self",
+    "run:rocklaw": "./scripts/run-rocklaw.sh",
+    "run:rocklaw:blank": "./scripts/run-rocklaw.sh --fresh --blank-self",
     "lab:agent": "./scripts/lab-agent.sh",
     "lab:agent:blank": "./scripts/lab-agent.sh --fresh --blank-self",
     "step:rocklaw": "./scripts/step-rocklaw.sh",

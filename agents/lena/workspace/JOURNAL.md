@@ -1,0 +1,5 @@
+# Journal -- Lena Marsh
+
+- Day 2 morning (tick 7): First day in Rocklaw settled into work quickly. I brewed medicine through the morning and afternoon and kept the shrine patch visited. Seven medicine and eight herb on hand feels steady enough for now. Energy is dipping though -- 68. I need proper sleep before morning. The village is short on a lot of things, medicine among them, so there will be need tomorrow. I'll keep my boundaries but I won't let the sick go waiting.
+- Day 3 morning (tick 13): Second day passed the same as the first. The shrine patch gave enough herb to keep brewing, but I'm down to four stalks now and should gather tomorrow before trying to make more. Energy dipped again. I'll sleep and recover, then check on the patch at first light.
+- Day 4 morning (tick 19): Third day passed quietly. The work is steady but the shrine patch is running thin -- only one herb left to gather before it regrows. I need to watch my energy and keep a steady rhythm. Tomorrow I'll check the patch early. The village needs medicine, and I can make it as long as the herbs hold out.

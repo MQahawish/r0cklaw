@@ -28,6 +28,16 @@ fi
 AGENT_NAME="$(python3 - <<'PY' "$AGENT"
 import sys
 slug = sys.argv[1]
+canonical = {
+    "elena": "Elena Voss",
+    "marcus": "Marcus Hale",
+    "finn": "Finn",
+    "lena": "Lena Marsh",
+    "sera": "Sera",
+}
+if slug in canonical:
+    print(canonical[slug])
+    raise SystemExit(0)
 parts = slug.replace('-', ' ').split()
 print(' '.join(p.capitalize() for p in parts))
 PY
@@ -105,14 +115,6 @@ path.write_text(text, encoding="utf-8")
 PY
 }
 
-rotate_dir() {
-  local dir_path=$1
-  if [[ -e "$dir_path" ]]; then
-    local stale_path="${dir_path}.stale.$(date +%s)"
-    mv "$dir_path" "$stale_path" 2>/dev/null || true
-  fi
-}
-
 rm -f \
   "$WORKSPACE/sessions/sessions.db" \
   "$WORKSPACE/sessions/sessions.db-shm" \
@@ -124,6 +126,7 @@ rm -f \
   "$WORKSPACE/state/tick-debug.jsonl" \
   "$WORKSPACE/state/memory_hygiene_state.json" \
   "$WORKSPACE/TURN.md" \
+  "$WORKSPACE/JOURNAL.md" \
   "$WORKSPACE/SELF.md" \
   "$WORKSPACE/world/inventory.md" \
   "$WORKSPACE/world/location.md" \
@@ -160,25 +163,13 @@ cat > "$WORKSPACE/HEARTBEAT.md" <<EOF
 - Day 1 morning: [awaiting first tick]
 EOF
 
-if [[ "$PROFILE" == "--blank-self" ]]; then
-  find "$WORKSPACE/self" -type f -delete 2>/dev/null || true
+cat > "$WORKSPACE/JOURNAL.md" <<EOF
+# Journal -- $AGENT_NAME
 
-  cat > "$WORKSPACE/MEMORY.md" <<EOF
-# Memory -- $AGENT_NAME
-
-## Things I know to be true
-
-- None yet.
-
-## Events that mattered
-
-- None yet.
-
-## People
-
-- None yet.
+- No journal entries recorded yet.
 EOF
 
+if [[ "$PROFILE" == "--blank-self" ]]; then
   python3 - <<'PY' "$WORKSPACE" "$AGENT_NAME"
 import pathlib
 import re
@@ -198,7 +189,7 @@ aliases = {
 other_patterns = []
 for name, forms in aliases.items():
     if name == agent_name:
-      continue
+        continue
     other_patterns.extend(forms)
 
 pattern = re.compile("|".join(re.escape(name) for name in other_patterns))
@@ -216,138 +207,12 @@ for filename in ("IDENTITY.md", "SOUL.md"):
         if pattern.search(line):
             continue
         kept.append(line)
-    text = "\n".join(kept).strip() + "\n"
-    path.write_text(text, encoding="utf-8")
+    path.write_text("\n".join(kept).strip() + "\n", encoding="utf-8")
 PY
 fi
 
 sanitize_runtime_doc "AGENTS.md" "$WORKSPACE/AGENTS.md"
 sanitize_runtime_doc "TOOLS.md" "$WORKSPACE/TOOLS.md"
 
-python3 - <<'PY' "$WORKSPACE" "$AGENT_NAME" "$PROFILE"
-import pathlib
-import shutil
-import sys
-
-workspace = pathlib.Path(sys.argv[1])
-agent_name = sys.argv[2]
-profile = sys.argv[3]
-self_dir = workspace / "self"
-self_path = workspace / "SELF.md"
-
-def read_section(filename: str) -> str:
-    path = self_dir / filename
-    if not path.exists():
-        return ""
-    text = path.read_text(encoding="utf-8").strip()
-    if not text:
-        return ""
-    lines = text.splitlines()
-    idx = 0
-    while idx < len(lines) and not lines[idx].strip():
-        idx += 1
-    if idx < len(lines) and lines[idx].startswith("# "):
-        idx += 1
-    while idx < len(lines) and not lines[idx].strip():
-        idx += 1
-    return "\n".join(lines[idx:]).strip()
-
-def build_relationships() -> str:
-    social_dir = self_dir / "social"
-    if not social_dir.exists():
-        return "- None yet."
-    lines = []
-    for entry in sorted([p for p in social_dir.iterdir() if p.is_dir()], key=lambda p: p.name):
-        notes = []
-        for name in ("private.md", "public.md"):
-          file_path = entry / name
-          if not file_path.exists():
-              continue
-          content = file_path.read_text(encoding="utf-8").strip()
-          if not content:
-              continue
-          split = content.splitlines()
-          idx = 0
-          while idx < len(split) and not split[idx].strip():
-              idx += 1
-          if idx < len(split) and split[idx].startswith("# "):
-              idx += 1
-          while idx < len(split) and not split[idx].strip():
-              idx += 1
-          body = " ".join(line.strip() for line in split[idx:] if line.strip())
-          if body:
-              notes.append(body)
-        if notes:
-            lines.append(f"- {entry.name}: {' '.join(notes)}")
-    return "\n".join(lines) if lines else "- None yet."
-
-if profile == "--blank-self":
-    content = "\n".join([
-        f"# Self Context -- {agent_name}",
-        "",
-        "## Goals",
-        "What I am working toward this week:",
-        "  - Survive and stay functional.",
-        "",
-        "## Plans",
-        "Specific upcoming intentions:",
-        "  - Nothing defined yet.",
-        "",
-        "## Beliefs",
-        "- None yet.",
-        "",
-        "## Desires",
-        "- None yet.",
-        "",
-        "## Secrets",
-        "- None yet.",
-        "",
-        "## Relevant Relationships",
-        "- None yet.",
-        "",
-    ])
-    self_path.write_text(content, encoding="utf-8")
-else:
-    if not self_path.exists():
-        goals = read_section("goals.md") or "What I am working toward this week:\n  - Nothing defined yet."
-        plans = read_section("plans.md") or "Specific upcoming intentions:\n  - Nothing defined yet."
-        beliefs = read_section("beliefs.md") or "- None yet."
-        desires = read_section("desires.md") or "- None yet."
-        secrets = read_section("secrets.md") or "- None yet."
-        relationships = build_relationships()
-        content = "\n".join([
-            f"# Self Context -- {agent_name}",
-            "",
-            "## Goals",
-            goals,
-            "",
-            "## Plans",
-            plans,
-            "",
-            "## Beliefs",
-            beliefs,
-            "",
-            "## Desires",
-            desires,
-            "",
-            "## Secrets",
-            secrets,
-            "",
-            "## Relevant Relationships",
-            relationships,
-            "",
-        ])
-        self_path.write_text(content, encoding="utf-8")
-
-for legacy_name in ("goals.md", "plans.md", "beliefs.md", "desires.md", "secrets.md"):
-    try:
-        (self_dir / legacy_name).unlink()
-    except FileNotFoundError:
-        pass
-
-social_dir = self_dir / "social"
-if social_dir.exists():
-    shutil.rmtree(social_dir, ignore_errors=True)
-if self_dir.exists():
-    shutil.rmtree(self_dir, ignore_errors=True)
-PY
+chmod 666 "$WORKSPACE/HEARTBEAT.md" 2>/dev/null || true
+chmod 666 "$WORKSPACE/JOURNAL.md" 2>/dev/null || true

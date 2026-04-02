@@ -16,7 +16,13 @@ Do not invent actions like `blacksmith`.
 
 ## Known recipes
 
+- `horseshoe`: 1 iron_ingot -> 1 horseshoe via `work`
 - `horseshoe`: 2 iron_ore + 1 coal -> 1 horseshoe via `work`
-- `tools`: 2 iron_ore + 1 coal -> 1 tools via `work`
+- `tool`: 1 iron_ingot -> 1 tool via `work`
+- `tool`: 2 iron_ore + 1 coal -> 1 tool via `work`
+- `knife`: 1 iron_ingot -> 1 knife via `work`
 - `knife`: 1 iron_ore + 1 coal -> 1 knife via `work`
+- `iron_ingot`: 1 horseshoe -> 1 iron_ingot via `work`
 - `iron_ingot`: 2 iron_ore + 1 coal -> 1 iron_ingot via `work`
+
+Keeping a spare `horseshoe` on hand can improve your non-horseshoe forge work.

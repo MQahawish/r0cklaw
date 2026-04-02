@@ -7,7 +7,7 @@
 
 import { v } from 'convex/values';
 import { internalMutation, internalQuery } from '../_generated/server';
-import { RECIPE_CATALOGUE, ROLE_ECONOMIC_ACTIONS, ROLE_TRADE_PROFILES, SERVICE_CATALOGUE } from './economy';
+import { RECIPE_CATALOGUE, ROLE_ECONOMIC_ACTIONS, ROLE_TRADE_PROFILES, SERVICE_CATALOGUE, canonicalizeItemQuantities } from './economy';
 import { describeBusyStatus } from './actionTiming';
 import { timeOfDayForTick } from './dayCycle';
 import { derivePlaceQuote } from './placeMarkets';
@@ -56,7 +56,7 @@ function buildTradeOpportunities(args: { agent: any; nearby: any[] }): TradeOppo
     .filter((other) => other.name !== agent.name)
     .map((other) => {
       const profile = ROLE_TRADE_PROFILES[other.role] ?? { likelySells: [], likelyBuys: [] };
-      const inv = JSON.parse(other.inventory ?? '{}') as Record<string, number>;
+      const inv = canonicalizeItemQuantities(JSON.parse(other.inventory ?? '{}') as Record<string, number>);
       const likelySells = profile.likelySells.filter((item) => {
         if (item === 'meal' && other.role === 'Innkeeper') {
           return other.location === 'inn' && (inv.bread ?? 0) >= 1 && (inv.ale ?? 0) >= 1;
@@ -82,11 +82,18 @@ function buildEconomicSurface(args: {
   reachableLocations: string[];
 }): EconomicSurfaceEntry[] {
   const { agent, nearby, nearbyPlaceStocks, fieldsHere, herbPatchesHere, prices, reachableLocations } = args;
-  const inv = JSON.parse(agent.inventory) as Record<string, number>;
+  const inv = canonicalizeItemQuantities(JSON.parse(agent.inventory) as Record<string, number>);
   const roleActions = ROLE_ECONOMIC_ACTIONS[agent.role] ?? [];
   const entries: EconomicSurfaceEntry[] = [];
   const nearbyTradePartners = nearby.filter((other) => other.name !== agent.name);
   const primaryTradeLocation = findPrimaryTradeLocation(agent.location);
+  const roleRecipeOutputs = agent.role === 'Blacksmith'
+    ? new Set(['horseshoe', 'tool', 'knife', 'iron_ingot'])
+    : agent.role === 'Herbalist'
+    ? new Set(['medicine'])
+    : agent.role === 'Innkeeper'
+    ? new Set(['flour', 'bread'])
+    : null;
 
   for (const stock of nearbyPlaceStocks) {
     if (stock.sells) {
@@ -162,7 +169,9 @@ function buildEconomicSurface(args: {
     }
   }
 
-  for (const recipe of RECIPE_CATALOGUE.filter((entry) => roleActions.includes(entry.action))) {
+  for (const recipe of RECIPE_CATALOGUE.filter((entry) =>
+    roleActions.includes(entry.action) && (!roleRecipeOutputs || roleRecipeOutputs.has(entry.output)),
+  )) {
     const cheapestPrice = prices.find((price) => price.item === recipe.output)?.price;
     const hasInputs = recipe.consumes.every((entry) => (inv[entry.item] ?? 0) >= entry.quantity);
     const actionLabel = recipe.action === 'work' ? `work:${recipe.output}` : `${recipe.action}:${recipe.output}`;
@@ -182,7 +191,7 @@ function buildEconomicSurface(args: {
     const readyField = fieldsHere.find((field) => field.stage === 'ready' && field.cropItem);
     const growingField = fieldsHere.find((field) => field.stage === 'growing');
     const fallowField = fieldsHere.find((field) => field.stage === 'fallow');
-    const cropSeeds = ['grain', 'vegetables'].filter((item) => (inv[item] ?? 0) > 0);
+    const cropSeeds = ['grain', 'vegetable'].filter((item) => (inv[item] ?? 0) > 0);
 
     if (readyField?.cropItem) {
       entries.push({
@@ -223,12 +232,12 @@ function buildEconomicSurface(args: {
 
   if (agent.role === 'Herbalist' && roleActions.includes('work')) {
     const patch = herbPatchesHere.find((entry) => entry.available > 0);
-    const canBrewMedicine = agent.location === 'shrine' && (inv.herbs ?? 0) >= 2;
+    const canBrewMedicine = agent.location === 'shrine' && (inv.herb ?? 0) >= 2;
     if (patch) {
       entries.push({
-        action: 'work:herbs',
+        action: 'work:herb',
         status: 'available',
-        detail: `Available now. Gather herbs from ${patch.patchKey}.`,
+        detail: `Available now. Gather herb from ${patch.patchKey}.`,
       });
     }
     if (canBrewMedicine) {
@@ -243,8 +252,38 @@ function buildEconomicSurface(args: {
         action: 'work',
         status: 'unavailable',
         detail: agent.location === 'shrine'
-          ? 'No valid herbal work is currently feasible here. Gather herbs first or move to a patch.'
+          ? 'No valid herbal work is currently feasible here. Gather herb first or move to a patch.'
           : 'No valid herbal work is currently feasible here. Move to a herb patch or the shrine.',
+      });
+    }
+  }
+
+  if (agent.role === 'Innkeeper' && roleActions.includes('work')) {
+    const flourRecipe = RECIPE_CATALOGUE.find((entry) => entry.action === 'work' && entry.output === 'flour' && entry.location === 'bakery');
+    const breadRecipe = RECIPE_CATALOGUE.find((entry) => entry.action === 'work' && entry.output === 'bread' && entry.location === 'bakery');
+    const canMillFlour = Boolean(flourRecipe && agent.location === 'bakery' && flourRecipe.consumes.every((entry) => (inv[entry.item] ?? 0) >= entry.quantity));
+    const canBakeBread = Boolean(breadRecipe && agent.location === 'bakery' && breadRecipe.consumes.every((entry) => (inv[entry.item] ?? 0) >= entry.quantity));
+    if (canMillFlour) {
+      entries.push({
+        action: 'work:flour',
+        status: 'available',
+        detail: 'Available now. Mill grain into flour at the bakery.',
+      });
+    }
+    if (canBakeBread) {
+      entries.push({
+        action: 'work:bread',
+        status: 'available',
+        detail: 'Available now. Bake bread at the bakery.',
+      });
+    }
+    if (!canMillFlour && !canBakeBread) {
+      entries.push({
+        action: 'work',
+        status: 'unavailable',
+        detail: agent.location === 'bakery'
+          ? 'No valid bakery work is currently feasible here. Bring grain or flour first.'
+          : 'Move to the bakery if you want to mill flour or bake bread.',
       });
     }
   }
@@ -554,6 +593,16 @@ export const getWorldSnapshot = internalQuery({
       .order('desc')
       .take(5);
 
+    const agentProfile = await ctx.db
+      .query('rl_agent_profiles')
+      .withIndex('agentName', (q) => q.eq('agentName', agentName))
+      .unique();
+
+    const journalEntries = await ctx.db
+      .query('rl_journal_entries')
+      .withIndex('agent_day_tick', (q) => q.eq('agentName', agentName))
+      .collect();
+
     // Reputation score for this agent
     const reputation = await ctx.db
       .query('rl_reputation')
@@ -774,6 +823,10 @@ export const getWorldSnapshot = internalQuery({
       recentTrades,
       mentions,
       recentLocalSpeech,
+      agentProfile,
+      journalEntries: journalEntries
+        .slice()
+        .sort((a, b) => a.day - b.day || a.tick - b.tick),
       reputation,
       incomingTransactions: orderedIncomingTransactions.map((txn, index) => ({
         ...txn,
@@ -842,7 +895,7 @@ export const getWorldSnapshot = internalQuery({
 type Snapshot = any; // typed loosely; Convex _generated types handle validation at runtime
 
 function buildInventoryMd(agentName: string, day: number, data: any): string {
-  const inv = JSON.parse(data.agent.inventory) as Record<string, number>;
+  const inv = canonicalizeItemQuantities(JSON.parse(data.agent.inventory) as Record<string, number>);
   const lines = Object.entries(inv)
     .map(([item, qty]) => `${item.padEnd(12)} ${qty} units`)
     .join('\n');

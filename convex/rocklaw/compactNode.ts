@@ -6,8 +6,7 @@ import { internal } from '../_generated/api';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-const MEMORY_LINE_THRESHOLD = 150;
-const SELF_LINE_THRESHOLD = 120;
+const JOURNAL_LINE_THRESHOLD = 160;
 
 export const runCompaction = internalAction({
   args: {},
@@ -35,25 +34,15 @@ export const compactAgent = internalAction({
     const absPath = resolveWorkspacePath(workspacePath);
     const results: string[] = [];
 
-    const memoryPath = path.join(absPath, 'MEMORY.md');
-    const memResult = await compactIfOver(
-      memoryPath,
-      MEMORY_LINE_THRESHOLD,
-      (content) => summariseWithLLM(content, MEMORY_PROMPT(agentName)),
+    const journalPath = path.join(absPath, 'JOURNAL.md');
+    const journalResult = await compactIfOver(
+      journalPath,
+      JOURNAL_LINE_THRESHOLD,
+      (content) => summariseWithLLM(content, JOURNAL_PROMPT(agentName)),
       agentName,
-      'MEMORY',
+      'journal',
     );
-    if (memResult) results.push(memResult);
-
-    const selfPath = path.join(absPath, 'SELF.md');
-    const selfResult = await compactIfOver(
-      selfPath,
-      SELF_LINE_THRESHOLD,
-      (content) => summariseWithLLM(content, SELF_PROMPT(agentName)),
-      agentName,
-      'self',
-    );
-    if (selfResult) results.push(selfResult);
+    if (journalResult) results.push(journalResult);
 
     if (results.length > 0) {
       console.log(`[compact] ${agentName}: ${results.join(', ')}`);
@@ -126,26 +115,14 @@ function truncateFallback(content: string): string {
   return ['[...earlier content trimmed...]', ...lines.slice(-60)].join('\n');
 }
 
-const MEMORY_PROMPT = (name: string) => `\
-You are the memory keeper for ${name}, a character in a medieval village simulation.
-Summarise this memory log. The output will replace the original file.
+const JOURNAL_PROMPT = (name: string) => `\
+You are the journal keeper for ${name}, a character in a medieval village simulation.
+Summarise this journal file. The output will replace the original file.
 Rules:
-- Preserve every named incident that still has consequences (debts, grudges, promises, discoveries)
-- Preserve the emotional arc: who trusts who, who has been wronged
-- Preserve any secrets or sensitive knowledge
-- Drop trivial daily routines unless they reveal character
-- Keep under 80 lines
-- Write in the same first-person tone as the original
-- Do NOT add any meta-commentary like "(compacted)" — just write the content`;
-
-const SELF_PROMPT = (name: string) => `\
-You are the self-state keeper for ${name}, a character in a medieval village simulation.
-Summarise this self context file. The output will replace the original file.
-Rules:
-- Preserve current goals, plans, beliefs, desires, secrets, and relationship state that still matter
-- Preserve commitments, grudges, trust changes, and emotionally meaningful relationship turns
-- Drop superseded details and repetitive rumination
-- Keep the section structure legible
+- Preserve durable lessons, relationship changes, commitments, grudges, trust shifts, and open loops that still matter
+- Preserve the strongest recent decisions and shortages the character is watching
+- Drop repetitive daily noise and superseded details
+- Keep the journal structure legible
 - Keep under 60 lines
 - Write in the same first-person tone as the original`;
 
