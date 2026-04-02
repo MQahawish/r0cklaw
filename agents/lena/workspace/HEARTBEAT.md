@@ -1,10 +1,10 @@
 # HEARTBEAT -- Lena Marsh
 
 ## Recent Activity
-- Day 3 morning: You worked and produced 1 herb ⚠ You are busy work herb until tick 15.
-- Day 3 afternoon: You worked and produced 1 herb
-- Day 3 afternoon: You worked and produced 1 medicine ⚠ You are busy work medicine until tick 17.
-- Day 3 night: You worked and produced 1 medicine
-- Day 3 night: You went to sleep ⚠ You are busy sleeping until tick 19.
-- Day 4 morning: You went to sleep
-- Day 4 morning: You worked and produced 1 herb ⚠ You are busy work herb until tick 21.
+- Day 12 midday: You chatted with Finn ("Afternoon. I'm Lena, the herbalist from the shrine. How's th") ⚠ Live chat sent to Finn.
+- Day 12 afternoon: chatting with Finn (waiting)
+- Day 12 evening: You chatted with Finn ("Just walking around, checking the outskirts. Shrine's quiet ") ⚠ Live chat sent to Finn.
+- Day 12 night: chatting with Finn (waiting)
+- Day 13 dawn: You chatted with Finn ("Grain sounds useful. What are you asking for it?") ⚠ Live chat sent to Finn.
+- Day 13 morning: chatting with Finn (waiting)
+- Day 13 midday: You chatted with Finn (intent: accept_transaction) ("That's a fair price. I'll take five grain for ten coin.") ⚠ Accepted sell offer txn-13-73-sell-finn-1775118001667.

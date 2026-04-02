@@ -39,10 +39,11 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 ## Economic actions right now
 
 ### Available now
-  (none)
+- `buy_place:bakery:bread`: Available now at bakery: 7 bread in stock for 12c each.
+- `deliver_place:bakery:bread`: You can deliver bread into bakery for storage or supply without immediate payment.
 
 ### Unavailable here
-  (none)
+- `sell_place:bakery:grain`: You do not have grain to sell into bakery.
 ## Act in the world
 
 - Do not use `observe`, `inspect`, `look`, or `survey` as a final world action. Observation is done through file reads and notes during tool use.
@@ -75,6 +76,12 @@ Return one JSON object when you are ready to act. Use only the fields that matte
   Example JSON: `{"action":"use","item":"medicine","thought":"I need to recover health before harder work."}`
 - `sleep`: include a short `journal` paragraph. Keep it private and reflective, not just economic bookkeeping; mention people, feelings, surprises, worries, or changing impressions when they matter.
   Example JSON: `{"action":"sleep","journal":"Long day. Sera seemed more practical than I expected, and I should keep an eye on the meal shortage tomorrow.","thought":"I need proper sleep before morning."}`
+
+## Temporary actions available now
+
+- `sleep`: stop for proper sleep and recover more deeply.
+  Your `journal` should be a short private reflection, not just a work ledger. When relevant, mention who you dealt with, what you thought or felt about the day, and what changed in your view of people, risks, or opportunities.
+  Example JSON: `{"action":"sleep","journal":"Long day. I got the work done, but Marcus pushed hard on price and I will remember that. Still, the trade may prove useful tomorrow.","thought":"It is time to sleep and recover fully."}`
 
 ## Speaking into the world
 

@@ -157,7 +157,13 @@ set_config_api_url() {
     if grep -q '^api_url[[:space:]]*=' "$config_path"; then
       sed -i "s|^api_url[[:space:]]*=.*$|api_url = \"$api_url\"|" "$config_path"
     else
-      perl -0pi -e "s/^(default_model\\s*=.*\\n)/\$1api_url = \"$api_url\"\\n/" "$config_path"
+      awk -v api_url="$api_url" '
+        { print }
+        /^default_model[[:space:]]*=/ {
+          print "api_url = \"" api_url "\""
+        }
+      ' "$config_path" > "$config_path.tmp"
+      mv "$config_path.tmp" "$config_path"
     fi
   else
     perl -0pi -e 's/^api_url\s*=.*\n//mg' "$config_path"
