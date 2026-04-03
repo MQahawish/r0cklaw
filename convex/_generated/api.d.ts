@@ -59,6 +59,7 @@ import type * as rocklaw_observe from "../rocklaw/observe.js";
 import type * as rocklaw_observeNode from "../rocklaw/observeNode.js";
 import type * as rocklaw_placeMarkets from "../rocklaw/placeMarkets.js";
 import type * as rocklaw_priceEngine from "../rocklaw/priceEngine.js";
+import type * as rocklaw_hiddenRoles from "../rocklaw/hiddenRoles.js";
 import type * as rocklaw_reputation from "../rocklaw/reputation.js";
 import type * as rocklaw_systems from "../rocklaw/systems.js";
 import type * as rocklaw_visualBridge from "../rocklaw/visualBridge.js";
@@ -134,6 +135,7 @@ declare const fullApi: ApiFromModules<{
   "rocklaw/observeNode": typeof rocklaw_observeNode;
   "rocklaw/placeMarkets": typeof rocklaw_placeMarkets;
   "rocklaw/priceEngine": typeof rocklaw_priceEngine;
+  "rocklaw/hiddenRoles": typeof rocklaw_hiddenRoles;
   "rocklaw/reputation": typeof rocklaw_reputation;
   "rocklaw/systems": typeof rocklaw_systems;
   "rocklaw/visualBridge": typeof rocklaw_visualBridge;

@@ -707,6 +707,43 @@ export const getWorldSnapshot = internalQuery({
       };
     });
 
+    // Hidden role for this agent (null if none assigned)
+    const hiddenRole = await ctx.db
+      .query('rl_hidden_roles')
+      .withIndex('agentName', (q) => q.eq('agentName', agentName))
+      .unique();
+
+    // Elder's Day from world state
+    const worldState = await ctx.db.query('rl_world_state').unique();
+    const eldersDay = worldState?.eldersDay ?? 30;
+
+    // Saboteur: current bakery grain
+    const bakeryGrainStock = await ctx.db
+      .query('rl_place_stocks')
+      .withIndex('place_item', (q) => q.eq('placeName', 'bakery').eq('item', 'grain'))
+      .unique();
+    const bakeryGrain = bakeryGrainStock?.quantity ?? 0;
+
+    // Heir: rival's current coin
+    let rivalCoin: number | null = null;
+    if (hiddenRole?.roleType === 'Heir' && hiddenRole.rival) {
+      const rivalAgent = await ctx.db
+        .query('rl_agents')
+        .withIndex('name', (q) => q.eq('name', hiddenRole.rival!))
+        .unique();
+      rivalCoin = rivalAgent?.coin ?? null;
+    }
+
+    // Usurper: count of gossip events they've sourced that applied the rep penalty
+    let usurperGossipHits = 0;
+    if (hiddenRole?.roleType === 'Usurper') {
+      const gossipEvents = await ctx.db
+        .query('rl_gossip_events')
+        .withIndex('source_day', (q) => q.eq('sourceAgent', agentName))
+        .collect();
+      usurperGossipHits = gossipEvents.filter((e) => e.repPenaltyApplied).length;
+    }
+
     const socialKnowledge = await ctx.db
       .query('rl_social_knowledge')
       .withIndex('observer', (q) => q.eq('observerAgent', agentName))
@@ -869,6 +906,11 @@ export const getWorldSnapshot = internalQuery({
                 : null,
           }
         : null,
+      hiddenRole: hiddenRole ?? null,
+      eldersDay,
+      bakeryGrain,
+      rivalCoin,
+      usurperGossipHits,
       socialKnowledge,
       chatThreads,
       economicSurface: buildEconomicSurface({

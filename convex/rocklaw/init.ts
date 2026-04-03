@@ -97,11 +97,12 @@ export const initRocklaw = mutation({
     }
 
     // World state
+    const ELDERS_DAY = 30;
     const worldState = await ctx.db.query('rl_world_state').first();
     if (worldState) {
-      await ctx.db.patch(worldState._id, { tick: 0, day: 1, timeOfDay: 'dawn', isRunning: false });
+      await ctx.db.patch(worldState._id, { tick: 0, day: 1, timeOfDay: 'dawn', isRunning: false, eldersDay: ELDERS_DAY });
     } else {
-      await ctx.db.insert('rl_world_state', { tick: 0, day: 1, timeOfDay: 'dawn', isRunning: false });
+      await ctx.db.insert('rl_world_state', { tick: 0, day: 1, timeOfDay: 'dawn', isRunning: false, eldersDay: ELDERS_DAY });
     }
 
     // Locations
@@ -233,6 +234,12 @@ export const initRocklaw = mutation({
       }
     }
 
+    // Assign hidden roles (Saboteur, Usurper, Heir)
+    await ctx.scheduler.runAfter(0, internal.rocklaw.hiddenRoles.assignHiddenRoles, {
+      agentNames: selectedRoster.map((a) => a.name),
+      day: 1,
+    });
+
     // Seed initial market prices
     await ctx.scheduler.runAfter(0, internal.rocklaw.priceEngine.recalculate, {});
 
@@ -253,6 +260,8 @@ export const ensureCanonicalItemIds = internalMutation({
 });
 
 async function clearRocklawTables(ctx: any) {
+  await deleteAll(ctx, 'rl_hidden_roles');
+  await deleteAll(ctx, 'rl_gossip_events');
   await deleteAll(ctx, 'rl_journal_entries');
   await deleteAll(ctx, 'rl_agent_profiles');
   await deleteAll(ctx, 'rl_social_knowledge');
