@@ -19,6 +19,7 @@
     "debug:agent": "./scripts/debug-agent.sh",
     "tick:agent": "./scripts/tick-agent.sh",
     "bench:agent": "node ./scripts/tick-bench-agent.mjs",
+    "bench:bonsai": "./scripts/bench-bonsai-cache.sh",
     "llama:proxy": "node ./scripts/llama-proxy.mjs",
     "peek:agent": "./scripts/peek-agent.sh",
     "tail:agent": "./scripts/tail-agent.sh",

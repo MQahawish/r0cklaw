@@ -77,7 +77,7 @@ parse_selected_agents() {
   local parsed=()
   local seen=" "
   local item
-  IFS=',' read -r -A items <<<"$raw"
+  IFS=',' read -r -a items <<<"$raw"
   for item in "${items[@]}"; do
     item="${item// /}"
     [[ -n "$item" ]] || continue

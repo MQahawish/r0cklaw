@@ -104,6 +104,59 @@ export LD_LIBRARY_PATH=$PWD:/usr/local/cuda/targets/x86_64-linux/lib:/usr/local/
   --reasoning off
 ```
 
+Run the local Bonsai 8B 1-bit server through the Prism fork Docker image:
+
+```bash
+sudo docker run --rm -it --gpus all --security-opt=label=disable \
+  --network host \
+  -v /home/mahmoudqahawish/Models/Bonsai-8B-GGUF:/models:Z \
+  llama-prism-cuda \
+  --server \
+  -m /models/Bonsai-8B.gguf \
+  -ngl 99 \
+  -c 8192 \
+  -b 1024 \
+  -ub 256 \
+  -np 1 \
+  -fa 1 \
+  --cache-ram 4096
+```
+
+Notes:
+
+- `--network host` was required on this machine; `-p 8080:8080` caused connection resets.
+- `sudo` plus `--security-opt=label=disable` was required for Docker GPU access here.
+- `-c 4096` was too small for current Rocklaw prompts; use at least `8192`.
+- `--cache-ram 1024` only held about one Rocklaw-sized prompt state; `4096` was the first meaningful multi-agent cache size.
+
+Thinking-enabled Bonsai server using the local patched template override:
+
+```bash
+sudo docker run --rm -it --gpus all --security-opt=label=disable \
+  --network host \
+  -v /home/mahmoudqahawish/Models/Bonsai-8B-GGUF:/models:Z \
+  -v /home/mahmoudqahawish/Github/r0cklaw/tmp:/tmpl:Z \
+  llama-prism-cuda \
+  --server \
+  -m /models/Bonsai-8B.gguf \
+  --chat-template-file /tmpl/bonsai-thinking.jinja \
+  --reasoning-format deepseek \
+  --reasoning-budget -1 \
+  -ngl 99 \
+  -c 8192 \
+  -b 1024 \
+  -ub 256 \
+  -np 1 \
+  -fa 1 \
+  --cache-ram 4096
+```
+
+Useful files for the thinking-path experiment:
+
+- template override: [tmp/bonsai-thinking.jinja](/home/mahmoudqahawish/Github/r0cklaw/tmp/bonsai-thinking.jinja)
+- stream renderer: [tmp/show_bonsai_stream.py](/home/mahmoudqahawish/Github/r0cklaw/tmp/show_bonsai_stream.py)
+- one-command stream test: [tmp/test_bonsai_stream.sh](/home/mahmoudqahawish/Github/r0cklaw/tmp/test_bonsai_stream.sh)
+
 Health check:
 
 ```bash
@@ -124,6 +177,37 @@ curl http://127.0.0.1:8080/v1/chat/completions \
     "temperature": 0
   }'
 ```
+
+Quick Bonsai-compatible chat test:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "Bonsai-8B.gguf",
+    "messages": [
+      {"role":"system","content":"You are concise."},
+      {"role":"user","content":"Reply with exactly: bonsai server works"}
+    ],
+    "temperature": 0.5,
+    "top_p": 0.85,
+    "top_k": 20
+  }'
+```
+
+Observed Bonsai thinking result:
+
+- stock Bonsai HF template gave `thinking = 0` on server startup
+- patched local template changed that to `thinking = 1`
+- visible reasoning then streamed in `reasoning_content`
+- good for manual inspection, bad for Rocklaw action turns
+
+The visible reasoning quality was weak:
+
+- often reached the correct answer
+- but repeated itself heavily
+- did not know when to stop
+- not suitable as the default Rocklaw agent mode
 
 ## Single-Agent Debug
 

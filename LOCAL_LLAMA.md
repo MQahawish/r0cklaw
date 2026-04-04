@@ -14,6 +14,11 @@ This is the high-signal reference for the commands you are likely to reuse:
 - benchmark
 - recover from common failures
 
+This file now covers two local model paths:
+
+- stock host-native `llama.cpp` for standard GGUF models such as Qwen
+- Prism's `llama.cpp` fork in Docker for Bonsai 8B `Q1_0_g128`
+
 ## Assumptions
 
 - host repo path: `/home/mahmoudqahawish/Github/llama.cpp`
@@ -95,6 +100,144 @@ mkdir -p /home/mahmoudqahawish/Models/Qwen3-4B-GGUF
 huggingface-cli download Qwen/Qwen3-4B-GGUF Qwen3-4B-Q4_K_M.gguf --local-dir /home/mahmoudqahawish/Models/Qwen3-4B-GGUF
 ```
 
+Example: Bonsai 8B 1-bit
+
+- model page: `https://huggingface.co/prism-ml/Bonsai-8B-gguf`
+- file: `Bonsai-8B.gguf`
+- local path used here: `/home/mahmoudqahawish/Models/Bonsai-8B-GGUF/Bonsai-8B.gguf`
+
+Browser download was the simplest path in this environment. After downloading, make sure the directory is owned by your user:
+
+```bash
+sudo chown -R "$USER:$USER" /home/mahmoudqahawish/Models/Bonsai-8B-GGUF
+ls -lh /home/mahmoudqahawish/Models/Bonsai-8B-GGUF/Bonsai-8B.gguf
+```
+
+## Prism Fork for Bonsai 8B
+
+Host-native CUDA build of the Prism fork did not work reliably on this machine because of:
+
+- CUDA 12.9 rejecting GCC 15
+- then `nvcc` / glibc header incompatibility even with GCC 14
+
+The reliable path was Docker.
+
+Clone the fork:
+
+```bash
+cd /home/mahmoudqahawish/Github
+git clone https://github.com/PrismML-Eng/llama.cpp llama.cpp-prism
+```
+
+Build the Docker image from the Prism fork:
+
+```bash
+cd /home/mahmoudqahawish/Github/llama.cpp-prism
+docker build \
+  -t llama-prism-cuda \
+  --target full \
+  -f .devops/cuda.Dockerfile .
+```
+
+### Docker GPU Requirements on This Machine
+
+The working pattern here was:
+
+- run Docker with `sudo`
+- add `--security-opt=label=disable`
+- use `--network host` for the server
+
+Sanity check Docker GPU visibility:
+
+```bash
+sudo docker run --rm --gpus all --security-opt=label=disable \
+  nvidia/cuda:12.9.0-base-ubuntu22.04 nvidia-smi
+```
+
+If that fails, do not debug Bonsai yet. Fix Docker GPU access first.
+
+### Bonsai Smoke Test
+
+This verifies that the model loads and GPU offload works:
+
+```bash
+sudo docker run --rm -it --gpus all --security-opt=label=disable \
+  -v /home/mahmoudqahawish/Models/Bonsai-8B-GGUF:/models:Z \
+  llama-prism-cuda \
+  --run \
+  -m /models/Bonsai-8B.gguf \
+  -p "Reply with exactly: bonsai works" \
+  -n 16 \
+  -ngl 99
+```
+
+Expected signal:
+
+- `ggml_cuda_init: found 1 CUDA devices`
+- successful model load
+- normal text response such as `Bonsai works.`
+
+## Bonsai Server
+
+This was the practical server command that worked for Rocklaw on this laptop:
+
+```bash
+sudo docker run --rm -it --gpus all --security-opt=label=disable \
+  --network host \
+  -v /home/mahmoudqahawish/Models/Bonsai-8B-GGUF:/models:Z \
+  llama-prism-cuda \
+  --server \
+  -m /models/Bonsai-8B.gguf \
+  -ngl 99 \
+  -c 8192 \
+  -b 1024 \
+  -ub 256 \
+  -np 1 \
+  -fa 1 \
+  --cache-ram 4096
+```
+
+Why these flags:
+
+- `-c 8192`: current Rocklaw prompts were around `6.8k` tokens, so `4096` failed with context overflow
+- `-np 1`: one slot for stability
+- `-fa 1`: flash attention tested well on this GPU
+- `--cache-ram 4096`: enough prompt cache to hold about 5 Rocklaw-sized prompt states on this machine
+- `--network host`: `-p 8080:8080` caused HTTP connection resets on this machine
+
+Prompt-cache entry sizes observed during Rocklaw-style runs were roughly:
+
+- `740-824 MiB` per saved prompt state
+
+So in practice:
+
+- `--cache-ram 1024`: about 1 state, constant eviction in 5-agent runs
+- `--cache-ram 2048`: about 2 states
+- `--cache-ram 4096`: about 5 states, first setting that made sense for all 5 agents
+
+Health check:
+
+```bash
+curl http://127.0.0.1:8080/v1/models
+```
+
+Simple chat test:
+
+```bash
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "Bonsai-8B.gguf",
+    "messages": [
+      {"role":"system","content":"You are concise."},
+      {"role":"user","content":"Reply with exactly: bonsai server works"}
+    ],
+    "temperature": 0.5,
+    "top_p": 0.85,
+    "top_k": 20
+  }'
+```
+
 ## Run the Server
 
 Baseline launch:
@@ -143,6 +286,8 @@ Example alternatives:
 ./llama-server --model /home/mahmoudqahawish/Models/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf ...
 ./llama-server --model /home/mahmoudqahawish/Models/OtherModel/model.gguf ...
 ```
+
+For Bonsai, the runtime is the Prism Docker image, not the stock host binary.
 
 ## Change Main Runtime Params
 
@@ -259,6 +404,212 @@ export LD_LIBRARY_PATH=$PWD:/usr/local/cuda/targets/x86_64-linux/lib:/usr/local/
   -r 3 \
   -o md
 ```
+
+### Bonsai Bench in Docker
+
+Prompt-processing and generation benchmark:
+
+```bash
+sudo docker run --rm -it --gpus all --security-opt=label=disable \
+  --network host \
+  -v /home/mahmoudqahawish/Models/Bonsai-8B-GGUF:/models:Z \
+  llama-prism-cuda \
+  --bench \
+  -m /models/Bonsai-8B.gguf \
+  -p 4096 \
+  -n 32 \
+  -b 1024 \
+  -ub 256 \
+  -ngl 99 \
+  -fa 1
+```
+
+Observed on this RTX 2060 Max-Q setup:
+
+- table output around `pp4096 ~= 1030 t/s`
+- table output around `tg32 ~= 53-55 t/s`
+
+Interpretation:
+
+- generation throughput is strong for local use
+- cold first-request prompt latency can look bad in a plain `curl` test
+- repeated prompts are where Bonsai becomes attractive, because prompt caching reuses the large stable prefix
+
+## Bonsai Cache Reality Check
+
+Bonsai was only promising for Rocklaw because prompt-cache reuse was strong.
+
+Observed from repeated local tests:
+
+- identical prompt reuse:
+  - `cache_n=28`
+  - `prompt_n=1`
+  - `prompt_ms ~= 42-50`
+- large prompt reuse:
+  - warm runs reached `cache_n=177`
+  - `prompt_n=1`
+  - `prompt_ms ~= 42-43`
+- large prompt with changing tail:
+  - `cache_n ~= 164-167`
+  - `prompt_n ~= 21-24`
+  - `prompt_ms ~= 93-96`
+
+That pattern matches Rocklaw reasonably well because Rocklaw prompts tend to have:
+
+- a large stable prefix
+- a smaller changing suffix
+
+The synthetic cache tests were encouraging, but the full 5-agent Rocklaw run still remained relatively slow because:
+
+- prompt-cache update overhead was noticeable
+- requests were large
+- prompt eval frequently still landed in roughly the `18-48s` range during the real multi-agent loop
+
+## Is Bonsai Fast Relative to the Qwen Baseline?
+
+Short answer:
+
+- relative to a cold single request, Bonsai can look slower and misleading
+- relative to repeated Rocklaw-style prompts with cache reuse, Bonsai is competitive and worth testing
+
+Qwen 4B baseline on this machine:
+
+- simpler host-native setup
+- more predictable cold-request behavior
+- good practical default for unattended runs
+
+Bonsai 8B 1-bit on this machine:
+
+- more setup complexity
+- Docker-specific GPU and networking quirks
+- much more dependent on prompt-cache reuse
+- higher upside when the prompt prefix is stable
+
+Practical conclusion:
+
+- Qwen is still the simpler and safer default local model
+- Bonsai is interesting when you want to exploit heavy prefix reuse and can tolerate the more brittle setup
+
+## Rocklaw with Bonsai
+
+Current Rocklaw prompts exceeded `4096` context, so `-c 4096` failed.
+
+Observed failure:
+
+- request around `6810` tokens
+- provider returned context overflow
+- Rocklaw surfaced that as `transport_failed`
+
+With `-c 8192`, the latest short run succeeded and agents produced valid JSON actions.
+
+Important launcher behavior:
+
+- `npm run run:rocklaw -- --agents elena ...` does not make the world single-agent
+- it only limits which gateways are started and traced locally
+- the world tick still advances the full village cast
+- for a true one-agent test, use `npm run step:agent -- elena --fresh --blank-self --auto 1`
+
+One command benchmark for cache behavior against a live Bonsai server:
+
+```bash
+cd /home/mahmoudqahawish/Github/r0cklaw
+npm run bench:bonsai
+```
+
+That script lives at:
+
+- [scripts/bench-bonsai-cache.sh](/home/mahmoudqahawish/Github/r0cklaw/scripts/bench-bonsai-cache.sh)
+
+## Bonsai Thinking Mode
+
+Stock Bonsai HF template behavior:
+
+- server startup printed `thinking = 0`
+- request-side `enable_thinking=true` plus `reasoning_format=deepseek` still returned only plain `message.content`
+- no visible `reasoning_content` appeared
+
+Why:
+
+- the Bonsai HF template always opened a `<think>` block at generation time
+- but it did not branch on `enable_thinking`
+- `llama.cpp` only reports `thinking = 1` when the active chat template actually supports the `enable_thinking` toggle
+
+### Local Thinking Override
+
+To test visible thinking, a patched local template was added at:
+
+- [tmp/bonsai-thinking.jinja](/home/mahmoudqahawish/Github/r0cklaw/tmp/bonsai-thinking.jinja)
+
+That override kept Bonsai's structure but added an explicit `enable_thinking` branch so Prism recognized the template as thinking-capable.
+
+Thinking-enabled server command:
+
+```bash
+sudo docker run --rm -it --gpus all --security-opt=label=disable \
+  --network host \
+  -v /home/mahmoudqahawish/Models/Bonsai-8B-GGUF:/models:Z \
+  -v /home/mahmoudqahawish/Github/r0cklaw/tmp:/tmpl:Z \
+  llama-prism-cuda \
+  --server \
+  -m /models/Bonsai-8B.gguf \
+  --chat-template-file /tmpl/bonsai-thinking.jinja \
+  --reasoning-format deepseek \
+  --reasoning-budget -1 \
+  -ngl 99 \
+  -c 8192 \
+  -b 1024 \
+  -ub 256 \
+  -np 1 \
+  -fa 1 \
+  --cache-ram 4096
+```
+
+Expected startup confirmation:
+
+- `srv init: init: chat template, thinking = 1`
+
+### Visible Thinking Verification
+
+Once the patched template was active, Bonsai streamed visible reasoning in:
+
+- `choices[0].delta.reasoning_content`
+
+Helper files added for inspection:
+
+- [tmp/show_bonsai_stream.py](/home/mahmoudqahawish/Github/r0cklaw/tmp/show_bonsai_stream.py)
+- [tmp/test_bonsai_stream.sh](/home/mahmoudqahawish/Github/r0cklaw/tmp/test_bonsai_stream.sh)
+
+Run:
+
+```bash
+./tmp/test_bonsai_stream.sh
+```
+
+### Thinking Quality Verdict
+
+Bonsai's visible reasoning was not disciplined enough for Rocklaw.
+
+Observed issues:
+
+- it often reached the correct answer
+- then repeated the same reasoning in multiple equivalent forms
+- it did not know when to stop
+- agent turns frequently produced prose first and only later a recoverable JSON object
+
+The Elena one-agent trace confirmed this:
+
+- [agents/elena/workspace/state/tick-debug.jsonl](/home/mahmoudqahawish/Github/r0cklaw/agents/elena/workspace/state/tick-debug.jsonl)
+
+Even at `temperature: 0`, the model could still reason far longer than necessary.
+
+Practical conclusion:
+
+- keep thinking off for Rocklaw agent turns
+- use the patched thinking template only for manual inspection experiments
+
+## Next Local Candidate
+
+Next session should test Gemma 4 as the next local comparison candidate.
 
 GPU offload sweep:
 
