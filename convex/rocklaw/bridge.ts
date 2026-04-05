@@ -3048,8 +3048,8 @@ async function sendChatAction(
       day,
       outcome: 'success',
       outcomeNote: suspiciousDealLikeNote
-        ? `Live chat message sent to ${parsed.target}. ${suspiciousDealLikeNote}`
-        : `Live chat message sent to ${parsed.target}.`,
+        ? `Live opener sent to ${parsed.target}. ${suspiciousDealLikeNote}`
+        : `Live opener sent to ${parsed.target}.`,
     });
 
     await ctx.db.patch(agentDoc._id, {
@@ -3061,7 +3061,7 @@ async function sendChatAction(
     });
 
     return {
-      note: `Live chat sent to ${parsed.target}.`,
+      note: `Live opener sent to ${parsed.target}.`,
       outcome: 'success',
     };
   }
@@ -4538,7 +4538,7 @@ async function executeResolvedAction(
       if (result?.outcome === 'success') {
         await advanceLiveSceneTurn(ctx, agentName, tick, day, parsed);
       }
-      return { ...(result ?? { outcome: 'success', note: `Live chat sent to ${partner}.` }), durationTicks: 1 };
+      return { ...(result ?? { outcome: 'success', note: `Live scene reply sent to ${partner}.` }), durationTicks: 1 };
     }
 
     const result = await sendChatAction(

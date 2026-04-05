@@ -51,6 +51,12 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 - For `intent:"trade"`, include both structured arrays. Text alone is not enough.
   Example JSON: `{"action":"chat","target":"Elena Voss","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}`
 
+- `chat` with `intent:"accept_transaction"` or `intent:"reject_transaction"`: respond to Elena Voss's pending offers while you remain in this live chat.
+  Example JSON: `{"action":"chat","target":"Elena Voss","text":"Okay, deal.","intent":"accept_transaction","offer_ref":"offer-1","thought":"The offer is fair."}`
+- Use `accept_transaction` or `reject_transaction` only when a real actionable `offer_ref` is shown in the live-scene prompt or TURN.md.
+- If no actionable `offer_ref` is shown, do not invent one and do not use `offer_id`, `offer`, or `request` with `accept_transaction`.
+- If you want to agree to the partner's terms but no actionable `offer_ref` is shown, restate the deal as a fresh structured `buy`, `sell`, or `trade` offer instead.
+
 - Ignore any prior plan, market errand, or unfinished task while this live chat is active.
 - Do not resume your earlier task until after you explicitly use `leave_chat`.
 - Start from the partner's latest spoken line. Answer it, acknowledge it, or counter it directly before changing topic.

@@ -675,7 +675,7 @@ export const manualTick = action({
       if (interruptedOpeners.has(name) && actionDoc.action === 'chat') {
         await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
           agentName: name,
-          line: `- Day ${day} ${timeOfDay}: live chat opened with ${actionDoc.target} (your opener was interrupted and saved for context)`,
+          line: `- Day ${day} ${timeOfDay}: live scene opened with ${actionDoc.target} (your opener was interrupted and saved for context)`,
         });
         const agentDoc = agentByName.get(name);
         if (agentDoc) {
@@ -718,7 +718,7 @@ export const manualTick = action({
         }
         await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
           agentName: name,
-          line: `- Day ${day} ${timeOfDay}: live chat opened with ${actionDoc.target} (waiting for their reply)`,
+          line: `- Day ${day} ${timeOfDay}: live opener accepted by ${actionDoc.target}; live scene is pending their reply`,
         });
         const agentDoc = agentByName.get(name);
         if (agentDoc) {

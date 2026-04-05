@@ -297,15 +297,44 @@ function isRenderableSceneMessage(text: string): boolean {
   return true;
 }
 
+function parseTransactionItems(itemsJson: string): Array<{ item: string; quantity: number }> {
+  try {
+    const parsed = JSON.parse(itemsJson) as Array<{ item?: string; quantity?: number }>;
+    return Array.isArray(parsed)
+      ? parsed
+        .filter((entry) => typeof entry?.item === 'string' && typeof entry?.quantity === 'number' && entry.quantity > 0)
+        .map((entry) => ({ item: entry.item!, quantity: entry.quantity! }))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function summarizeTransactionItems(items: Array<{ item: string; quantity: number }>): string {
+  if (items.length === 0) return 'nothing';
+  return items
+    .map((entry) => `${entry.quantity} ${entry.item}${entry.quantity === 1 ? '' : ''}`)
+    .join(', ');
+}
+
 export const getStepSummary = query({
   args: {},
   handler: async (ctx) => {
     const worldState = await ctx.db.query('rl_world_state').unique();
     const agentDocs = await ctx.db.query('rl_agents').collect();
+    const tick = worldState?.tick ?? 0;
+    const day = worldState?.day ?? 1;
     const scenes = await ctx.db
       .query('rl_chat_scenes')
       .withIndex('status_location', (q) => q.eq('status', 'live'))
       .collect();
+    const transactions = await ctx.db.query('rl_transactions').collect();
+    const actions = await ctx.db.query('rl_actions_log').withIndex('tick', (q) => q.eq('tick', tick)).collect();
+    const marketPrices = await ctx.db.query('rl_market_prices').collect();
+    const priceHistory = await ctx.db.query('rl_price_history').withIndex('tick', (q) => q.eq('tick', tick)).collect();
+    const allPriceHistory = await ctx.db.query('rl_price_history').collect();
+    const reputations = await ctx.db.query('rl_reputation').collect();
+    const reputationByAgent = new Map(reputations.map((entry) => [entry.agentName, entry.score]));
 
     const sceneSummaries = await Promise.all(
       scenes.map(async (scene) => {
@@ -333,14 +362,119 @@ export const getStepSummary = query({
               }
             : null;
         return {
+          sceneId: scene.sceneId,
           left: scene.agentA,
           right: scene.agentB,
           location: scene.location,
+          nextSpeaker: scene.nextSpeaker,
+          lastSpeaker: scene.lastSpeaker ?? null,
+          stallTurns: scene.stallTurns ?? 0,
+          openedTick: scene.openedTick,
+          openedDay: scene.openedDay,
           recentMessages,
+          pendingOffers: transactions
+            .filter((txn) =>
+              txn.status === 'pending'
+              && ((txn.fromAgent === scene.agentA && txn.toAgent === scene.agentB)
+                || (txn.fromAgent === scene.agentB && txn.toAgent === scene.agentA)),
+            )
+            .map((txn) => ({
+              txnId: txn.txnId,
+              fromAgent: txn.fromAgent,
+              toAgent: txn.toAgent,
+              kind: txn.kind,
+              offerSummary: summarizeTransactionItems(parseTransactionItems(txn.offerJson)),
+              requestSummary: summarizeTransactionItems(parseTransactionItems(txn.requestJson)),
+            })),
           interruptionContext,
         };
       }),
     );
+
+    const previousPriceByItem = new Map<string, { price: number; shortageLevel: string }>();
+    for (const row of priceHistory) {
+      const prior = allPriceHistory
+        .filter((entry) => entry.item === row.item && (entry.tick < tick || (entry.tick === tick && entry.day < day)))
+        .sort((a, b) => b.tick - a.tick || b.day - a.day)[0] ?? null;
+      if (prior) {
+        previousPriceByItem.set(row.item, {
+          price: prior.price,
+          shortageLevel: prior.shortageLevel,
+        });
+      }
+    }
+
+    const priceDeltas = priceHistory
+      .map((row) => {
+        const current = marketPrices.find((price) => price.item === row.item) ?? null;
+        const previous = previousPriceByItem.get(row.item) ?? null;
+        return {
+          item: row.item,
+          price: row.price,
+          changePct: current?.changePct ?? 0,
+          shortageLevel: row.shortageLevel,
+          previousPrice: previous?.price ?? null,
+          previousShortageLevel: previous?.shortageLevel ?? null,
+        };
+      })
+      .sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
+
+    const transactionDeltas = transactions
+      .filter((txn) =>
+        (txn.createdTick === tick && txn.createdDay === day)
+        || (txn.resolvedTick === tick && txn.resolvedDay === day),
+      )
+      .sort((a, b) =>
+        ((b.resolvedTick ?? b.createdTick) - (a.resolvedTick ?? a.createdTick))
+        || b._creationTime - a._creationTime,
+      )
+      .map((txn) => ({
+        txnId: txn.txnId,
+        fromAgent: txn.fromAgent,
+        toAgent: txn.toAgent,
+        kind: txn.kind,
+        status: txn.status,
+        createdThisTick: txn.createdTick === tick && txn.createdDay === day,
+        resolvedThisTick: txn.resolvedTick === tick && txn.resolvedDay === day,
+        offerSummary: summarizeTransactionItems(parseTransactionItems(txn.offerJson)),
+        requestSummary: summarizeTransactionItems(parseTransactionItems(txn.requestJson)),
+        message: txn.message ?? null,
+        outcomeNote: txn.outcomeNote ?? null,
+      }));
+
+    const currentTickActions = actions
+      .slice()
+      .sort((a, b) => b._creationTime - a._creationTime)
+      .map((entry) => ({
+        agentName: entry.agentName,
+        action: entry.action,
+        target: entry.target ?? null,
+        location: entry.location ?? null,
+        message: entry.message ?? null,
+        outcome: entry.outcome,
+        outcomeNote: entry.outcomeNote ?? null,
+      }));
+
+    const interruptLines: string[] = [];
+    for (const scene of sceneSummaries) {
+      if (scene.openedTick === tick && scene.openedDay === day && scene.interruptionContext) {
+        const partnerForInterrupted = scene.interruptionContext.interruptedSpeaker === scene.left ? scene.right : scene.left;
+        interruptLines.push(
+          `${scene.interruptionContext.interruptedSpeaker} opener was interrupted when ${scene.interruptionContext.openingSpeaker} spoke first in their live chat with ${partnerForInterrupted}.`,
+        );
+      }
+    }
+    for (const entry of currentTickActions) {
+      const note = entry.outcomeNote ?? '';
+      if (!note) continue;
+      if (note.includes('accepted your live opener')) {
+        interruptLines.push(`${entry.agentName} live opener was accepted; the live scene is pending the other reply.`);
+      } else if (note.includes('Your chat was sent to their thread instead')) {
+        interruptLines.push(`${entry.agentName} live opener was deferred to thread.`);
+      } else if (note.includes('replacing planned action') || note.includes('replying replaces')) {
+        interruptLines.push(`${entry.agentName} replanned because of a live chat interrupt.`);
+      }
+    }
 
     const agents = agentDocs.map((agent) => {
       let pendingAction: Record<string, unknown> | null = null;
@@ -360,15 +494,29 @@ export const getStepSummary = query({
           : null,
         provider: agent.providerOverride ?? null,
         model: agent.modelOverride ?? null,
+        pendingNote: agent.pendingNote ?? null,
+        coin: agent.coin,
+        reputation: reputationByAgent.get(agent.name) ?? 50,
       };
     });
 
     return {
-      tick: worldState?.tick ?? 0,
-      day: worldState?.day ?? 1,
+      tick,
+      day,
       timeOfDay: worldState?.timeOfDay ?? 'morning',
       agents,
       liveScenes: sceneSummaries,
+      currentTickActions,
+      transactionDeltas,
+      priceDeltas,
+      interrupts: Array.from(new Set(interruptLines)),
+      pendingOfferCount: transactions.filter((txn) => txn.status === 'pending').length,
+      criticalShortages: marketPrices
+        .filter((entry) => entry.shortageLevel === 'critical')
+        .map((entry) => entry.item),
+      biggestPriceMover: marketPrices
+        .slice()
+        .sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct))[0] ?? null,
     };
   },
 });

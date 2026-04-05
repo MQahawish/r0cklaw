@@ -56,21 +56,25 @@ export const recalculate = internalMutation({
         stock.item === item ? sum + stock.quantity : sum
       ), 0);
       const totalSupply = agentSupply + placeSupply;
+      const hasPlaceListing = placeStocks.some((stock) => stock.item === item);
+      const latentGood = totalSupply === 0 && !hasPlaceListing;
 
       // Price formula: scarcity multiplier applied to base price
       let multiplier = 1.0;
       let shortageLevel: 'none' | 'moderate' | 'critical' = 'none';
 
-      if (totalSupply <= config.criticalSupply) {
-        multiplier = (2.0 + (config.criticalSupply - totalSupply) * 0.1) * scarcityMultiplier;
-        shortageLevel = 'critical';
-      } else if (totalSupply <= config.moderateSupply) {
-        const ratio = (totalSupply - config.criticalSupply) / (config.moderateSupply - config.criticalSupply);
-        multiplier = (1.0 + (1.0 - ratio) * 1.0) * scarcityMultiplier;
-        shortageLevel = 'moderate';
+      if (!latentGood) {
+        if (totalSupply <= config.criticalSupply) {
+          multiplier = (2.0 + (config.criticalSupply - totalSupply) * 0.1) * scarcityMultiplier;
+          shortageLevel = 'critical';
+        } else if (totalSupply <= config.moderateSupply) {
+          const ratio = (totalSupply - config.criticalSupply) / (config.moderateSupply - config.criticalSupply);
+          multiplier = (1.0 + (1.0 - ratio) * 1.0) * scarcityMultiplier;
+          shortageLevel = 'moderate';
+        }
       }
 
-      const demandMultiplier = demandPressureForItem(item, agents, events);
+      const demandMultiplier = latentGood ? 1.0 : demandPressureForItem(item, agents, events);
       multiplier *= demandMultiplier;
 
       const effectiveBasePrice = Math.round(config.basePrice * basePriceMultiplier);

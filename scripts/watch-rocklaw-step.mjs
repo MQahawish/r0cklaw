@@ -9,6 +9,8 @@ const AGENTS = ["elena", "marcus", "finn", "lena", "sera"];
 const INLINE_MESSAGE_MAX = 88;
 const OUTCOME_NOTE_MAX = 52;
 const SCENE_BOX_WIDTH = 60;
+const SNAPSHOT_SHORTAGE_MAX = 4;
+const PRICE_DELTA_THRESHOLD = 10;
 
 function readLastTerminalRecord(agent) {
   const debugPath = path.join(ROOT, "agents", agent, "workspace", "state", "tick-debug.jsonl");
@@ -30,6 +32,23 @@ function readLastTerminalRecord(agent) {
 function formatAction(record) {
   const action = record?.parsedAction?.action;
   if (!action) return "no parsed action";
+  if (action === "chat") {
+    const intent = typeof record?.parsedAction?.intent === "string" ? record.parsedAction.intent : null;
+    const target = record?.parsedAction?.target ?? null;
+    if (intent === "accept_transaction" || intent === "reject_transaction") {
+      const ref = record?.parsedAction?.offer_ref ?? "offer";
+      return `chat[${intent === "accept_transaction" ? "accept" : "reject"} ${ref}]${target ? ` -> ${target}` : ""}`;
+    }
+    if (intent === "buy" || intent === "sell" || intent === "give" || intent === "pay" || intent === "trade") {
+      const item = record?.parsedAction?.item ?? null;
+      const quantity = typeof record?.parsedAction?.quantity === "number" ? record.parsedAction.quantity : null;
+      const amount = typeof record?.parsedAction?.amount === "number" ? record.parsedAction.amount : null;
+      const offerBits = [];
+      if (item && quantity) offerBits.push(`${item} x${quantity}`);
+      if (amount) offerBits.push(`for ${amount}c`);
+      return `chat[${intent}${offerBits.length > 0 ? ` ${offerBits.join(" ")}` : ""}]${target ? ` -> ${target}` : ""}`;
+    }
+  }
   const destination = record.parsedAction.location ?? record.parsedAction.target ?? record.parsedAction.item ?? null;
   const quantity = typeof record.parsedAction.quantity === "number" && record.parsedAction.quantity > 1
     ? ` x${record.parsedAction.quantity}`
@@ -112,6 +131,37 @@ function formatInlineExtras(record, busyStatus, liveSceneStatus) {
 
 function pairKey(left, right) {
   return [left, right].sort((a, b) => a.localeCompare(b)).join("::");
+}
+
+function formatOfferLedgerLine(entry) {
+  const summary = `${entry.kind} ${entry.offerSummary} for ${entry.requestSummary}`;
+  if (entry.status === "pending" && entry.createdThisTick) {
+    return `created ${entry.txnId}: ${entry.fromAgent} -> ${entry.toAgent} | ${summary}`;
+  }
+  if (entry.resolvedThisTick) {
+    return `${entry.status} ${entry.txnId}: ${entry.fromAgent} -> ${entry.toAgent} | ${summary}`;
+  }
+  return `${entry.status} ${entry.txnId}: ${summary}`;
+}
+
+function formatPriceDeltaLine(entry) {
+  const bits = [`${entry.item}: ${entry.price}c`];
+  if (typeof entry.changePct === "number") bits.push(`${entry.changePct >= 0 ? "+" : ""}${entry.changePct}%`);
+  if (entry.previousShortageLevel && entry.previousShortageLevel !== entry.shortageLevel) {
+    bits.push(`${entry.previousShortageLevel} -> ${entry.shortageLevel}`);
+  } else if (entry.shortageLevel && entry.shortageLevel !== "none") {
+    bits.push(`${entry.shortageLevel} shortage`);
+  }
+  return bits.join(" | ");
+}
+
+function printSection(title, lines) {
+  if (!Array.isArray(lines) || lines.length === 0) return;
+  console.log("");
+  console.log(title);
+  for (const line of lines) {
+    console.log(line);
+  }
 }
 
 function readLiveChatSceneFallback(agent) {
@@ -260,6 +310,25 @@ if (activeAgents.length > 0) {
 }
 console.log("");
 
+const snapshotParts = [];
+if (summary) {
+  snapshotParts.push(`live scenes: ${Array.isArray(summary.liveScenes) ? summary.liveScenes.length : 0}`);
+  snapshotParts.push(`pending offers: ${summary.pendingOfferCount ?? 0}`);
+  if (Array.isArray(summary.criticalShortages) && summary.criticalShortages.length > 0) {
+    snapshotParts.push(`critical shortages: ${summary.criticalShortages.slice(0, SNAPSHOT_SHORTAGE_MAX).join(", ")}`);
+  }
+  if (summary.biggestPriceMover?.item) {
+    snapshotParts.push(
+      `biggest mover: ${summary.biggestPriceMover.item} ${summary.biggestPriceMover.changePct >= 0 ? "+" : ""}${summary.biggestPriceMover.changePct}%`,
+    );
+  }
+}
+if (snapshotParts.length > 0) {
+  console.log("WORLD SNAPSHOT");
+  console.log(snapshotParts.join(" | "));
+  console.log("");
+}
+
 console.log("WORLD ACTIONS");
 for (const { agent, record } of worldActionRecords) {
   const agentName = record?.agentName ?? agent;
@@ -304,6 +373,58 @@ if (worldActionRecords.length === 0) {
 }
 
 console.log("");
+const suspiciousLines = [];
+for (const { agent, record } of worldActionRecords) {
+  if (!record) continue;
+  const outcome = record?.validation?.outcome ?? record?.phase ?? "unknown";
+  if (["parse_failed", "invalid_action", "transport_failed"].includes(outcome)) {
+    suspiciousLines.push(`- ${record.agentName ?? agent}: ${trimInline(record?.validation?.note ?? outcome, 120)}`);
+  }
+}
+if (summary) {
+  for (const scene of summary.liveScenes ?? []) {
+    if ((scene.stallTurns ?? 0) > 0) {
+      suspiciousLines.push(`- live scene ${scene.left} <-> ${scene.right}: stalled ${scene.stallTurns} turn(s), next ${scene.nextSpeaker}`);
+    }
+  }
+  for (const agent of summary.agents ?? []) {
+    const note = typeof agent.pendingNote === "string" ? agent.pendingNote : "";
+    if (note.includes("still active") || note.includes("Return exactly one JSON action")) {
+      suspiciousLines.push(`- ${agent.name}: ${trimInline(note, 120)}`);
+    }
+  }
+}
+printSection("FAILED / SUSPICIOUS", suspiciousLines);
+
+const interruptLines = Array.isArray(summary?.interrupts)
+  ? summary.interrupts.map((line) => `- ${trimInline(line, 140)}`)
+  : [];
+printSection("INTERRUPTS / REPLANS", interruptLines);
+
+const offerLines = Array.isArray(summary?.transactionDeltas)
+  ? summary.transactionDeltas.map((entry) => `- ${formatOfferLedgerLine(entry)}`)
+  : [];
+printSection("OFFERS", offerLines);
+
+const worldDeltaLines = [];
+if (Array.isArray(summary?.priceDeltas)) {
+  for (const entry of summary.priceDeltas) {
+    const shortageChanged = entry.previousShortageLevel && entry.previousShortageLevel !== entry.shortageLevel;
+    if (Math.abs(entry.changePct ?? 0) < PRICE_DELTA_THRESHOLD && !shortageChanged) continue;
+    worldDeltaLines.push(`- ${formatPriceDeltaLine(entry)}`);
+  }
+}
+if (Array.isArray(summary?.currentTickActions)) {
+  for (const entry of summary.currentTickActions) {
+    if (entry.action === "buy_place" || entry.action === "sell_place" || entry.action === "deliver_place") {
+      worldDeltaLines.push(
+        `- place trade: ${entry.agentName} ${entry.action}${entry.target ? ` @ ${entry.target}` : ""}${entry.outcomeNote ? ` | ${trimInline(entry.outcomeNote, 90)}` : ""}`,
+      );
+    }
+  }
+}
+printSection("WORLD DELTAS", Array.from(new Set(worldDeltaLines)));
+
 if (!Array.isArray(liveScenes) || liveScenes.length === 0) {
   console.log("LIVE CHAT SCENES: (none)");
 } else {
@@ -311,6 +432,20 @@ if (!Array.isArray(liveScenes) || liveScenes.length === 0) {
   for (const scene of liveScenes) {
     console.log("  +------------------------------------------------------------+");
     console.log(`  | ${scene.left} <-> ${scene.right} @ ${scene.location}`);
+    const sceneMetaBits = [];
+    if (scene.nextSpeaker) sceneMetaBits.push(`next: ${scene.nextSpeaker}`);
+    if (scene.lastSpeaker) sceneMetaBits.push(`last: ${scene.lastSpeaker}`);
+    if (typeof scene.stallTurns === "number") sceneMetaBits.push(`stall: ${scene.stallTurns}`);
+    if (Array.isArray(scene.pendingOffers) && scene.pendingOffers.length > 0) {
+      sceneMetaBits.push(
+        `offers: ${scene.pendingOffers.map((offer) => `${offer.txnId} (${offer.kind} ${offer.offerSummary} for ${offer.requestSummary})`).join("; ")}`,
+      );
+    }
+    if (sceneMetaBits.length > 0) {
+      for (const line of wrapText(sceneMetaBits.join(" | "), SCENE_BOX_WIDTH)) {
+        console.log(renderSceneBoxLine(line));
+      }
+    }
     console.log("  |");
     if (Array.isArray(scene.recentMessages) && scene.recentMessages.length > 0) {
       for (const message of scene.recentMessages.filter(isRenderableSceneMessage)) {
