@@ -700,6 +700,16 @@ function pickLiveSceneTranscriptEntries(messages: any[]): { lines: string[]; tru
   return { lines: merged.map((entry) => entry.line), truncated: true };
 }
 
+function pickLiveChatTranscriptEntriesForPrompt(
+  sceneMessages: any[],
+  fallbackMessages: any[],
+): { lines: string[]; truncated: boolean } {
+  if (sceneMessages.length > 0) {
+    return pickLiveSceneTranscriptEntries(sceneMessages);
+  }
+  return pickLiveSceneTranscriptEntries(fallbackMessages);
+}
+
 async function buildLiveChatPromptContext(ctx: any, agentDoc: any) {
   const scene = await getLiveChatSceneForAgent(ctx, agentDoc.name);
   if (!scene) return null;
@@ -712,17 +722,24 @@ async function buildLiveChatPromptContext(ctx: any, agentDoc: any) {
     .collect();
 
   const sceneMessages = allMessages
-    .filter((entry: any) =>
-      entry.deliveryMode === 'live'
-      && ((entry.sceneId && entry.sceneId === scene.sceneId) || (!entry.sceneId && isAtOrAfterSceneOpen(entry, scene)))
-    )
+    .filter((entry: any) => entry.deliveryMode === 'live' && entry.sceneId === scene.sceneId)
     .sort(compareChatMessageOrder);
 
-  const latestPartnerMessage = [...sceneMessages]
+  const fallbackSceneMessages = sceneMessages.length === 0
+    ? allMessages
+      .filter((entry: any) =>
+        entry.deliveryMode === 'live'
+        && !entry.sceneId
+        && isAtOrAfterSceneOpen(entry, scene),
+      )
+      .sort(compareChatMessageOrder)
+    : [];
+
+  const latestPartnerMessage = [...sceneMessages, ...fallbackSceneMessages]
     .reverse()
     .find((entry: any) => entry.fromAgent === partner)?.text ?? null;
 
-  const transcript = pickLiveSceneTranscriptEntries(sceneMessages);
+  const transcript = pickLiveChatTranscriptEntriesForPrompt(sceneMessages, fallbackSceneMessages);
   const openingOffer = await getSceneOpeningOfferForRecipient(ctx, scene, agentDoc);
 
   return {
@@ -1685,17 +1702,30 @@ async function createChatMessage(
     deliveryMode: 'live' | 'deferred';
     tick: number;
     day: number;
+    boundSceneId?: string;
   },
 ) {
   const threadKey = createChatThreadKey(args.fromAgent, args.toAgent);
   let sceneId: string | undefined;
   let sceneOrder: number | undefined;
   if (args.deliveryMode === 'live') {
-    const liveScene = await getLiveChatSceneBetweenAgents(ctx, args.fromAgent, args.toAgent);
-    if (liveScene) {
-      sceneId = liveScene.sceneId;
-      sceneOrder = (liveScene.lastMessageOrder ?? 0) + 1;
-      await ctx.db.patch(liveScene._id, { lastMessageOrder: sceneOrder });
+    if (args.boundSceneId) {
+      const boundScene = await ctx.db
+        .query('rl_chat_scenes')
+        .withIndex('sceneId', (q: any) => q.eq('sceneId', args.boundSceneId!))
+        .unique();
+      if (boundScene) {
+        sceneId = boundScene.sceneId;
+        sceneOrder = (boundScene.lastMessageOrder ?? 0) + 1;
+        await ctx.db.patch(boundScene._id, { lastMessageOrder: sceneOrder });
+      }
+    } else {
+      const liveScene = await getLiveChatSceneBetweenAgents(ctx, args.fromAgent, args.toAgent);
+      if (liveScene) {
+        sceneId = liveScene.sceneId;
+        sceneOrder = (liveScene.lastMessageOrder ?? 0) + 1;
+        await ctx.db.patch(liveScene._id, { lastMessageOrder: sceneOrder });
+      }
     }
   }
   await ctx.db.insert('rl_chat_messages', {
@@ -3717,6 +3747,40 @@ export const advanceLiveChatScene = internalMutation({
   },
 });
 
+export const registerLiveChatReplyFailure = internalMutation({
+  args: {
+    agentName: v.string(),
+    tick: v.number(),
+    day: v.number(),
+    note: v.string(),
+  },
+  handler: async (ctx, { agentName, tick, day, note }) => {
+    const scene = await getLiveChatSceneForAgent(ctx, agentName);
+    if (!scene) return null;
+    const partner = getScenePartner(scene, agentName);
+    const nextStallTurns = (scene.stallTurns ?? 0) + 1;
+    await ctx.db.patch(scene._id, {
+      lastActiveTick: tick,
+      lastActiveDay: day,
+      stallTurns: nextStallTurns,
+    });
+    await createSceneSystemMessage(
+      ctx,
+      agentName,
+      partner,
+      `${agentName} failed to answer clearly. The live chat is stalled and ${agentName} still owes the next reply.`,
+      tick,
+      day,
+    );
+    return {
+      sceneId: scene.sceneId,
+      partner,
+      stallTurns: nextStallTurns,
+      note,
+    };
+  },
+});
+
 export const closeLiveChatScene = internalMutation({
   args: {
     agentName: v.string(),
@@ -4240,19 +4304,22 @@ async function executeResolvedAction(
   }
 
   if (parsed.action === 'leave_chat') {
-    const closed = await closeLiveChatSceneForAgent(ctx, agentName, tick, day, `${agentName} left the live chat.`);
     const closingText = parsed.text ?? parsed.message ?? '';
-    if (closed?.partner && closingText.trim() !== '') {
-      await markUnreadChatFromContactRead(ctx, agentDoc.name, closed.partner, tick, day);
+    const activeScene = await getLiveChatSceneForAgent(ctx, agentName);
+    const activePartner = activeScene ? getScenePartner(activeScene, agentName) : null;
+    if (activePartner && closingText.trim() !== '') {
+      await markUnreadChatFromContactRead(ctx, agentDoc.name, activePartner, tick, day);
       await createChatMessage(ctx, {
         fromAgent: agentDoc.name,
-        toAgent: closed.partner,
+        toAgent: activePartner,
         text: closingText,
         deliveryMode: 'live',
         tick,
         day,
+        boundSceneId: activeScene.sceneId,
       });
     }
+    const closed = await closeLiveChatSceneForAgent(ctx, agentName, tick, day, `${agentName} left the live chat.`);
     await ctx.db.insert('rl_actions_log', {
       agentName,
       action: parsed.action,

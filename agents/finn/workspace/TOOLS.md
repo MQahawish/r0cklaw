@@ -86,12 +86,6 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 - `sleep`: include a short `journal` paragraph. Keep it private and reflective, not just economic bookkeeping; mention people, feelings, surprises, worries, or changing impressions when they matter.
   Example JSON: `{"action":"sleep","journal":"Long day. Sera seemed more practical than I expected, and I should keep an eye on the meal shortage tomorrow.","thought":"I need proper sleep before morning."}`
 
-## Temporary actions available now
-
-- `sleep`: stop for proper sleep and recover more deeply.
-  Your `journal` should be a short private reflection, not just a work ledger. When relevant, mention who you dealt with, what you thought or felt about the day, and what changed in your view of people, risks, or opportunities.
-  Example JSON: `{"action":"sleep","journal":"Long day. I got the work done, but Marcus pushed hard on price and I will remember that. Still, the trade may prove useful tomorrow.","thought":"It is time to sleep and recover fully."}`
-
 ## Speaking into the world
 
 - `say`: use `text` to speak out loud in your current location. This is local speech, not a thread, and it does not take a target.

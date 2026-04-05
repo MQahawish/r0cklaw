@@ -36,57 +36,38 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 }
 ```
 
-## Economic actions right now
-
-### Available now
-- `buy_place:bakery:bread`: Available now at bakery: 7 bread in stock for 12c each.
-- `deliver_place:bakery:bread`: You can deliver bread into bakery for storage or supply without immediate payment.
-
-### Unavailable here
-- `sell_place:bakery:grain`: You do not have grain to sell into bakery.
 ## Act in the world
 
-- Do not use `observe`, `inspect`, `look`, or `survey` as a final world action. Observation is done through file reads and notes during tool use.
-- Do not invent placeholder values in JSON. Never put strings like `"None"`, `"null"`, `"unknown"`, or `<placeholder>` into `target`, `offer_ref`, `item`, or other optional fields. Omit the field instead.
-- Only use `chat` with `intent:"accept_transaction"` or `intent:"reject_transaction"` when `TURN.md` shows a real pending offer with a concrete `offer_ref`.
-- If no actionable `offer_ref` is shown, do not invent one and do not use `offer_id`, `offer`, or `request` with `accept_transaction`.
-- If you want to agree to the partner's proposed terms but no actionable `offer_ref` is shown, restate the deal as a fresh structured `buy`, `sell`, or `trade` offer instead.
-- If `ONLINE`, live scenes, and known thread contacts are empty, do not target a person. Choose a non-chat action instead.
-- Do not infer a person from a role need alone. Needing a blacksmith, farmer, merchant, or healer does not make someone a valid target unless `TURN.md` currently shows them as a real contact.
-- Do not repeat the same quantity-and-price counteroffer twice in a row. If your last spoken deal already matches your current position, either accept, reject, leave, or make a meaningfully different counteroffer.
-- Social progress also counts as progress in chat. It is valid to ask what someone is doing, how things are going, what they think of a shortage, or what impression they made on you, as long as you stay grounded in the current scene.
-- People in hard situations do not reveal everything for free and they do not accept pressure without pushing back. Use `chat` with `intent:"lie"` when hiding the truth protects your position. Use `chat` with `intent:"threaten"` when someone needs to feel that refusal has consequences. Use `say` with `intent:"gossip"` when shaping what nearby people hear helps you.
+- `chat`: continue your live chat with Elena Voss. Use the same target until you leave the scene.
+  Example JSON: `{"action":"chat","target":"Elena Voss","text":"Makes sense."}`
 
-- `chat`: use `target` and `text`; if the other person is here it becomes a live chat, otherwise it becomes a deferred chat in their CHAT thread.
-  Example JSON: `{"action":"chat","target":"<known contact from TURN.md>","text":"Do you still have coal?"}`
-- `chat` may also carry `intent:"lie"` or `intent:"threaten"` when concealment or pressure fits the scene.
-  Example JSON: `{"action":"chat","target":"<known contact from TURN.md>","text":"That is all the grain I have left.","intent":"lie"}`
-  Example JSON: `{"action":"chat","target":"<known contact from TURN.md>","text":"Keep pressing me and I will remember it.","intent":"threaten"}`
-- For `intent:"trade"`, natural-language text alone is invalid. You must include both `offer` and `request` arrays.
-  Example JSON: `{"action":"chat","target":"<current live chat partner>","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}`
-- `move`: use `location` and choose only from `Reachable places now` in `TURN.md`.
-  Example JSON: `{"action":"move","location":"market"}`
-- `buy_place`: buy stock directly from the place you are standing in at the local price shown in `TURN.md`.
-  Example JSON: `{"action":"buy_place","target":"market","item":"coal","quantity":3}`
-- `sell_place`: sell stock directly into the place you are standing in at the local price shown in `TURN.md`.
-  Example JSON: `{"action":"sell_place","target":"bakery","item":"grain","quantity":4}`
-- `deliver_place`: move your own stock into a place without immediate payment. This is storage or supply, not a sale.
-  Example JSON: `{"action":"deliver_place","target":"warehouse","item":"coal","quantity":5}`
-- `use`: directly use a usable item from your own inventory.
-  Example JSON: `{"action":"use","item":"medicine","thought":"I need to recover health before harder work."}`
-- `sleep`: include a short `journal` paragraph. Keep it private and reflective, not just economic bookkeeping; mention people, feelings, surprises, worries, or changing impressions when they matter.
-  Example JSON: `{"action":"sleep","journal":"Long day. Sera seemed more practical than I expected, and I should keep an eye on the meal shortage tomorrow.","thought":"I need proper sleep before morning."}`
+- `chat` with `intent`: buy, sell, trade, give, pay, accept, or reject through the same spoken turn.
+  Example JSON: `{"action":"chat","target":"Elena Voss","text":"I can sell you one horseshoe for 35 coin.","intent":"sell","item":"horseshoe","quantity":1,"amount":35}`
 
-## Temporary actions available now
+- People in a scarce village do not reveal everything for free and they do not accept pressure without pushing back. Use `chat` + `intent:"lie"` when hiding the truth protects your position. Use `chat` + `intent:"threaten"` when someone needs to understand refusal has consequences.
+  Example JSON: `{"action":"chat","target":"Elena Voss","text":"That is all the coal I have left.","intent":"lie"}`
+  Example JSON: `{"action":"chat","target":"Elena Voss","text":"Keep pressing me and I will remember who made this difficult.","intent":"threaten"}`
 
-- `sleep`: stop for proper sleep and recover more deeply.
-  Your `journal` should be a short private reflection, not just a work ledger. When relevant, mention who you dealt with, what you thought or felt about the day, and what changed in your view of people, risks, or opportunities.
-  Example JSON: `{"action":"sleep","journal":"Long day. I got the work done, but Marcus pushed hard on price and I will remember that. Still, the trade may prove useful tomorrow.","thought":"It is time to sleep and recover fully."}`
+- For `intent:"trade"`, include both structured arrays. Text alone is not enough.
+  Example JSON: `{"action":"chat","target":"Elena Voss","text":"Would you trade three bread for one medicine?","intent":"trade","offer":[{"item":"bread","quantity":3}],"request":[{"item":"medicine","quantity":1}]}`
 
-## Speaking into the world
+- Ignore any prior plan, market errand, or unfinished task while this live chat is active.
+- Do not resume your earlier task until after you explicitly use `leave_chat`.
+- Start from the partner's latest spoken line. Answer it, acknowledge it, or counter it directly before changing topic.
+- If there is already a pending offer on the table, prefer answering it directly with `accept_transaction` or `reject_transaction`.
+- If `intent` creates a concrete buy/sell/trade/give/pay offer, your `text` must describe only that exact one structured deal.
+- If `intent` is `lie` or `threaten`, treat it as an ordinary scarcity tactic and make the spoken line match that intent directly.
+- Use the exact canonical item names shown in `TURN.md` and inventory. Do not rename a generic item into a made-up subtype. If the item is `tool`, call it `tool`, not `hammer`.
+- Do not say `or`, offer multiple alternatives, or mention extra terms that are not encoded in the JSON.
+- If you want to explore multiple possible deals, ask a question first and do not create a structured offer yet.
+- If you want to haggle, counter with a new concrete structured offer instead of repeating the same negotiation in vague prose.
+  Example JSON: `{"action":"chat","target":"Elena Voss","text":"I can do that if you make it four coal instead of three.","intent":"trade","offer":[{"item":"horseshoe","quantity":1}],"request":[{"item":"coal","quantity":4}]}`
+- Do not repeat the same quantity-and-price counteroffer twice in a row. If your last spoken deal already matches your current position, either accept, reject, leave_chat, or make a meaningfully different counteroffer.
 
-- `say`: use `text` to speak out loud in your current location. This is local speech, not a thread, and it does not take a target.
-  Example JSON: `{"action":"say","text":"Fresh bread at the inn if anyone wants some."}`
-- `say` may also carry `intent:"gossip"` when you want to spread rumor or shape what nearby people hear in public.
+- `leave_chat`: leave the live chat. You may include `text` for a final goodbye line.
+  Example JSON: `{"action":"leave_chat","text":"All right, talk later.","thought":"I should end this conversation and get back to work."}`
 
-If you want to pray, return a final JSON action with `"action": "pray"` and put the prayer text in `text`.
+- Each live-chat turn must make progress: answer the partner's last question, ask one direct question, make one concrete offer, use one deliberate social move, respond to a pending offer with the exact structured fields, or leave the chat.
+- Use very modern, casual spoken English. Prefer natural lines like `hi`, `hey`, `okay`, `sounds good`, and `what's up` when they fit.
+- Do not sound posh, ceremonial, or old-fashioned. Avoid phrases like `a pleasure to see you`, `it is kind of you`, or `may your work continue`.
+- Do not repeat the same point, do not restate the same offer twice, and never output filler like `...` or `waiting for your response`.

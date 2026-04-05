@@ -53,6 +53,15 @@ type PlannedTurnResult =
       pendingNote?: string;
     };
 
+type LiveSceneRetryContext = {
+  partner: string;
+  location: string;
+  latestPartnerMessage: string | null;
+  transcriptLines: string[];
+  transcriptTruncated: boolean;
+  tradeFacts: string[];
+};
+
 class ZeroClawTurnError extends Error {
   host?: string;
   events: WsEvent[];
@@ -135,6 +144,55 @@ function buildTransportFallbackAction(
     };
   }
   return null;
+}
+
+async function getLiveSceneRetryContext(ctx: any, agentName: string): Promise<LiveSceneRetryContext | null> {
+  const scene = await ctx.runQuery(internal.rocklaw.bridge.getLiveChatScene, { agentName });
+  if (!scene || scene.nextSpeaker !== agentName) return null;
+  const promptContext = await ctx.runQuery(internal.rocklaw.bridge.getLiveChatPromptContext, { agentName });
+  if (!promptContext) return null;
+  const tradeFacts = await ctx.runQuery(internal.rocklaw.bridge.getLiveChatTradeFacts, { agentName });
+  return {
+    partner: scene.partner,
+    location: scene.location,
+    latestPartnerMessage: promptContext.latestPartnerMessage ?? null,
+    transcriptLines: Array.isArray(promptContext.transcriptLines) ? promptContext.transcriptLines : [],
+    transcriptTruncated: Boolean(promptContext.transcriptTruncated),
+    tradeFacts,
+  };
+}
+
+function buildLiveSceneRecoveryPrompt(
+  context: LiveSceneRetryContext,
+  note: string,
+): string {
+  return [
+    `LIVE CHAT RECOVERY: your previous reply in the live chat with ${context.partner} at ${context.location} failed validation.`,
+    `Failure to fix: ${note}`,
+    'You still owe the next reply in this live chat.',
+    'Return exactly one Rocklaw JSON action object now.',
+    'Your only valid actions are `chat` and `leave_chat`.',
+    'Do not output prose, explanation, markdown, or fenced code.',
+    'If you speak, use `{"action":"chat","target":"<partner>","text":"..."}`.',
+    'If you want to end the scene, use `{"action":"leave_chat"}`.',
+    'If you want to accept or reject an actionable live offer, do it with `chat` plus `intent:"accept_transaction"` or `intent:"reject_transaction"` and the exact `offer_ref` shown.',
+    'If no actionable `offer_ref` is shown, do not invent one.',
+    ...(context.latestPartnerMessage
+      ? ['', `Partner's latest line: "${context.latestPartnerMessage}"`]
+      : []),
+    ...(context.transcriptLines.length > 0
+      ? [
+          '',
+          context.transcriptTruncated
+            ? 'Active live chat transcript (recent lines plus relevant system lines):'
+            : 'Active live chat transcript:',
+          ...context.transcriptLines,
+        ]
+      : []),
+    ...(context.tradeFacts.length > 0 ? ['', ...context.tradeFacts] : []),
+    'Answer the partner directly, make one concrete move, or leave_chat.',
+    'Do not repeat the same offer twice. Do not say you are waiting.',
+  ].join('\n');
 }
 
 async function runZeroClawTurnWithRecovery(
@@ -540,6 +598,9 @@ export const planAgentAction = internalAction({
       agentName,
     });
     const fallbackAction = buildTransportFallbackAction(liveScene?.partner, possibleValidActions);
+    const liveSceneRetryContext = liveScene?.nextSpeaker === agentName
+      ? await getLiveSceneRetryContext(ctx, agentName)
+      : null;
 
     const tickMessage = buildTickMessage(
       day,
@@ -562,6 +623,193 @@ export const planAgentAction = internalAction({
       sessionId,
       prompt: tickMessage,
       events: [] as unknown[],
+    };
+
+    const attemptLiveSceneRecovery = async (
+      failureKind: 'transport_failed' | 'parse_failed' | 'invalid_action',
+      note: string,
+    ): Promise<PlannedTurnResult | null> => {
+      if (!liveSceneRetryContext) return null;
+
+      const recoveryPrompt = buildTickMessage(
+        day,
+        timeOfDay,
+        tick,
+        agent.location,
+        lastHeartbeatLine ?? undefined,
+        buildLiveSceneRecoveryPrompt(liveSceneRetryContext, note),
+        ['- chat: continue with ' + liveSceneRetryContext.partner, '- leave_chat'],
+      );
+      const recoverySessionId = `${sessionId}-live-scene-retry`;
+      const recoveryRecord: Record<string, unknown> = {
+        timestamp: new Date().toISOString(),
+        phase: 'live_scene_recovery_started',
+        agentName,
+        tick,
+        day,
+        timeOfDay,
+        gatewayPort: agent.gatewayPort,
+        sessionId: recoverySessionId,
+        prompt: recoveryPrompt,
+        retrySource: failureKind,
+        retrySourceNote: note,
+        events: [] as unknown[],
+      };
+
+      let recoveryRawResponse = '';
+      let recoveryActionFromFallback: RocklawAction | null = null;
+      try {
+        const recoveryResult = await runZeroClawTurnWithRecovery(
+          agent.gatewayPort,
+          recoverySessionId,
+          agentName,
+          recoveryPrompt,
+          null,
+        );
+        recoveryRecord.retryAttempted = recoveryResult.retryAttempted;
+        if (recoveryResult.kind === 'response') {
+          recoveryRawResponse = recoveryResult.finalResponse;
+          recoveryRecord.gatewayHost = recoveryResult.host;
+          recoveryRecord.events = recoveryResult.events;
+        } else {
+          recoveryActionFromFallback = recoveryResult.action;
+          recoveryRecord.transportRecoveredWithFallback = true;
+          recoveryRecord.fallbackAction = recoveryResult.action;
+          recoveryRecord.retryFailure = recoveryResult.retryFailure;
+        }
+      } catch (error) {
+        const recoveryNote = error instanceof Error ? error.message : String(error);
+        recoveryRecord.phase = 'live_scene_recovery_failed';
+        recoveryRecord.error = recoveryNote;
+        if (error instanceof ZeroClawTurnError) {
+          recoveryRecord.gatewayHost = error.host;
+          recoveryRecord.events = error.events;
+        }
+        await appendTickDebug(agent.workspacePath, recoveryRecord);
+        const stalled = await ctx.runMutation(internal.rocklaw.bridge.registerLiveChatReplyFailure, {
+          agentName,
+          tick,
+          day,
+          note: recoveryNote,
+        });
+        return {
+          status: 'rejected',
+          agentName,
+          outcome: 'transport_failed',
+          note: recoveryNote,
+          heartbeatLine: summariseFailure(
+            day,
+            timeOfDay,
+            `live chat reply failed with ${liveSceneRetryContext.partner}; scene stalled awaiting retry`,
+            recoveryNote,
+          ),
+          pendingNote: stalled
+            ? `SYSTEM: Your live chat with ${stalled.partner} is still active. You still owe the next reply. Return exactly one JSON action using chat or leave_chat.`
+            : `SYSTEM: Your live chat is still active. You still owe the next reply. Return exactly one JSON action using chat or leave_chat.`,
+        };
+      }
+
+      recoveryRecord.rawResponse = recoveryRawResponse;
+      const recoveryTrimmed = recoveryRawResponse.trimStart();
+      const recoveryExtractedAction = recoveryActionFromFallback ?? extractAction(recoveryRawResponse);
+      if (!recoveryActionFromFallback && !recoveryTrimmed.startsWith('{') && recoveryExtractedAction) {
+        recoveryRecord.responseSalvagedFromWrappedJson = true;
+      }
+
+      if (!recoveryActionFromFallback && !recoveryTrimmed.startsWith('{') && !recoveryExtractedAction) {
+        const recoveryNote = 'Final response must contain one valid Rocklaw action JSON object.';
+        recoveryRecord.phase = 'live_scene_recovery_failed';
+        recoveryRecord.validation = { outcome: 'parse_failed', note: recoveryNote };
+        await appendTickDebug(agent.workspacePath, recoveryRecord);
+        const stalled = await ctx.runMutation(internal.rocklaw.bridge.registerLiveChatReplyFailure, {
+          agentName,
+          tick,
+          day,
+          note: recoveryNote,
+        });
+        return {
+          status: 'rejected',
+          agentName,
+          outcome: 'parse_failed',
+          note: recoveryNote,
+          heartbeatLine: summariseFailure(
+            day,
+            timeOfDay,
+            `live chat reply failed with ${liveSceneRetryContext.partner}; scene stalled awaiting retry`,
+            recoveryNote,
+          ),
+          pendingNote: stalled
+            ? `SYSTEM: Your live chat with ${stalled.partner} is still active. You still owe the next reply. Return exactly one JSON action using chat or leave_chat.`
+            : 'SYSTEM: Your live chat is still active. You still owe the next reply. Return exactly one JSON action using chat or leave_chat.',
+        };
+      }
+
+      if (!recoveryExtractedAction) {
+        const recoveryNote = 'Could not parse final response as Rocklaw action JSON.';
+        recoveryRecord.phase = 'live_scene_recovery_failed';
+        recoveryRecord.validation = { outcome: 'parse_failed', note: recoveryNote };
+        await appendTickDebug(agent.workspacePath, recoveryRecord);
+        const stalled = await ctx.runMutation(internal.rocklaw.bridge.registerLiveChatReplyFailure, {
+          agentName,
+          tick,
+          day,
+          note: recoveryNote,
+        });
+        return {
+          status: 'rejected',
+          agentName,
+          outcome: 'parse_failed',
+          note: recoveryNote,
+          heartbeatLine: summariseFailure(
+            day,
+            timeOfDay,
+            `live chat reply failed with ${liveSceneRetryContext.partner}; scene stalled awaiting retry`,
+            recoveryNote,
+          ),
+          pendingNote: stalled
+            ? `SYSTEM: Your live chat with ${stalled.partner} is still active. You still owe the next reply. Return exactly one JSON action using chat or leave_chat.`
+            : 'SYSTEM: Your live chat is still active. You still owe the next reply. Return exactly one JSON action using chat or leave_chat.',
+        };
+      }
+
+      if (!validateAction(recoveryExtractedAction)) {
+        const recoveryNote = pseudoActionCorrection(recoveryExtractedAction) ?? 'Parsed JSON was structurally invalid for Rocklaw.';
+        recoveryRecord.phase = 'live_scene_recovery_failed';
+        recoveryRecord.parsedAction = recoveryExtractedAction;
+        recoveryRecord.validation = { outcome: 'invalid_action', note: recoveryNote };
+        await appendTickDebug(agent.workspacePath, recoveryRecord);
+        const stalled = await ctx.runMutation(internal.rocklaw.bridge.registerLiveChatReplyFailure, {
+          agentName,
+          tick,
+          day,
+          note: recoveryNote,
+        });
+        return {
+          status: 'rejected',
+          agentName,
+          outcome: 'invalid_action',
+          note: recoveryNote,
+          heartbeatLine: summariseFailure(
+            day,
+            timeOfDay,
+            `live chat reply failed with ${liveSceneRetryContext.partner}; scene stalled awaiting retry`,
+            recoveryNote,
+          ),
+          pendingNote: stalled
+            ? `SYSTEM: Your live chat with ${stalled.partner} is still active. You still owe the next reply. Return exactly one JSON action using chat or leave_chat.`
+            : 'SYSTEM: Your live chat is still active. You still owe the next reply. Return exactly one JSON action using chat or leave_chat.',
+        };
+      }
+
+      recoveryRecord.phase = 'live_scene_recovery_planned';
+      recoveryRecord.parsedAction = recoveryExtractedAction;
+      recoveryRecord.validation = { outcome: 'planned', note: null };
+      await appendTickDebug(agent.workspacePath, recoveryRecord);
+      return {
+        status: 'action',
+        agentName,
+        action: recoveryExtractedAction,
+      };
     };
 
     let rawResponse: string;
@@ -596,7 +844,9 @@ export const planAgentAction = internalAction({
         debugRecord.events = err.events;
       }
       await handleOpenRouterFreeFailure(ctx, agentName, 'transport_failed', failureMessage);
+      const recoveryPlan = await attemptLiveSceneRecovery('transport_failed', failureMessage);
       await appendTickDebug(agent.workspacePath, debugRecord);
+      if (recoveryPlan) return recoveryPlan;
       return {
         status: 'rejected',
         agentName,
@@ -619,7 +869,9 @@ export const planAgentAction = internalAction({
       debugRecord.timestamp = new Date().toISOString();
       debugRecord.validation = { outcome: 'parse_failed', note };
       await handleOpenRouterFreeFailure(ctx, agentName, 'parse_failed', note);
+      const recoveryPlan = await attemptLiveSceneRecovery('parse_failed', note);
       await appendTickDebug(agent.workspacePath, debugRecord);
+      if (recoveryPlan) return recoveryPlan;
       return {
         status: 'rejected',
         agentName,
@@ -636,7 +888,9 @@ export const planAgentAction = internalAction({
       debugRecord.timestamp = new Date().toISOString();
       debugRecord.validation = { outcome: 'parse_failed', note };
       await handleOpenRouterFreeFailure(ctx, agentName, 'parse_failed', note);
+      const recoveryPlan = await attemptLiveSceneRecovery('parse_failed', note);
       await appendTickDebug(agent.workspacePath, debugRecord);
+      if (recoveryPlan) return recoveryPlan;
       return {
         status: 'rejected',
         agentName,
@@ -656,7 +910,9 @@ export const planAgentAction = internalAction({
       debugRecord.timestamp = new Date().toISOString();
       debugRecord.validation = { outcome: 'invalid_action', note };
       await handleOpenRouterFreeFailure(ctx, agentName, 'invalid_action', note);
+      const recoveryPlan = await attemptLiveSceneRecovery('invalid_action', note);
       await appendTickDebug(agent.workspacePath, debugRecord);
+      if (recoveryPlan) return recoveryPlan;
       return {
         status: 'rejected',
         agentName,

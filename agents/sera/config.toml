@@ -1,5 +1,5 @@
 default_provider = "openrouter"
-default_model = "qwen/qwen3.6-plus-preview:free"
+default_model = "qwen/qwen3.6-plus:free"
 default_temperature = 0.8
 
 [agent]

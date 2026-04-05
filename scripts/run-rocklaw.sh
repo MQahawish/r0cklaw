@@ -20,6 +20,8 @@ MODE="--continue"
 PROFILE="--seeded"
 AUTO_TICKS=0
 PROVIDER_PRESET="keep"
+DIRECT_PROVIDER=""
+DIRECT_MODEL_ID=""
 LOCAL_API_URL="http://127.0.0.1:8090/v1"
 LOCAL_MODEL="Qwen3-4B-Q4_K_M"
 FALLBACK_MODEL=""
@@ -36,6 +38,8 @@ Options:
   --blank-self | --seeded       Blank mutable self-state or keep seeded self-state
   --agents <all|slug[,slug...]> Run all agents, one agent, or a subset
   --provider <preset>           keep | local | openrouter-free | openrouter-gemini-flash | openrouter-gemini-pro | openrouter-gpt41-mini | openai-mini | openai-main
+  --model-id <model-id>         Direct model id to use for selected agents, e.g. stepfun/step-3.5-flash:free
+  --model-provider <provider>   Provider for --model-id (default: openrouter)
   --fallback-model <model-id>   Paid fallback model for --provider openrouter-free
   --fallback-provider <name>    Provider for the fallback model (default: openrouter)
   --auto <ticks>                Automatically run N world ticks after startup
@@ -45,6 +49,7 @@ Examples:
   ./scripts/run-rocklaw.sh --fresh --blank-self
   ./scripts/run-rocklaw.sh --fresh --blank-self --agents elena --provider local --auto 6
   ./scripts/run-rocklaw.sh --fresh --agents elena,finn --provider openrouter-gemini-flash --auto 4
+  ./scripts/run-rocklaw.sh --fresh --blank-self --agents elena --model-id stepfun/step-3.5-flash:free --auto 6
   ./scripts/run-rocklaw.sh --fresh --provider openrouter-free --fallback-model google/gemini-2.5-flash
 EOF
 }
@@ -175,6 +180,17 @@ apply_provider_preset() {
   local provider=""
   local model=""
   local api_url=""
+
+  if [[ -n "$DIRECT_MODEL_ID" ]]; then
+    provider="${DIRECT_PROVIDER:-openrouter}"
+    model="$DIRECT_MODEL_ID"
+    for agent in "${SELECTED_AGENTS[@]}"; do
+      config_path="$ROOT_DIR/agents/$agent/config.toml"
+      "$SCRIPT_DIR/set-agent-provider.sh" "$agent" "$provider" "$model" >/dev/null
+      set_config_api_url "$config_path" "$api_url"
+    done
+    return 0
+  fi
 
   case "$preset" in
     keep)
@@ -363,6 +379,22 @@ while [[ $# -gt 0 ]]; do
       PROVIDER_PRESET="$2"
       shift 2
       ;;
+    --model-id)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 1
+      fi
+      DIRECT_MODEL_ID="$2"
+      shift 2
+      ;;
+    --model-provider)
+      if [[ $# -lt 2 ]]; then
+        usage
+        exit 1
+      fi
+      DIRECT_PROVIDER="$2"
+      shift 2
+      ;;
     --fallback-model)
       if [[ $# -lt 2 ]]; then
         usage
@@ -398,6 +430,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -n "$DIRECT_MODEL_ID" && "$PROVIDER_PRESET" == "openrouter-free" ]]; then
+  echo "Error: --model-id cannot be combined with --provider openrouter-free."
+  exit 1
+fi
+
 require_cmd docker
 require_cmd curl
 require_cmd node
@@ -431,7 +468,11 @@ if [[ "$missing_credentials" -ne 0 ]]; then
   exit 1
 fi
 
-echo "Using provider preset: $(provider_preset_label "$PROVIDER_PRESET")"
+if [[ -n "$DIRECT_MODEL_ID" ]]; then
+  echo "Using direct model: ${DIRECT_PROVIDER:-openrouter} / $DIRECT_MODEL_ID"
+else
+  echo "Using provider preset: $(provider_preset_label "$PROVIDER_PRESET")"
+fi
 echo "Agents: ${SELECTED_AGENTS[*]}"
 echo ""
 
@@ -521,7 +562,12 @@ echo "Rocklaw run ready."
 echo "Mode:      ${MODE#--}"
 echo "Profile:   ${PROFILE#--}"
 echo "Agents:    ${SELECTED_AGENTS[*]}"
-echo "Provider:  $(provider_preset_label "$PROVIDER_PRESET")"
+if [[ -n "$DIRECT_MODEL_ID" ]]; then
+  echo "Provider:  ${DIRECT_PROVIDER:-openrouter}"
+  echo "Model:     $DIRECT_MODEL_ID"
+else
+  echo "Provider:  $(provider_preset_label "$PROVIDER_PRESET")"
+fi
 echo "Backend:   http://127.0.0.1:3210"
 echo "Frontend:  http://127.0.0.1:5173/ai-town"
 
