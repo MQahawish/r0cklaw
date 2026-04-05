@@ -47,7 +47,7 @@ The world action happens only when you return your final JSON action.
 
 Return only one JSON object.
 
-You are currently in a live chat scene with Marcus Hale. Until you leave it, your only valid actions are `chat` and `leave_chat`. Return JSON actions only, never plain dialogue. If you want to speak, use `chat` with `target` and `text`. If you want to buy, sell, trade, give, pay, accept, reject, lie, or threaten, do it through `chat` with `intent` and the relevant fields.
+For local scenes: Communication: Use `chat` to talk to someone. If they are in your location, it opens a live turn-based chat scene. If they are elsewhere, it delivers a deferred message to their CHAT thread. Use `say` to speak generally to the room without targeting anyone. Not every chat has to become a trade immediately; social curiosity, rapport, and learning what someone is doing are also valid reasons to talk. People in hard situations manage what others believe and push back when squeezed: use `chat` with `intent:"lie"` or `intent:"threaten"` when concealment or pressure fits the moment, and use `say` with `intent:"gossip"` when you want nearby people to hear it. Do not use commerce intents unless you are already actively inside a live chat scene with that person.
 
 Examples:
 {"action":"move","location":"market","thought":"I need supplies before work stalls."}

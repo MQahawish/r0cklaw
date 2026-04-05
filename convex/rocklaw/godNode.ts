@@ -2,7 +2,17 @@
 
 import { v } from 'convex/values';
 import { action, internalAction } from '../_generated/server';
-import { internal } from '../_generated/api';
+import { api, internal } from '../_generated/api';
+
+const AGENT_NAME_BY_SLUG: Record<string, string> = {
+  elena: 'Elena Voss',
+  marcus: 'Marcus Hale',
+  finn: 'Finn',
+  lena: 'Lena Marsh',
+  sera: 'Sera',
+};
+
+const ALL_AGENT_SLUGS = Object.keys(AGENT_NAME_BY_SLUG);
 
 async function applyAgentModelSwitch(
   ctx: any,
@@ -75,6 +85,94 @@ async function applyAgentModelSwitch(
   child.unref();
 }
 
+async function fetchOpenRouterFreeSelection(topN = 8) {
+  const response = await fetch('https://openrouter.ai/api/v1/models');
+  if (!response.ok) {
+    throw new Error(`OpenRouter model fetch failed: ${response.status} ${response.statusText}`);
+  }
+  const payload = await response.json() as any;
+  const models = Array.isArray(payload?.data) ? payload.data : [];
+  const ranked = models
+    .filter((model: any) =>
+      model?.pricing?.prompt === '0'
+      && model?.pricing?.completion === '0'
+      && Array.isArray(model?.supported_parameters)
+      && model.supported_parameters.includes('tools'))
+    .map((model: any) => ({
+      id: model.id,
+      contextLength: model?.top_provider?.context_length ?? model?.context_length ?? 0,
+    }))
+    .sort((a: any, b: any) => b.contextLength - a.contextLength || String(a.id).localeCompare(String(b.id)))
+    .slice(0, topN);
+  if (ranked.length === 0) {
+    throw new Error('No free OpenRouter models with tool support were found.');
+  }
+  return {
+    selected: ranked[0].id as string,
+    candidates: ranked.map((entry: any) => entry.id as string),
+  };
+}
+
+async function stopAllAgentProcesses() {
+  const { execFileSync } = await import('child_process');
+  const path = await import('path');
+  const root = process.cwd();
+  execFileSync('bash', [path.join(root, 'scripts', 'stop-all-agents.sh')], {
+    cwd: root,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env },
+  });
+}
+
+async function resetAgentSession(agentSlug: string, profile: 'blank-self' | 'seeded') {
+  const { execFileSync } = await import('child_process');
+  const path = await import('path');
+  const root = process.cwd();
+  execFileSync('bash', [path.join(root, 'scripts', 'reset-agent-session.sh'), agentSlug, profile === 'blank-self' ? '--blank-self' : '--seeded'], {
+    cwd: root,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env },
+  });
+}
+
+async function startAgentGateway(agentSlug: string) {
+  const fs = await import('fs/promises');
+  const nodeFs = await import('fs');
+  const path = await import('path');
+  const { spawn } = await import('child_process');
+  const root = process.cwd();
+  const agentDir = path.join(root, 'agents', agentSlug);
+  const logFile = `/tmp/zeroclaw-${agentSlug}.log`;
+  const pidFile = `/tmp/zeroclaw-${agentSlug}.pid`;
+
+  const child = spawn('zeroclaw', ['--config-dir', agentDir, 'gateway', 'start'], {
+    cwd: agentDir,
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env },
+  });
+
+  await fs.writeFile(pidFile, String(child.pid), 'utf8');
+  const logStream = nodeFs.createWriteStream(logFile, { flags: 'a' });
+  child.stdout?.pipe(logStream);
+  child.stderr?.pipe(logStream);
+  child.unref();
+}
+
+async function recordCurrentStepSummary(ctx: any): Promise<any> {
+  const summary: any = await ctx.runQuery(api.rocklaw.observe.getStepSummary, {});
+  await ctx.runMutation(internal.rocklaw.god._recordRunTickSummary, {
+    tick: summary.tick,
+    day: summary.day,
+    timeOfDay: summary.timeOfDay,
+    summaryJson: JSON.stringify(summary),
+  });
+  await ctx.runMutation(internal.rocklaw.god._upsertRunConsoleState, {
+    lastSummaryTick: summary.tick,
+  });
+  return summary;
+}
+
 export const switchAgentModelInternal = internalAction({
   args: {
     agentName: v.string(),
@@ -94,6 +192,199 @@ export const setAgentModel = action({
   },
   handler: async (ctx, { agentName, modelOverride, providerOverride }) => {
     await applyAgentModelSwitch(ctx, agentName, modelOverride, providerOverride);
+  },
+});
+
+export const prepareRunConsole = action({
+  args: {
+    mode: v.union(v.literal('fresh'), v.literal('continue')),
+    profile: v.union(v.literal('blank-self'), v.literal('seeded')),
+    selectedAgentSlugs: v.array(v.string()),
+    providerPreset: v.string(),
+    modelProvider: v.optional(v.string()),
+    modelId: v.optional(v.string()),
+    fallbackProvider: v.optional(v.string()),
+    fallbackModel: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const selectedAgentSlugs = Array.from(new Set(args.selectedAgentSlugs))
+      .filter((slug) => ALL_AGENT_SLUGS.includes(slug));
+    if (selectedAgentSlugs.length === 0) {
+      throw new Error('Select at least one agent.');
+    }
+
+    await ctx.runMutation(api.rocklaw.god.stopRunAuto, {});
+    await ctx.runMutation(api.rocklaw.god.stopSim, {});
+    await ctx.runMutation(internal.rocklaw.god._upsertRunConsoleState, {
+      controlStatus: 'preparing',
+      selectedAgentSlugsJson: JSON.stringify(selectedAgentSlugs),
+      mode: args.mode,
+      profile: args.profile,
+      providerPreset: args.providerPreset,
+      modelProvider: args.modelProvider,
+      modelId: args.modelId,
+      fallbackProvider: args.fallbackProvider,
+      fallbackModel: args.fallbackModel,
+      clearLastError: true,
+    });
+
+    try {
+      await stopAllAgentProcesses();
+      if (args.mode === 'fresh') {
+        await ctx.runMutation(api.rocklaw.init.initRocklaw, {
+          force: true,
+          agentNames: selectedAgentSlugs.map((slug) => AGENT_NAME_BY_SLUG[slug]),
+        });
+      } else {
+        await ctx.runMutation(api.rocklaw.init.initRocklaw, {});
+      }
+
+      await ctx.runMutation(api.rocklaw.init.setAllAgentsBlankProfile, { blankSelf: false });
+      for (const slug of selectedAgentSlugs) {
+        await resetAgentSession(slug, args.profile);
+        await ctx.runMutation(api.rocklaw.init.setAgentBlankProfile, {
+          agentName: AGENT_NAME_BY_SLUG[slug],
+          blankSelf: args.profile === 'blank-self',
+        });
+      }
+
+      await ctx.runMutation(api.rocklaw.init.setWorkspaceRoot, { rootPath: process.cwd() });
+      await ctx.runMutation(internal.rocklaw.god._setRunAgentSelection, {
+        selectedAgentNames: selectedAgentSlugs.map((slug) => AGENT_NAME_BY_SLUG[slug]),
+      });
+
+      if (args.providerPreset === 'openrouter-free') {
+        if (!args.fallbackModel) {
+          throw new Error('Fallback model is required for openrouter-free.');
+        }
+        const selection = await fetchOpenRouterFreeSelection();
+        for (const slug of selectedAgentSlugs) {
+          const agentName = AGENT_NAME_BY_SLUG[slug];
+          await ctx.runAction(api.rocklaw.godNode.configureOpenRouterFreeAgent, {
+            agentName,
+            currentModel: selection.selected,
+            fallbackModel: args.fallbackModel,
+            fallbackProvider: args.fallbackProvider ?? 'openrouter',
+            candidatesJson: JSON.stringify(selection.candidates),
+          });
+        }
+      } else if (args.modelId) {
+        for (const slug of selectedAgentSlugs) {
+          await ctx.runAction(api.rocklaw.godNode.setAgentModel, {
+            agentName: AGENT_NAME_BY_SLUG[slug],
+            modelOverride: args.modelId,
+            providerOverride: args.modelProvider ?? 'openrouter',
+          });
+          await ctx.runAction(api.rocklaw.godNode.clearOpenRouterFreeAgent, {
+            agentName: AGENT_NAME_BY_SLUG[slug],
+          });
+        }
+      }
+
+      for (const slug of selectedAgentSlugs) {
+        await startAgentGateway(slug);
+      }
+
+      await ctx.runMutation(internal.rocklaw.god._clearRunTickSummaries, {});
+      const worldState = await ctx.runQuery(internal.rocklaw.engine.getWorldState, {});
+      await ctx.runMutation(internal.rocklaw.god._upsertRunConsoleState, {
+        controlStatus: 'ready',
+        autoRunning: false,
+        stepInProgress: false,
+        lastPreparedTick: worldState?.tick ?? 0,
+        clearLastSummaryTick: true,
+        clearLastError: true,
+      });
+      return { status: 'ready', selectedAgentSlugs };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await ctx.runMutation(internal.rocklaw.god._upsertRunConsoleState, {
+        controlStatus: 'error',
+        autoRunning: false,
+        stepInProgress: false,
+        lastError: message,
+      });
+      throw error;
+    }
+  },
+});
+
+export const stepRunConsole = action({
+  args: {},
+  handler: async (ctx): Promise<{ status: 'busy' } | { status: 'ok'; tick: number }> => {
+    const state = await ctx.runQuery(api.rocklaw.god.getRunConsole, {});
+    if (state.state.stepInProgress) {
+      return { status: 'busy' as const };
+    }
+
+    await ctx.runMutation(internal.rocklaw.god._upsertRunConsoleState, {
+      stepInProgress: true,
+      controlStatus: 'running',
+      clearLastError: true,
+    });
+
+    try {
+      await ctx.runAction(api.rocklaw.engine.manualTick, {});
+      const summary: any = await recordCurrentStepSummary(ctx);
+      await ctx.runMutation(internal.rocklaw.god._upsertRunConsoleState, {
+        stepInProgress: false,
+        controlStatus: 'ready',
+        lastSummaryTick: summary.tick,
+      });
+      return { status: 'ok' as const, tick: summary.tick };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await ctx.runMutation(internal.rocklaw.god._upsertRunConsoleState, {
+        stepInProgress: false,
+        autoRunning: false,
+        controlStatus: 'error',
+        lastError: message,
+      });
+      throw error;
+    }
+  },
+});
+
+export const runConsoleAutoLoop = internalAction({
+  args: { loopToken: v.number() },
+  handler: async (ctx, { loopToken }) => {
+    const runConsole = await ctx.runQuery(api.rocklaw.god.getRunConsole, {});
+    if (!runConsole.state.autoRunning || runConsole.state.loopToken !== loopToken || runConsole.state.stepInProgress) {
+      return;
+    }
+
+    await ctx.runMutation(internal.rocklaw.god._upsertRunConsoleState, {
+      stepInProgress: true,
+      controlStatus: 'running',
+      clearLastError: true,
+    });
+
+    try {
+      const batchSize = Math.max(1, Math.min(20, runConsole.state.stepBatchSize ?? 1));
+      for (let index = 0; index < batchSize; index += 1) {
+        const latest = await ctx.runQuery(api.rocklaw.god.getRunConsole, {});
+        if (!latest.state.autoRunning || latest.state.loopToken !== loopToken) break;
+        await ctx.runAction(api.rocklaw.engine.manualTick, {});
+        await recordCurrentStepSummary(ctx);
+      }
+
+      const latest = await ctx.runQuery(api.rocklaw.god.getRunConsole, {});
+      await ctx.runMutation(internal.rocklaw.god._upsertRunConsoleState, {
+        stepInProgress: false,
+        controlStatus: latest.state.autoRunning ? 'running' : 'ready',
+      });
+      if (latest.state.autoRunning && latest.state.loopToken === loopToken) {
+        await ctx.scheduler.runAfter(250, internal.rocklaw.godNode.runConsoleAutoLoop, { loopToken });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await ctx.runMutation(internal.rocklaw.god._upsertRunConsoleState, {
+        autoRunning: false,
+        stepInProgress: false,
+        controlStatus: 'error',
+        lastError: message,
+      });
+    }
   },
 });
 

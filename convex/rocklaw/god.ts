@@ -12,6 +12,46 @@ import { v } from 'convex/values';
 import { query, mutation, action, internalMutation } from '../_generated/server';
 import { api, internal } from '../_generated/api';
 
+const RUN_CONSOLE_SINGLETON = 'main';
+const DEFAULT_AGENT_SLUGS = ['elena', 'marcus', 'finn', 'lena', 'sera'] as const;
+const AGENT_NAME_BY_SLUG: Record<string, string> = {
+  elena: 'Elena Voss',
+  marcus: 'Marcus Hale',
+  finn: 'Finn',
+  lena: 'Lena Marsh',
+  sera: 'Sera',
+};
+
+function parseJsonValue<T>(raw: string | undefined, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function defaultRunConsoleState() {
+  return {
+    controlStatus: 'idle' as const,
+    autoRunning: false,
+    stepInProgress: false,
+    loopToken: 0,
+    selectedAgentSlugs: [...DEFAULT_AGENT_SLUGS],
+    mode: 'fresh' as const,
+    profile: 'blank-self' as const,
+    providerPreset: 'keep',
+    modelProvider: undefined as string | undefined,
+    modelId: undefined as string | undefined,
+    fallbackProvider: 'openrouter',
+    fallbackModel: undefined as string | undefined,
+    stepBatchSize: 1,
+    lastPreparedTick: undefined as number | undefined,
+    lastSummaryTick: undefined as number | undefined,
+    lastError: undefined as string | undefined,
+  };
+}
+
 // ── Prayers query (standalone) ───────────────────────────────────────────────
 
 export const getPrayers = query({
@@ -86,6 +126,56 @@ export const getDashboard = query({
       recentPrayers,
       tension,
       repByAgent,
+    };
+  },
+});
+
+export const getRunConsole = query({
+  args: {},
+  handler: async (ctx) => {
+    const worldState = await ctx.db.query('rl_world_state').unique();
+    const stateDoc = await ctx.db
+      .query('rl_run_console_state')
+      .withIndex('singletonKey', (q) => q.eq('singletonKey', RUN_CONSOLE_SINGLETON))
+      .unique();
+    const historyDocs = await ctx.db
+      .query('rl_run_tick_summaries')
+      .order('desc')
+      .take(120);
+
+    const defaults = defaultRunConsoleState();
+    const state = stateDoc
+      ? {
+          controlStatus: stateDoc.controlStatus,
+          autoRunning: stateDoc.autoRunning,
+          stepInProgress: stateDoc.stepInProgress,
+          loopToken: stateDoc.loopToken,
+          selectedAgentSlugs: parseJsonValue<string[]>(stateDoc.selectedAgentSlugsJson, defaults.selectedAgentSlugs),
+          mode: stateDoc.mode,
+          profile: stateDoc.profile,
+          providerPreset: stateDoc.providerPreset,
+          modelProvider: stateDoc.modelProvider,
+          modelId: stateDoc.modelId,
+          fallbackProvider: stateDoc.fallbackProvider,
+          fallbackModel: stateDoc.fallbackModel,
+          stepBatchSize: stateDoc.stepBatchSize ?? 1,
+          lastPreparedTick: stateDoc.lastPreparedTick,
+          lastSummaryTick: stateDoc.lastSummaryTick,
+          lastError: stateDoc.lastError,
+        }
+      : defaults;
+
+    return {
+      state,
+      worldState,
+      tickHistory: historyDocs.map((entry) => ({
+        _id: entry._id,
+        tick: entry.tick,
+        day: entry.day,
+        timeOfDay: entry.timeOfDay,
+        createdAt: entry.createdAt,
+        summary: parseJsonValue<any>(entry.summaryJson, null),
+      })),
     };
   },
 });
@@ -173,6 +263,167 @@ export const resolveEvent = mutation({
       active: false,
       resolvedAtTick: worldState?.tick ?? 0,
     });
+  },
+});
+
+export const _upsertRunConsoleState = internalMutation({
+  args: {
+    controlStatus: v.optional(v.union(
+      v.literal('idle'),
+      v.literal('preparing'),
+      v.literal('ready'),
+      v.literal('running'),
+      v.literal('error'),
+    )),
+    autoRunning: v.optional(v.boolean()),
+    stepInProgress: v.optional(v.boolean()),
+    loopToken: v.optional(v.number()),
+    selectedAgentSlugsJson: v.optional(v.string()),
+    mode: v.optional(v.union(v.literal('fresh'), v.literal('continue'))),
+    profile: v.optional(v.union(v.literal('blank-self'), v.literal('seeded'))),
+    providerPreset: v.optional(v.string()),
+    modelProvider: v.optional(v.string()),
+    modelId: v.optional(v.string()),
+    fallbackProvider: v.optional(v.string()),
+    fallbackModel: v.optional(v.string()),
+    stepBatchSize: v.optional(v.number()),
+    lastPreparedTick: v.optional(v.number()),
+    lastSummaryTick: v.optional(v.number()),
+    lastError: v.optional(v.string()),
+    clearLastSummaryTick: v.optional(v.boolean()),
+    clearLastError: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query('rl_run_console_state')
+      .withIndex('singletonKey', (q) => q.eq('singletonKey', RUN_CONSOLE_SINGLETON))
+      .unique();
+    const now = Date.now();
+    const defaults = defaultRunConsoleState();
+    const fields = {
+      singletonKey: RUN_CONSOLE_SINGLETON,
+      controlStatus: args.controlStatus ?? existing?.controlStatus ?? defaults.controlStatus,
+      autoRunning: args.autoRunning ?? existing?.autoRunning ?? defaults.autoRunning,
+      stepInProgress: args.stepInProgress ?? existing?.stepInProgress ?? defaults.stepInProgress,
+      loopToken: args.loopToken ?? existing?.loopToken ?? defaults.loopToken,
+      selectedAgentSlugsJson: args.selectedAgentSlugsJson ?? existing?.selectedAgentSlugsJson ?? JSON.stringify(defaults.selectedAgentSlugs),
+      mode: args.mode ?? existing?.mode ?? defaults.mode,
+      profile: args.profile ?? existing?.profile ?? defaults.profile,
+      providerPreset: args.providerPreset ?? existing?.providerPreset ?? defaults.providerPreset,
+      modelProvider: args.modelProvider ?? existing?.modelProvider,
+      modelId: args.modelId ?? existing?.modelId,
+      fallbackProvider: args.fallbackProvider ?? existing?.fallbackProvider ?? defaults.fallbackProvider,
+      fallbackModel: args.fallbackModel ?? existing?.fallbackModel,
+      stepBatchSize: args.stepBatchSize ?? existing?.stepBatchSize ?? defaults.stepBatchSize,
+      lastPreparedTick: args.lastPreparedTick ?? existing?.lastPreparedTick,
+      lastSummaryTick: args.clearLastSummaryTick ? undefined : (args.lastSummaryTick ?? existing?.lastSummaryTick),
+      lastError: args.clearLastError ? undefined : (args.lastError ?? existing?.lastError),
+      updatedAt: now,
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, fields);
+      return existing._id;
+    }
+    return await ctx.db.insert('rl_run_console_state', fields);
+  },
+});
+
+export const _clearRunTickSummaries = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const entries = await ctx.db.query('rl_run_tick_summaries').collect();
+    for (const entry of entries) {
+      await ctx.db.delete(entry._id);
+    }
+  },
+});
+
+export const _recordRunTickSummary = internalMutation({
+  args: {
+    tick: v.number(),
+    day: v.number(),
+    timeOfDay: v.string(),
+    summaryJson: v.string(),
+  },
+  handler: async (ctx, { tick, day, timeOfDay, summaryJson }) => {
+    const existing = await ctx.db
+      .query('rl_run_tick_summaries')
+      .withIndex('tick', (q) => q.eq('tick', tick))
+      .collect();
+    for (const entry of existing) {
+      await ctx.db.delete(entry._id);
+    }
+    await ctx.db.insert('rl_run_tick_summaries', {
+      tick,
+      day,
+      timeOfDay,
+      summaryJson,
+      createdAt: Date.now(),
+    });
+    const entries = await ctx.db.query('rl_run_tick_summaries').order('desc').take(301);
+    for (const stale of entries.slice(300)) {
+      await ctx.db.delete(stale._id);
+    }
+  },
+});
+
+export const _setRunAgentSelection = internalMutation({
+  args: { selectedAgentNames: v.array(v.string()) },
+  handler: async (ctx, { selectedAgentNames }) => {
+    const selected = new Set(selectedAgentNames);
+    const agents = await ctx.db.query('rl_agents').collect();
+    for (const agent of agents) {
+      await ctx.db.patch(agent._id, { paused: !selected.has(agent.name) });
+    }
+  },
+});
+
+export const stopRunAuto = mutation({
+  args: {},
+  handler: async (ctx) => {
+    await ctx.runMutation(internal.rocklaw.god._upsertRunConsoleState, {
+      autoRunning: false,
+      stepInProgress: false,
+      controlStatus: 'ready',
+      clearLastError: true,
+    });
+    return { status: 'stopped' };
+  },
+});
+
+export const clearRunHistory = mutation({
+  args: {},
+  handler: async (ctx) => {
+    await ctx.runMutation(internal.rocklaw.god._clearRunTickSummaries, {});
+    await ctx.runMutation(internal.rocklaw.god._upsertRunConsoleState, {
+      clearLastSummaryTick: true,
+      clearLastError: true,
+      controlStatus: 'ready',
+    });
+    return { status: 'cleared' };
+  },
+});
+
+export const startRunAuto = mutation({
+  args: { stepBatchSize: v.optional(v.number()) },
+  handler: async (ctx, { stepBatchSize }) => {
+    const existing = await ctx.db
+      .query('rl_run_console_state')
+      .withIndex('singletonKey', (q) => q.eq('singletonKey', RUN_CONSOLE_SINGLETON))
+      .unique();
+    const nextLoopToken = (existing?.loopToken ?? 0) + 1;
+    await ctx.runMutation(internal.rocklaw.god._upsertRunConsoleState, {
+      autoRunning: true,
+      stepInProgress: false,
+      controlStatus: 'running',
+      loopToken: nextLoopToken,
+      stepBatchSize: Math.max(1, Math.min(20, stepBatchSize ?? existing?.stepBatchSize ?? 1)),
+      clearLastError: true,
+    });
+    await ctx.scheduler.runAfter(0, internal.rocklaw.godNode.runConsoleAutoLoop, {
+      loopToken: nextLoopToken,
+    });
+    return { status: 'started', loopToken: nextLoopToken };
   },
 });
 

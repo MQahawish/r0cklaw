@@ -356,6 +356,43 @@ export const rocklawTables = {
     isRunning: v.boolean(),
   }),
 
+  rl_run_console_state: defineTable({
+    singletonKey: v.string(),
+    controlStatus: v.union(
+      v.literal('idle'),
+      v.literal('preparing'),
+      v.literal('ready'),
+      v.literal('running'),
+      v.literal('error'),
+    ),
+    autoRunning: v.boolean(),
+    stepInProgress: v.boolean(),
+    loopToken: v.number(),
+    selectedAgentSlugsJson: v.string(),
+    mode: v.union(v.literal('fresh'), v.literal('continue')),
+    profile: v.union(v.literal('blank-self'), v.literal('seeded')),
+    providerPreset: v.string(),
+    modelProvider: v.optional(v.string()),
+    modelId: v.optional(v.string()),
+    fallbackProvider: v.optional(v.string()),
+    fallbackModel: v.optional(v.string()),
+    stepBatchSize: v.optional(v.number()),
+    lastPreparedTick: v.optional(v.number()),
+    lastSummaryTick: v.optional(v.number()),
+    lastError: v.optional(v.string()),
+    updatedAt: v.number(),
+  }).index('singletonKey', ['singletonKey']),
+
+  rl_run_tick_summaries: defineTable({
+    tick: v.number(),
+    day: v.number(),
+    timeOfDay: v.string(),
+    summaryJson: v.string(),
+    createdAt: v.number(),
+  })
+    .index('tick', ['tick'])
+    .index('createdAt', ['createdAt']),
+
   // Price snapshots per tick — for history charts and trend analysis.
   // Inserted by priceEngine only when a price actually changes.
   rl_price_history: defineTable({

@@ -134,6 +134,7 @@ export const getNonBusyAgents = internalQuery({
   handler: async (ctx, { tick }) => {
     const agents = await ctx.db.query('rl_agents').collect();
     return agents
+      .filter((a) => !a.paused)
       .filter((a) => !a.busy || (a.busyUntilTick !== undefined && a.busyUntilTick <= tick))
       .map((a) => a.name);
   },

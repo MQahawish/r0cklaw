@@ -33,25 +33,75 @@ wait_for_url() {
   exit 1
 }
 
+is_frontend_ready() {
+  curl -fsS "http://127.0.0.1:5173/ai-town" >/dev/null 2>&1
+}
+
+ensure_port_free() {
+  local port=$1
+  local pids
+  pids="$(lsof -ti tcp:"$port" 2>/dev/null || true)"
+  [[ -n "$pids" ]] || return 0
+
+  echo "Port $port is already in use. Stopping existing listener(s): $pids"
+  for pid in $pids; do
+    kill "$pid" 2>/dev/null || true
+  done
+
+  sleep 1
+
+  pids="$(lsof -ti tcp:"$port" 2>/dev/null || true)"
+  if [[ -n "$pids" ]]; then
+    echo "Port $port is still occupied. Forcing stop: $pids"
+    for pid in $pids; do
+      kill -9 "$pid" 2>/dev/null || true
+    done
+  fi
+
+  if lsof -ti tcp:"$port" >/dev/null 2>&1; then
+    echo "Error: could not free port $port"
+    exit 1
+  fi
+}
+
 require_cmd docker
 require_cmd curl
 require_cmd zeroclaw
 require_cmd npx
+require_cmd lsof
 "$SCRIPT_DIR/ensure-agent-workspace-perms.sh"
 
 cd "$ROOT_DIR"
 export HOST_UID="${HOST_UID:-$(id -u)}"
 export HOST_GID="${HOST_GID:-$(id -g)}"
 
-RESET_MODE="continue"
-if [[ "${1:-}" == "--fresh" ]]; then
-  RESET_MODE="fresh"
-elif [[ "${1:-}" == "--continue" || -z "${1:-}" ]]; then
-  RESET_MODE="continue"
-else
-  echo "Usage: $0 [--continue|--fresh]"
-  exit 1
-fi
+RESET_MODE="fresh"
+PROFILE="--blank-self"
+AUTO_START_SIM=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --fresh)
+      RESET_MODE="fresh"
+      shift
+      ;;
+    --continue)
+      RESET_MODE="continue"
+      shift
+      ;;
+    --blank-self|--seeded)
+      PROFILE="$1"
+      shift
+      ;;
+    --start-sim)
+      AUTO_START_SIM=1
+      shift
+      ;;
+    *)
+      echo "Usage: $0 [--continue|--fresh] [--blank-self|--seeded] [--start-sim]"
+      exit 1
+      ;;
+  esac
+done
 
 missing_credentials=0
 for config_path in "$ROOT_DIR"/agents/*/config.toml; do
@@ -85,23 +135,39 @@ if [[ "$RESET_MODE" == "fresh" ]]; then
   npx convex run rocklaw/init:initRocklaw '{"force":true}' >/dev/null
   for config_path in "$ROOT_DIR"/agents/*/config.toml; do
     [[ -f "$config_path" ]] || continue
-    "$SCRIPT_DIR/reset-agent-session.sh" "$(basename "$(dirname "$config_path")")"
+    "$SCRIPT_DIR/reset-agent-session.sh" "$(basename "$(dirname "$config_path")")" "$PROFILE"
   done
 else
   echo "[3/6] Ensuring Rocklaw world exists (continuing current state)..."
   npx convex run rocklaw/init:initRocklaw >/dev/null
+  for config_path in "$ROOT_DIR"/agents/*/config.toml; do
+    [[ -f "$config_path" ]] || continue
+    "$SCRIPT_DIR/reset-agent-session.sh" "$(basename "$(dirname "$config_path")")" "$PROFILE"
+  done
 fi
+npx convex run rocklaw/init:setAllAgentsBlankProfile "{\"blankSelf\":$([[ \"$PROFILE\" == \"--blank-self\" ]] && echo true || echo false)}" >/dev/null
 npx convex run rocklaw/init:setWorkspaceRoot "{\"rootPath\":\"$ROOT_DIR\"}" >/dev/null
 
-echo "[4/6] Restarting Rocklaw simulation..."
+echo "[4/6] Stopping Rocklaw simulation..."
 npx convex run rocklaw/god:stopSim >/dev/null 2>&1 || true
-npx convex run rocklaw/god:startSim >/dev/null
+if [[ "$AUTO_START_SIM" -eq 1 ]]; then
+  echo "        Auto-start enabled; restarting Rocklaw simulation..."
+  npx convex run rocklaw/god:startSim >/dev/null
+fi
 
 echo "[5/6] Launching frontend + Convex log tail..."
+ensure_port_free 5173
 echo "Frontend: http://127.0.0.1:5173"
 echo "Convex:   http://127.0.0.1:3210"
 echo "Dashboard:http://127.0.0.1:6791"
 echo "Mode:     $RESET_MODE"
+echo "Profile:  $([[ "$PROFILE" == "--blank-self" ]] && echo blank-self || echo seeded)"
+echo "Sim:      $([[ "$AUTO_START_SIM" -eq 1 ]] && echo auto-start || echo stopped)"
 echo ""
 
-exec npx npm-run-all --parallel dev:backend dev:frontend
+if is_frontend_ready; then
+  echo "Frontend on 5173 is already running; reusing existing dev server."
+  exec npm run dev:backend
+fi
+
+exec npx concurrently "npm run dev:backend" "bash $SCRIPT_DIR/start-rocklaw-frontend.sh 5173 127.0.0.1"

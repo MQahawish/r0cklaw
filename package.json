@@ -4,8 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "npm-run-all --parallel dev:backend dev:frontend",
-    "dev:rocklaw": "./scripts/dev-rocklaw-local.sh --continue",
-    "dev:rocklaw:fresh": "./scripts/dev-rocklaw-local.sh --fresh",
+    "dev:rocklaw": "./scripts/dev-rocklaw-local.sh",
+    "dev:rocklaw:continue": "./scripts/dev-rocklaw-local.sh --continue --seeded",
+    "dev:rocklaw:fresh": "./scripts/dev-rocklaw-local.sh --fresh --blank-self",
+    "dev:rocklaw:auto": "./scripts/dev-rocklaw-local.sh --start-sim",
+    "dev:rocklaw:fresh:auto": "./scripts/dev-rocklaw-local.sh --fresh --blank-self --start-sim",
     "lab:rocklaw": "./scripts/lab-rocklaw.sh",
     "lab:rocklaw:blank": "./scripts/lab-rocklaw.sh --fresh --blank-self",
     "run:rocklaw": "./scripts/run-rocklaw.sh",

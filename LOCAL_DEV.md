@@ -29,16 +29,33 @@ Only set the keys you actually need.
 
 ## Main Commands
 
-Continue current local world:
+Fresh local world with blank-self:
 
 ```bash
 npm run dev:rocklaw
+
+This starts the local stack and agent gateways, resets to a fresh world, resets agent self-state to blank-self, and leaves the Rocklaw sim stopped.
+Use the God Mode `Run` tab to prepare, step, start, continue, or stop the simulation manually.
 ```
 
-Start fresh local world:
+Continue current local world with seeded state:
+
+```bash
+npm run dev:rocklaw:continue
+
+This keeps the current world and seeded self-state, still without auto-starting ticks.
+
+Explicit fresh + blank-self local world:
 
 ```bash
 npm run dev:rocklaw:fresh
+```
+
+If you want the old always-running behavior explicitly:
+
+```bash
+npm run dev:rocklaw:auto
+```
 ```
 
 Prepare the whole world in the background without starting the continuous sim:

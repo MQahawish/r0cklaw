@@ -8,15 +8,84 @@
  *   - Last 20 actions log
  */
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useMutation, useAction } from 'convex/react';
 import { api } from '../../convex/_generated/api';
+
+const PROVIDER_OPTIONS = [
+  { value: 'openrouter', label: 'OpenRouter' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'anthropic', label: 'Anthropic' },
+  { value: 'google', label: 'Google' },
+  { value: 'custom', label: 'Custom provider' },
+];
+
+const MODEL_OPTIONS_BY_PROVIDER: Record<string, { value: string; label: string }[]> = {
+  openrouter: [
+    { value: 'qwen/qwen3.6-plus:free', label: 'Qwen 3.6 Plus Free' },
+    { value: 'stepfun/step-3.5-flash:free', label: 'Step 3.5 Flash Free' },
+    { value: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+    { value: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    { value: 'minimax/minimax-m2.5', label: 'MiniMax M2.5' },
+    { value: 'openai/gpt-4.1-mini', label: 'GPT-4.1 Mini' },
+    { value: 'custom', label: 'Custom model id' },
+  ],
+  openai: [
+    { value: 'gpt-4.1-mini', label: 'GPT-4.1 Mini' },
+    { value: 'gpt-4.1', label: 'GPT-4.1' },
+    { value: 'custom', label: 'Custom model id' },
+  ],
+  anthropic: [
+    { value: 'claude-3-5-sonnet', label: 'Claude 3.5 Sonnet' },
+    { value: 'claude-3-7-sonnet', label: 'Claude 3.7 Sonnet' },
+    { value: 'custom', label: 'Custom model id' },
+  ],
+  google: [
+    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    { value: 'custom', label: 'Custom model id' },
+  ],
+  custom: [
+    { value: 'custom', label: 'Custom model id' },
+  ],
+};
 
 function repColour(score: number): string {
   if (score >= 70) return '#22c55e';
   if (score >= 40) return '#f97316';
   if (score < 20)  return '#ef4444';
   return '#fbbf24';
+}
+
+function statColour(value: number, inverted = false): string {
+  const bad = inverted ? value > 70 : value < 30;
+  const mid = inverted ? value > 50 : value < 50;
+  if (bad) return '#ef4444';
+  if (mid) return '#f97316';
+  return '#22c55e';
+}
+
+function MiniStatBar({
+  value,
+  inverted = false,
+}: {
+  value: number;
+  inverted?: boolean;
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+      <div style={{ width: 40, height: 6, background: '#374151', borderRadius: 3, overflow: 'hidden', flexShrink: 0 }}>
+        <div
+          style={{
+            width: `${Math.min(100, value)}%`,
+            height: '100%',
+            background: statColour(value, inverted),
+          }}
+        />
+      </div>
+      <span style={{ fontSize: 11, color: '#9ca3af', minWidth: 22, textAlign: 'right' }}>{value}</span>
+    </div>
+  );
 }
 
 function RepBadge({ score }: { score: number | undefined }) {
@@ -54,22 +123,54 @@ function AgentRow({
         cursor: 'pointer',
         background: selected ? '#1e3a5f' : '#1f2937',
         border: `1px solid ${selected ? '#3b82f6' : '#374151'}`,
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        gap: 8,
+        transition: 'border-color 0.2s',
       }}
     >
-      <div>
-        <span style={{ fontWeight: 600, fontSize: 13, color: '#f9fafb' }}>{agent.name}</span>
-        <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 6 }}>{agent.role}</span>
-      </div>
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-        <RepBadge score={repScore} />
-        {agent.paused && (
-          <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: 3, background: '#7c3aed22', color: '#a78bfa' }}>
-            paused
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 13, color: '#f9fafb', lineHeight: 1.2 }}>{agent.name}</div>
+          <div style={{ fontSize: 11, color: '#6b7280', lineHeight: 1.2, marginTop: 2 }}>{agent.role}</div>
+        </div>
+        <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <RepBadge score={repScore} />
+          {agent.paused && (
+            <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: 3, background: '#7c3aed22', color: '#a78bfa' }}>
+              paused
+            </span>
+          )}
+          <span
+            style={{
+              fontSize: 11,
+              padding: '1px 6px',
+              borderRadius: 3,
+              background: agent.busy ? '#7c3aed22' : '#05966922',
+              color: agent.busy ? '#a78bfa' : '#34d399',
+            }}
+          >
+            {agent.busy ? 'busy' : agent.location}
           </span>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 6, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 2 }}>
+        <div>
+          <span style={{ fontSize: 10, color: '#6b7280' }}>⚡ </span>
+          <MiniStatBar value={agent.energy ?? 0} />
+        </div>
+        <div>
+          <span style={{ fontSize: 10, color: '#6b7280' }}>❤ </span>
+          <MiniStatBar value={agent.health ?? 0} />
+        </div>
+        <div>
+          <span style={{ fontSize: 10, color: '#6b7280' }}>🍞 </span>
+          <MiniStatBar value={agent.hunger ?? 0} inverted />
+        </div>
+      </div>
+
+      <div style={{ marginTop: 4, fontSize: 11, color: '#9ca3af' }}>
+        {agent.coin ?? 0}c
+        {agent.busy && agent.busyUntilTick && (
+          <span style={{ marginLeft: 8, color: '#a78bfa' }}>busy until tick {agent.busyUntilTick}</span>
         )}
       </div>
     </div>
@@ -82,9 +183,42 @@ function AgentDetail({ agentName, repByAgent }: { agentName: string; repByAgent:
   const resumeAgent = useMutation(api.rocklaw.god.resumeAgent);
   const setAgentModel = useAction(api.rocklaw.godNode.setAgentModel);
 
-  const [modelInput, setModelInput] = useState('');
-  const [providerInput, setProviderInput] = useState('');
+  const [providerInput, setProviderInput] = useState('openrouter');
+  const [modelChoice, setModelChoice] = useState('');
+  const [customProviderInput, setCustomProviderInput] = useState('');
+  const [customModelInput, setCustomModelInput] = useState('');
   const [saving, setSaving] = useState(false);
+
+  const modelOptions = useMemo(
+    () => MODEL_OPTIONS_BY_PROVIDER[providerInput] ?? MODEL_OPTIONS_BY_PROVIDER.custom,
+    [providerInput],
+  );
+
+  useEffect(() => {
+    if (!detail) return;
+    const { agent } = detail;
+    const currentProvider = agent.providerOverride ?? 'openrouter';
+    const providerOptionExists = PROVIDER_OPTIONS.some((option) => option.value === currentProvider);
+    const nextProvider = providerOptionExists ? currentProvider : 'custom';
+    const currentModel = agent.modelOverride ?? '';
+    const currentOptions = MODEL_OPTIONS_BY_PROVIDER[nextProvider] ?? MODEL_OPTIONS_BY_PROVIDER.custom;
+    const modelOptionExists = currentOptions.some((option) => option.value === currentModel);
+
+    setProviderInput(nextProvider);
+    setCustomProviderInput(providerOptionExists ? '' : currentProvider);
+    if (!currentModel) {
+      setModelChoice('');
+      setCustomModelInput('');
+      return;
+    }
+    if (modelOptionExists) {
+      setModelChoice(currentModel);
+      setCustomModelInput('');
+    } else {
+      setModelChoice('custom');
+      setCustomModelInput(currentModel);
+    }
+  }, [detail, agentName]);
 
   if (!detail) {
     return <div style={{ color: '#6b7280', fontSize: 12 }}>Loading...</div>;
@@ -95,17 +229,22 @@ function AgentDetail({ agentName, repByAgent }: { agentName: string; repByAgent:
     ? JSON.parse(rep.recentIncidents)
     : [];
 
+  const resolvedProvider = providerInput === 'custom' ? customProviderInput.trim() : providerInput;
+  const resolvedModel = modelChoice === 'custom' ? customModelInput.trim() : modelChoice;
+
   const handleSaveModel = async () => {
-    if (!modelInput.trim()) return;
+    if (!resolvedModel) return;
     setSaving(true);
     try {
       await setAgentModel({
         agentName,
-        modelOverride: modelInput.trim(),
-        providerOverride: providerInput.trim() || undefined,
+        modelOverride: resolvedModel,
+        providerOverride: resolvedProvider || undefined,
       });
-      setModelInput('');
-      setProviderInput('');
+      setModelChoice('');
+      setCustomModelInput('');
+      setCustomProviderInput('');
+      setProviderInput('openrouter');
     } finally {
       setSaving(false);
     }
@@ -146,31 +285,63 @@ function AgentDetail({ agentName, repByAgent }: { agentName: string; repByAgent:
           <span style={{ color: '#6b7280' }}>Provider</span>
           <span style={{ color: '#e5e7eb', fontFamily: 'monospace' }}>{agent.providerOverride ?? <em style={{ color: '#4b5563' }}>default</em>}</span>
         </div>
-        <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-          <input
-            value={modelInput}
-            onChange={(e) => setModelInput(e.target.value)}
-            placeholder="model (e.g. mistral:7b)"
-            style={INPUT_STYLE}
-          />
-          <input
-            value={providerInput}
-            onChange={(e) => setProviderInput(e.target.value)}
-            placeholder="provider"
-            style={{ ...INPUT_STYLE, width: 90 }}
-          />
-          <button
-            onClick={handleSaveModel}
-            disabled={!modelInput.trim() || saving}
-            style={{
-              fontSize: 11, padding: '4px 10px', borderRadius: 4, cursor: modelInput.trim() ? 'pointer' : 'default',
-              background: modelInput.trim() ? '#4f46e5' : '#1f2937',
-              color: modelInput.trim() ? '#e0e7ff' : '#4b5563',
-              border: 'none', flexShrink: 0,
-            }}
-          >
-            {saving ? '...' : 'Save'}
-          </button>
+        <div style={{ display: 'grid', gap: 8, marginTop: 4 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '130px minmax(0, 1fr) auto', gap: 6 }}>
+            <select
+              value={providerInput}
+              onChange={(e) => {
+                setProviderInput(e.target.value);
+                setModelChoice('');
+                setCustomModelInput('');
+              }}
+              style={INPUT_STYLE}
+            >
+              {PROVIDER_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            <select
+              value={modelChoice}
+              onChange={(e) => setModelChoice(e.target.value)}
+              style={INPUT_STYLE}
+            >
+              <option value="">Choose model</option>
+              {modelOptions.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+            <button
+              onClick={handleSaveModel}
+              disabled={!resolvedModel || saving}
+              style={{
+                fontSize: 11, padding: '4px 10px', borderRadius: 4, cursor: resolvedModel ? 'pointer' : 'default',
+                background: resolvedModel ? '#4f46e5' : '#1f2937',
+                color: resolvedModel ? '#e0e7ff' : '#4b5563',
+                border: 'none', flexShrink: 0,
+              }}
+            >
+              {saving ? '...' : 'Save'}
+            </button>
+          </div>
+          {providerInput === 'custom' && (
+            <input
+              value={customProviderInput}
+              onChange={(e) => setCustomProviderInput(e.target.value)}
+              placeholder="Custom provider id"
+              style={INPUT_STYLE}
+            />
+          )}
+          {modelChoice === 'custom' && (
+            <input
+              value={customModelInput}
+              onChange={(e) => setCustomModelInput(e.target.value)}
+              placeholder="Custom model id"
+              style={INPUT_STYLE}
+            />
+          )}
+          <div style={{ fontSize: 11, color: '#6b7280' }}>
+            Pick a provider first, then pick one of its models. Use custom only when the model is not listed.
+          </div>
         </div>
       </div>
 
@@ -230,7 +401,6 @@ function AgentDetail({ agentName, repByAgent }: { agentName: string; repByAgent:
 }
 
 const INPUT_STYLE: React.CSSProperties = {
-  flex: 1,
   background: '#111827',
   border: '1px solid #374151',
   borderRadius: 4,
@@ -241,29 +411,39 @@ const INPUT_STYLE: React.CSSProperties = {
   outline: 'none',
 };
 
-export default function AgentConfigPanel({ agents, repByAgent }: {
+export default function AgentConfigPanel({ agents, repByAgent, selectedAgentName, onSelectAgent }: {
   agents: any[];
   repByAgent: Record<string, number>;
+  selectedAgentName?: string | null;
+  onSelectAgent?: (agentName: string) => void;
 }) {
-  const [selected, setSelected] = useState<string | null>(agents[0]?.name ?? null);
+  const [internalSelected, setInternalSelected] = useState<string | null>(agents[0]?.name ?? null);
+  const selected = selectedAgentName ?? internalSelected;
+
+  const handleSelect = (agentName: string) => {
+    onSelectAgent?.(agentName);
+    if (!onSelectAgent) {
+      setInternalSelected(agentName);
+    }
+  };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', gap: 16, minHeight: 480 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '260px minmax(0, 1fr)', gap: 24, minHeight: 480, minWidth: 0 }}>
       {/* Left: agent list */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 5, overflowY: 'auto' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', minWidth: 0, paddingRight: 6 }}>
         {agents.map((a: any) => (
           <AgentRow
             key={a._id}
             agent={a}
             repScore={repByAgent[a.name]}
             selected={selected === a.name}
-            onClick={() => setSelected(a.name)}
+            onClick={() => handleSelect(a.name)}
           />
         ))}
       </div>
 
       {/* Right: detail */}
-      <div style={{ overflowY: 'auto' }}>
+      <div style={{ overflowY: 'auto', minWidth: 0, paddingRight: 6 }}>
         {selected ? (
           <AgentDetail agentName={selected} repByAgent={repByAgent} />
         ) : (

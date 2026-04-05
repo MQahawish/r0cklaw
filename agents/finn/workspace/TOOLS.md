@@ -36,22 +36,10 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 }
 ```
 
-## Economic actions right now
+## Economic actions
 
-### Available now
-- `work`: Available now. Water north_field to keep growth on schedule.
+Runtime availability for your role will be listed here each tick.
 
-### Unavailable here
-- `work:flour`: Unavailable here. Move to bakery to work on flour.
-- `work:bread`: Unavailable here. Move to bakery to work on bread.
-- `work:horseshoe`: Unavailable here. Move to forge to work on horseshoe.
-- `work:horseshoe`: Unavailable here. Move to forge to work on horseshoe.
-- `work:tool`: Unavailable here. Move to forge to work on tool.
-- `work:tool`: Unavailable here. Move to forge to work on tool.
-- `work:knife`: Unavailable here. Move to forge to work on knife.
-- `work:knife`: Unavailable here. Move to forge to work on knife.
-- `work:iron_ingot`: Unavailable here. Move to forge to work on iron_ingot.
-- `work:iron_ingot`: Unavailable here. Move to forge to work on iron_ingot.
 ## Act in the world
 
 - Do not use `observe`, `inspect`, `look`, or `survey` as a final world action. Observation is done through file reads and notes during tool use.
@@ -84,12 +72,6 @@ Return one JSON object when you are ready to act. Use only the fields that matte
   Example JSON: `{"action":"use","item":"medicine","thought":"I need to recover health before harder work."}`
 - `sleep`: include a short `journal` paragraph. Keep it private and reflective, not just economic bookkeeping; mention people, feelings, surprises, worries, or changing impressions when they matter.
   Example JSON: `{"action":"sleep","journal":"Long day. Sera seemed more practical than I expected, and I should keep an eye on the meal shortage tomorrow.","thought":"I need proper sleep before morning."}`
-
-## Temporary actions available now
-
-- `sleep`: stop for proper sleep and recover more deeply.
-  Your `journal` should be a short private reflection, not just a work ledger. When relevant, mention who you dealt with, what you thought or felt about the day, and what changed in your view of people, risks, or opportunities.
-  Example JSON: `{"action":"sleep","journal":"Long day. I got the work done, but Marcus pushed hard on price and I will remember that. Still, the trade may prove useful tomorrow.","thought":"It is time to sleep and recover fully."}`
 
 ## Speaking into the world
 

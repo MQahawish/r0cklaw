@@ -10,15 +10,15 @@
  */
 
 import { useState } from 'react';
-import { useQuery, useMutation, useAction } from 'convex/react';
+import { useQuery, useMutation } from 'convex/react';
 import { api } from '../../convex/_generated/api';
-import type { Id } from '../../convex/_generated/dataModel';
-import type { EventSuggestion } from '../../convex/rocklaw/god';
 import AgentInspector from './AgentInspector';
 import RelationshipGraph from './RelationshipGraph';
 import EconomyPanel from './EconomyPanel';
 import SystemsPanel from './SystemsPanel';
 import AgentConfigPanel from './AgentConfigPanel';
+import RunConsolePanel from './RunConsolePanel';
+import { TickSummaryCard } from './RunConsolePanel';
 
 // ── Tension bar colour ────────────────────────────────────────────────────────
 
@@ -42,7 +42,7 @@ function statColour(value: number, inverted = false): string {
 function StatBar({ value, inverted = false }: { value: number; inverted?: boolean }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-      <div style={{ width: 48, height: 6, background: '#374151', borderRadius: 3, overflow: 'hidden' }}>
+      <div style={{ width: 40, height: 6, background: '#374151', borderRadius: 3, overflow: 'hidden', flexShrink: 0 }}>
         <div style={{
           width: `${Math.min(100, value)}%`,
           height: '100%',
@@ -50,7 +50,7 @@ function StatBar({ value, inverted = false }: { value: number; inverted?: boolea
           transition: 'width 0.3s',
         }} />
       </div>
-      <span style={{ fontSize: 11, color: '#9ca3af', minWidth: 26 }}>{value}</span>
+      <span style={{ fontSize: 11, color: '#9ca3af', minWidth: 22, textAlign: 'right' }}>{value}</span>
     </div>
   );
 }
@@ -84,8 +84,8 @@ function AgentCard({ agent, repScore }: { agent: any; repScore?: number }) {
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
-          <span style={{ fontWeight: 600, color: '#f9fafb', fontSize: 13 }}>{agent.name}</span>
-          <span style={{ color: '#9ca3af', fontSize: 11, marginLeft: 6 }}>{agent.role}</span>
+          <div style={{ fontWeight: 600, color: '#f9fafb', fontSize: 13, lineHeight: 1.2 }}>{agent.name}</div>
+          <div style={{ color: '#9ca3af', fontSize: 11, lineHeight: 1.2, marginTop: 2 }}>{agent.role}</div>
         </div>
         <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
           {repScore !== undefined && (
@@ -142,40 +142,6 @@ function AgentCard({ agent, repScore }: { agent: any; repScore?: number }) {
   );
 }
 
-// ── Event pill ────────────────────────────────────────────────────────────────
-
-const SEVERITY_STYLE: Record<string, { bg: string; text: string }> = {
-  low:    { bg: '#05966922', text: '#34d399' },
-  medium: { bg: '#d9770622', text: '#fb923c' },
-  high:   { bg: '#ef444422', text: '#f87171' },
-};
-
-function ActiveEventRow({ event, onResolve }: { event: any; onResolve: (id: Id<'rl_world_events'>) => void }) {
-  const s = SEVERITY_STYLE[event.severity] ?? SEVERITY_STYLE.low;
-  return (
-    <div style={{
-      display: 'flex',
-      alignItems: 'center',
-      gap: 8,
-      padding: '6px 8px',
-      background: '#1f2937',
-      borderRadius: 4,
-      border: `1px solid ${s.text}44`,
-    }}>
-      <span style={{ fontSize: 11, padding: '1px 6px', borderRadius: 3, background: s.bg, color: s.text, flexShrink: 0 }}>
-        {event.severity}
-      </span>
-      <span style={{ fontSize: 12, color: '#e5e7eb', flex: 1 }}>{event.description}</span>
-      <button
-        onClick={() => onResolve(event._id)}
-        style={{ fontSize: 10, color: '#6b7280', background: 'transparent', border: '1px solid #374151', borderRadius: 3, padding: '2px 6px', cursor: 'pointer', flexShrink: 0 }}
-      >
-        resolve
-      </button>
-    </div>
-  );
-}
-
 // ── Section header ────────────────────────────────────────────────────────────
 
 function SectionHeader({ children }: { children: React.ReactNode }) {
@@ -188,12 +154,11 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 
 // ── Main dashboard ────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'inspector' | 'relations' | 'economy' | 'systems' | 'agents';
+type Tab = 'overview' | 'run' | 'economy' | 'systems' | 'agents';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview',  label: 'Overview'  },
-  { id: 'inspector', label: 'Inspector' },
-  { id: 'relations', label: 'Relations' },
+  { id: 'run',       label: 'Run'       },
   { id: 'economy',   label: 'Economy'   },
   { id: 'systems',   label: 'Systems'   },
   { id: 'agents',    label: 'Agents'    },
@@ -201,40 +166,12 @@ const TABS: { id: Tab; label: string }[] = [
 
 export default function GodDashboard({ onClose }: { onClose: () => void }) {
   const dashboard = useQuery(api.rocklaw.god.getDashboard);
-  const injectEvent = useMutation(api.rocklaw.god.injectEvent);
-  const resolveEvent = useMutation(api.rocklaw.god.resolveEvent);
+  const runConsole = useQuery(api.rocklaw.god.getRunConsole);
   const startSim = useMutation(api.rocklaw.god.startSim);
   const stopSim = useMutation(api.rocklaw.god.stopSim);
-  const suggestEventsAction = useAction(api.rocklaw.god.suggestEvents);
 
   const [activeTab, setActiveTab] = useState<Tab>('overview');
-  const [customType, setCustomType] = useState('');
-  const [customDesc, setCustomDesc] = useState('');
-  const [customSeverity, setCustomSeverity] = useState<'low' | 'medium' | 'high'>('medium');
-  const [suggestions, setSuggestions] = useState<EventSuggestion[] | null>(null);
-  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
-
-  const handleSuggest = async () => {
-    setLoadingSuggestions(true);
-    try {
-      const results = await suggestEventsAction({});
-      setSuggestions(results);
-    } finally {
-      setLoadingSuggestions(false);
-    }
-  };
-
-  const handleInject = async (type: string, description: string, severity: 'low' | 'medium' | 'high') => {
-    if (!description.trim()) return;
-    await injectEvent({ type, description, severity });
-  };
-
-  const handleCustomInject = async () => {
-    if (!customDesc.trim()) return;
-    await injectEvent({ type: customType || 'custom', description: customDesc, severity: customSeverity });
-    setCustomType('');
-    setCustomDesc('');
-  };
+  const [selectedAgentName, setSelectedAgentName] = useState<string | null>(null);
 
   if (!dashboard) {
     return (
@@ -246,7 +183,11 @@ export default function GodDashboard({ onClose }: { onClose: () => void }) {
     );
   }
 
-  const { worldState, agents, activeEvents, recentActions, prices, recentPrayers, tension, repByAgent } = dashboard as any;
+  const { worldState, agents, prices, recentPrayers, tension, repByAgent } = dashboard as any;
+  const recentTickHistory = (runConsole?.tickHistory ?? []).slice(0, 8);
+  const effectiveSelectedAgent = agents.some((agent: any) => agent.name === selectedAgentName)
+    ? selectedAgentName
+    : agents[0]?.name ?? null;
 
   const shortages = prices.filter((p: any) => p.shortageLevel !== 'none');
   const isRunning = worldState?.isRunning ?? false;
@@ -315,16 +256,39 @@ export default function GodDashboard({ onClose }: { onClose: () => void }) {
           ))}
         </div>
 
-        {/* ── Tab: Agents (config panel) ── */}
+        {/* ── Tab: Agents ── */}
         {activeTab === 'agents' && (
-          <AgentConfigPanel agents={agents} repByAgent={repByAgent ?? {}} />
+          <div style={{ display: 'grid', gap: 20 }}>
+            <AgentConfigPanel
+              agents={agents}
+              repByAgent={repByAgent ?? {}}
+              selectedAgentName={effectiveSelectedAgent}
+              onSelectAgent={setSelectedAgentName}
+            />
+
+            <div style={{ display: 'grid', gap: 20 }}>
+              <div style={{ minWidth: 0, paddingTop: 4 }}>
+                <SectionHeader>Inspector</SectionHeader>
+                <div style={{ marginTop: 10 }}>
+                  <AgentInspector
+                    selectedAgentName={effectiveSelectedAgent}
+                    onSelectAgent={setSelectedAgentName}
+                  />
+                </div>
+              </div>
+
+              <div style={{ minWidth: 0, paddingTop: 4 }}>
+                <SectionHeader>Relations</SectionHeader>
+                <div style={{ marginTop: 10 }}>
+                  <RelationshipGraph focusAgent={effectiveSelectedAgent} />
+                </div>
+              </div>
+            </div>
+          </div>
         )}
 
-        {/* ── Tab: Inspector ── */}
-        {activeTab === 'inspector' && <AgentInspector />}
-
-        {/* ── Tab: Relations ── */}
-        {activeTab === 'relations' && <RelationshipGraph />}
+        {/* ── Tab: Run ── */}
+        {activeTab === 'run' && <RunConsolePanel />}
 
         {/* ── Tab: Economy ── */}
         {activeTab === 'economy' && <EconomyPanel />}
@@ -333,137 +297,27 @@ export default function GodDashboard({ onClose }: { onClose: () => void }) {
         {activeTab === 'systems' && <SystemsPanel />}
 
         {/* ── Tab: Overview (main grid) ── */}
-        {activeTab === 'overview' && <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr 1fr', gap: 16, minHeight: 0 }}>
+        {activeTab === 'overview' && <div style={{ display: 'grid', gridTemplateColumns: '250px 1fr', gap: 16, minHeight: 0 }}>
 
           {/* ── Column 1: Agents ── */}
-          <div style={{ overflowY: 'auto', maxHeight: 540 }}>
+          <div style={{ overflowY: 'auto', maxHeight: 540, paddingRight: 10 }}>
             <SectionHeader>Agents ({agents.length})</SectionHeader>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {agents.map((a: any) => <AgentCard key={a._id} agent={a} repScore={(repByAgent ?? {})[a.name]} />)}
             </div>
           </div>
 
-          {/* ── Column 2: Events + Injection ── */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto', maxHeight: 540 }}>
-
-            {/* Active events */}
-            <div>
-              <SectionHeader>Active Events ({activeEvents.length})</SectionHeader>
-              {activeEvents.length === 0 ? (
-                <div style={{ fontSize: 12, color: '#4b5563', fontStyle: 'italic' }}>No active events. The village is quiet.</div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  {activeEvents.map((e: any) => (
-                    <ActiveEventRow key={e._id} event={e} onResolve={(id) => resolveEvent({ eventId: id })} />
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Event injection */}
-            <div>
-              <SectionHeader>Inject Event</SectionHeader>
-
-              {/* AI suggestions */}
-              <div style={{ marginBottom: 10 }}>
-                <button
-                  onClick={handleSuggest}
-                  disabled={loadingSuggestions}
-                  style={{
-                    fontSize: 12, padding: '5px 12px', borderRadius: 4, cursor: loadingSuggestions ? 'default' : 'pointer',
-                    background: '#1e3a5f', color: '#93c5fd', border: '1px solid #1d4ed844',
-                    opacity: loadingSuggestions ? 0.6 : 1,
-                  }}
-                >
-                  {loadingSuggestions ? '⋯ Reading world state...' : '✦ Suggest events'}
-                </button>
-              </div>
-
-              {suggestions && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }}>
-                  {suggestions.map((s, i) => {
-                    const sty = SEVERITY_STYLE[s.severity] ?? SEVERITY_STYLE.low;
-                    return (
-                      <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, padding: '6px 8px', background: '#111827', borderRadius: 4, border: '1px solid #1f2937' }}>
-                        <span style={{ fontSize: 10, padding: '2px 5px', borderRadius: 3, background: sty.bg, color: sty.text, flexShrink: 0, marginTop: 1 }}>{s.severity}</span>
-                        <span style={{ fontSize: 11, color: '#d1d5db', flex: 1, lineHeight: 1.4 }}>{s.description}</span>
-                        <button
-                          onClick={() => handleInject(s.type, s.description, s.severity)}
-                          style={{ fontSize: 10, padding: '2px 8px', borderRadius: 3, background: '#1f2937', color: '#93c5fd', border: '1px solid #374151', cursor: 'pointer', flexShrink: 0 }}
-                        >
-                          inject
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {/* Custom event */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <input
-                  value={customType}
-                  onChange={(e) => setCustomType(e.target.value)}
-                  placeholder="type (e.g. drought)"
-                  style={INPUT_STYLE}
-                />
-                <textarea
-                  value={customDesc}
-                  onChange={(e) => setCustomDesc(e.target.value)}
-                  placeholder="Describe the event as the villagers would experience it..."
-                  rows={2}
-                  style={{ ...INPUT_STYLE, resize: 'vertical', fontFamily: 'inherit' }}
-                />
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  {(['low', 'medium', 'high'] as const).map((sev) => (
-                    <button
-                      key={sev}
-                      onClick={() => setCustomSeverity(sev)}
-                      style={{
-                        fontSize: 11, padding: '3px 8px', borderRadius: 3, cursor: 'pointer',
-                        background: customSeverity === sev ? SEVERITY_STYLE[sev].bg : '#1f2937',
-                        color: customSeverity === sev ? SEVERITY_STYLE[sev].text : '#6b7280',
-                        border: `1px solid ${customSeverity === sev ? SEVERITY_STYLE[sev].text + '44' : '#374151'}`,
-                      }}
-                    >
-                      {sev}
-                    </button>
-                  ))}
-                  <button
-                    onClick={handleCustomInject}
-                    disabled={!customDesc.trim()}
-                    style={{
-                      fontSize: 12, padding: '3px 14px', borderRadius: 4, cursor: customDesc.trim() ? 'pointer' : 'default',
-                      background: customDesc.trim() ? '#4f46e5' : '#1f2937',
-                      color: customDesc.trim() ? '#e0e7ff' : '#4b5563',
-                      border: 'none', marginLeft: 'auto',
-                    }}
-                  >
-                    Inject →
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* ── Column 3: World log + Economy + Prayers ── */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto', maxHeight: 540 }}>
+          {/* ── Column 2: World log + Economy + Prayers ── */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto', maxHeight: 540, paddingRight: 10 }}>
 
             {/* World log */}
             <div>
               <SectionHeader>World Log</SectionHeader>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                {recentActions.length === 0 ? (
-                  <div style={{ fontSize: 12, color: '#4b5563', fontStyle: 'italic' }}>No actions yet.</div>
-                ) : recentActions.map((a: any) => (
-                  <div key={a._id} style={{ fontSize: 11, color: '#9ca3af', padding: '3px 0', borderBottom: '1px solid #111827' }}>
-                    <span style={{ color: '#6b7280', marginRight: 4 }}>D{a.day}</span>
-                    <span style={{ color: '#e5e7eb', fontWeight: 500 }}>{a.agentName}</span>
-                    <span style={{ color: '#4b5563', margin: '0 3px' }}>→</span>
-                    <span style={{ color: a.outcome === 'failed' ? '#f87171' : '#93c5fd' }}>{a.action}</span>
-                    {a.target && <span style={{ color: '#6b7280' }}> {a.target}</span>}
-                    {a.message && <span style={{ color: '#4b5563' }}> "{a.message.slice(0, 40)}{a.message.length > 40 ? '…' : ''}"</span>}
-                  </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {recentTickHistory.length === 0 ? (
+                  <div style={{ fontSize: 12, color: '#4b5563', fontStyle: 'italic' }}>No tick history yet.</div>
+                ) : recentTickHistory.map((entry: any) => (
+                  <TickSummaryCard key={entry._id} summary={entry.summary} showDetails={false} />
                 ))}
               </div>
             </div>
@@ -522,9 +376,10 @@ const PANEL_STYLE: React.CSSProperties = {
   borderRadius: 8,
   padding: 20,
   width: '100%',
-  maxWidth: 1100,
+  maxWidth: 1380,
   maxHeight: '90vh',
   overflowY: 'auto',
+  overflowX: 'hidden',
   color: '#e5e7eb',
   fontFamily: 'ui-monospace, monospace',
 };

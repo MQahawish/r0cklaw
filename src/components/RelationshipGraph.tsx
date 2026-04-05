@@ -30,7 +30,7 @@ function edgeColour(cooperative: number, transactional: number, total: number) {
   return '#6b7280';                              // gray: neutral / talking
 }
 
-export default function RelationshipGraph() {
+export default function RelationshipGraph({ focusAgent }: { focusAgent?: string | null }) {
   const data = useQuery(api.rocklaw.observe.getRelationships);
   const [hovered, setHovered] = useState<string | null>(null);
 
@@ -38,7 +38,19 @@ export default function RelationshipGraph() {
   if (data.agents.length === 0) return <div style={MUTED}>No agents in simulation yet.</div>;
   if (data.edges.length === 0) return <div style={MUTED}>No interactions recorded yet. Run the simulation to see relationships form.</div>;
 
-  const { agents, edges } = data;
+  const focusedEdges = focusAgent
+    ? data.edges.filter((edge) => edge.from === focusAgent || edge.to === focusAgent)
+    : data.edges;
+  const focusedAgents = focusAgent
+    ? data.agents.filter((agent) => agent === focusAgent || focusedEdges.some((edge) => edge.from === agent || edge.to === agent))
+    : data.agents;
+
+  if (focusAgent && focusedEdges.length === 0) {
+    return <div style={MUTED}>No recorded relationships for {focusAgent} yet.</div>;
+  }
+
+  const agents = focusedAgents;
+  const edges = focusedEdges;
   const maxCount = Math.max(...edges.map((e) => e.count), 1);
 
   // Short names for display inside nodes
@@ -142,7 +154,7 @@ export default function RelationshipGraph() {
 
         {!hovered && (
           <>
-            <div style={SECTION_LABEL}>Most active pairs</div>
+            <div style={SECTION_LABEL}>{focusAgent ? `${focusAgent}'s strongest links` : 'Most active pairs'}</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
               {[...edges].sort((a, b) => b.count - a.count).slice(0, 8).map((e, i) => {
                 const colour = edgeColour(e.cooperative, e.transactional, e.count);
