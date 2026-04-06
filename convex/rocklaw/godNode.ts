@@ -12,6 +12,29 @@ const AGENT_NAME_BY_SLUG: Record<string, string> = {
   sera: 'Sera',
 };
 
+const FALLBACK_AGENT_CONFIG_DEFAULTS: Record<string, { defaultProvider: string; defaultModel: string }> = {
+  'Elena Voss': {
+    defaultProvider: 'openrouter',
+    defaultModel: 'nvidia/nemotron-3-super-120b-a12b:free',
+  },
+  'Marcus Hale': {
+    defaultProvider: 'openrouter',
+    defaultModel: 'qwen/qwen3-next-80b-a3b-instruct:free',
+  },
+  Finn: {
+    defaultProvider: 'openrouter',
+    defaultModel: 'qwen/qwen3.6-plus:free',
+  },
+  'Lena Marsh': {
+    defaultProvider: 'openrouter',
+    defaultModel: 'qwen/qwen3.6-plus:free',
+  },
+  Sera: {
+    defaultProvider: 'openrouter',
+    defaultModel: 'qwen/qwen3.6-plus:free',
+  },
+};
+
 const ALL_AGENT_SLUGS = Object.keys(AGENT_NAME_BY_SLUG);
 
 async function applyAgentModelSwitch(
@@ -85,6 +108,11 @@ async function applyAgentModelSwitch(
   child.unref();
 }
 
+function parseConfigValue(toml: string, key: string): string | null {
+  const match = toml.match(new RegExp(`^${key}\\s*=\\s*"([^"]+)"`, 'm'));
+  return match ? match[1] : null;
+}
+
 async function fetchOpenRouterFreeSelection(topN = 8) {
   const response = await fetch('https://openrouter.ai/api/v1/models');
   if (!response.ok) {
@@ -110,6 +138,36 @@ async function fetchOpenRouterFreeSelection(topN = 8) {
   return {
     selected: ranked[0].id as string,
     candidates: ranked.map((entry: any) => entry.id as string),
+  };
+}
+
+async function fetchOpenRouterRecommendedModels(topN = 24) {
+  const response = await fetch('https://openrouter.ai/api/v1/models');
+  if (!response.ok) {
+    throw new Error(`OpenRouter model fetch failed: ${response.status} ${response.statusText}`);
+  }
+  const payload = await response.json() as any;
+  const models = Array.isArray(payload?.data) ? payload.data : [];
+  const ranked = models
+    .filter((model: any) =>
+      model?.pricing?.prompt === '0'
+      && model?.pricing?.completion === '0'
+      && Array.isArray(model?.supported_parameters)
+      && model.supported_parameters.includes('tools'))
+    .map((model: any) => ({
+      id: String(model.id),
+      name: String(model.name ?? model.id),
+      contextLength: model?.top_provider?.context_length ?? model?.context_length ?? 0,
+    }))
+    .sort((a: any, b: any) => b.contextLength - a.contextLength || a.id.localeCompare(b.id))
+    .slice(0, topN);
+  if (ranked.length === 0) {
+    throw new Error('No free OpenRouter models with tool support were found.');
+  }
+  return {
+    selected: ranked[0].id,
+    candidates: ranked.map((entry: any) => entry.id),
+    ranked,
   };
 }
 
@@ -195,6 +253,48 @@ export const setAgentModel = action({
   },
 });
 
+export const getAgentConfigDefaults = action({
+  args: {
+    agentName: v.string(),
+  },
+  handler: async (ctx, { agentName }) => {
+    const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
+    if (!agent) {
+      throw new Error(`Agent not found: ${agentName}`);
+    }
+
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    const workspacePath = path.resolve(process.cwd(), agent.workspacePath);
+    const agentDir = path.dirname(workspacePath);
+    const configPath = path.join(agentDir, 'config.toml');
+    const fallback = FALLBACK_AGENT_CONFIG_DEFAULTS[agentName] ?? null;
+
+    try {
+      const toml = await fs.readFile(configPath, 'utf8');
+
+      return {
+        defaultProvider: parseConfigValue(toml, 'default_provider') ?? fallback?.defaultProvider ?? null,
+        defaultModel: parseConfigValue(toml, 'default_model') ?? fallback?.defaultModel ?? null,
+      };
+    } catch {
+      return {
+        defaultProvider: fallback?.defaultProvider ?? null,
+        defaultModel: fallback?.defaultModel ?? null,
+      };
+    }
+  },
+});
+
+export const listOpenRouterRecommendedModels = action({
+  args: {
+    topN: v.optional(v.number()),
+  },
+  handler: async (_ctx, { topN }) => {
+    return await fetchOpenRouterRecommendedModels(topN ?? 24);
+  },
+});
+
 export const prepareRunConsole = action({
   args: {
     mode: v.union(v.literal('fresh'), v.literal('continue')),
@@ -257,12 +357,15 @@ export const prepareRunConsole = action({
         if (!args.fallbackModel) {
           throw new Error('Fallback model is required for openrouter-free.');
         }
-        const selection = await fetchOpenRouterFreeSelection();
+        const selection = await fetchOpenRouterRecommendedModels();
+        const currentModel = args.modelId && selection.candidates.includes(args.modelId)
+          ? args.modelId
+          : selection.selected;
         for (const slug of selectedAgentSlugs) {
           const agentName = AGENT_NAME_BY_SLUG[slug];
           await ctx.runAction(api.rocklaw.godNode.configureOpenRouterFreeAgent, {
             agentName,
-            currentModel: selection.selected,
+            currentModel,
             fallbackModel: args.fallbackModel,
             fallbackProvider: args.fallbackProvider ?? 'openrouter',
             candidatesJson: JSON.stringify(selection.candidates),

@@ -5,7 +5,7 @@
 
 import { useQuery } from 'convex/react';
 import { api } from '../../convex/_generated/api';
-import type { PricePoint } from '../../convex/rocklaw/observe';
+import type { EconomyDiagnostic, PricePoint } from '../../convex/rocklaw/observe';
 
 // ── Sparkline ─────────────────────────────────────────────────────────────────
 
@@ -51,7 +51,13 @@ function Sparkline({ points, basePrice }: { points: PricePoint[]; basePrice: num
 // ── Shortage badge ────────────────────────────────────────────────────────────
 
 function ShortageBadge({ level }: { level: string }) {
-  if (level === 'none') return null;
+  if (level === 'none') {
+    return (
+      <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, fontWeight: 700, textTransform: 'uppercase' as const, background: '#1f2937', color: '#9ca3af', border: '1px solid #37415166' }}>
+        stable
+      </span>
+    );
+  }
   const style = level === 'critical'
     ? { background: '#7f1d1d', color: '#fca5a5', border: '1px solid #ef444444' }
     : { background: '#78350f', color: '#fcd34d', border: '1px solid #f59e0b44' };
@@ -83,6 +89,8 @@ function TrendArrow({ points }: { points: PricePoint[] }) {
 export default function EconomyPanel() {
   const history = useQuery(api.rocklaw.observe.getPriceHistory, { ticks: 60 }) ?? [];
   const dashboard = useQuery(api.rocklaw.god.getDashboard);
+  const diagnostics = useQuery(api.rocklaw.observe.getEconomyDiagnostics) ?? [];
+  const diagnosticsByItem = new Map(diagnostics.map((entry) => [entry.item, entry]));
 
   const shortages = history.filter((h) => {
     const last = h.history[h.history.length - 1];
@@ -105,9 +113,18 @@ export default function EconomyPanel() {
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               {shortages.map((h) => {
                 const last = h.history[h.history.length - 1]!;
+                const diagnostic = diagnosticsByItem.get(h.item);
                 return (
-                  <div key={h.item} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 4, background: last.shortageLevel === 'critical' ? '#7f1d1d' : '#78350f', color: last.shortageLevel === 'critical' ? '#fca5a5' : '#fcd34d', border: `1px solid ${last.shortageLevel === 'critical' ? '#ef444444' : '#f59e0b44'}` }}>
-                    {h.item} — {last.price}c
+                  <div key={h.item} style={{ width: 240, fontSize: 12, padding: '8px 10px', borderRadius: 6, background: last.shortageLevel === 'critical' ? '#7f1d1d' : '#78350f', color: last.shortageLevel === 'critical' ? '#fca5a5' : '#fcd34d', border: `1px solid ${last.shortageLevel === 'critical' ? '#ef444444' : '#f59e0b44'}` }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+                      <span>{h.item}</span>
+                      <span>{last.price}c</span>
+                    </div>
+                    {diagnostic && (
+                      <div style={{ marginTop: 4 }}>
+                        <ShortageWhy diagnostic={diagnostic} />
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -178,6 +195,38 @@ export default function EconomyPanel() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function ShortageWhy({ diagnostic }: { diagnostic: EconomyDiagnostic }) {
+  const stockLine =
+    diagnostic.shortageLevel === 'critical'
+      ? `${diagnostic.totalSupply} left village-wide. Critical shortage.`
+      : `${diagnostic.totalSupply} left village-wide. Low stock.`;
+
+  let demandLine = '';
+  if (diagnostic.demandMultiplier >= 1.35) {
+    demandLine = 'Demand is high right now.';
+  } else if (diagnostic.demandMultiplier >= 1.1) {
+    demandLine = 'Demand is a bit elevated.';
+  } else {
+    demandLine = 'Demand is normal.';
+  }
+
+  const topReason = diagnostic.reasons[0]
+    ?.replace(/^Supply is at \d+, /, '')
+    .replace(/^inside the shortage band up to /, 'Low-stock threshold is ')
+    .replace(/^below the critical threshold of /, 'Critical threshold is ')
+    .replace(/^above the shortage thresholds\./, 'Stock is above shortage thresholds.')
+    .replace(/\.$/, '');
+
+  return (
+    <div style={{ fontSize: 10, color: '#fde68a', lineHeight: 1.35 }}>
+      {stockLine}
+      {' '}
+      {demandLine}
+      {topReason ? ` ${topReason}.` : ''}
     </div>
   );
 }

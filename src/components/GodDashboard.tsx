@@ -19,6 +19,7 @@ import SystemsPanel from './SystemsPanel';
 import AgentConfigPanel from './AgentConfigPanel';
 import RunConsolePanel from './RunConsolePanel';
 import { TickSummaryCard } from './RunConsolePanel';
+import LiveSimulationFrame from './LiveSimulationFrame.tsx';
 
 // ── Tension bar colour ────────────────────────────────────────────────────────
 
@@ -154,17 +155,18 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 
 // ── Main dashboard ────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'run' | 'economy' | 'systems' | 'agents';
+type Tab = 'overview' | 'live' | 'run' | 'economy' | 'systems' | 'agents';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview',  label: 'Overview'  },
+  { id: 'live',      label: 'Live'      },
   { id: 'run',       label: 'Run'       },
   { id: 'economy',   label: 'Economy'   },
   { id: 'systems',   label: 'Systems'   },
   { id: 'agents',    label: 'Agents'    },
 ];
 
-export default function GodDashboard({ onClose }: { onClose: () => void }) {
+export default function GodDashboard({ onClose }: { onClose?: () => void }) {
   const dashboard = useQuery(api.rocklaw.god.getDashboard);
   const runConsole = useQuery(api.rocklaw.god.getRunConsole);
   const startSim = useMutation(api.rocklaw.god.startSim);
@@ -175,7 +177,7 @@ export default function GodDashboard({ onClose }: { onClose: () => void }) {
 
   if (!dashboard) {
     return (
-      <div style={{ ...OVERLAY_STYLE }}>
+      <div style={PAGE_STYLE}>
         <div style={{ ...PANEL_STYLE, display: 'flex', alignItems: 'center', justifyContent: 'center', height: 200 }}>
           <span style={{ color: '#6b7280' }}>Loading world state...</span>
         </div>
@@ -193,18 +195,21 @@ export default function GodDashboard({ onClose }: { onClose: () => void }) {
   const isRunning = worldState?.isRunning ?? false;
 
   return (
-    <div style={OVERLAY_STYLE} onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div style={PAGE_STYLE}>
       <div style={PANEL_STYLE}>
 
         {/* ── Header ── */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
           <div>
             <span style={{ fontSize: 18, fontWeight: 700, color: '#f9fafb', letterSpacing: '0.05em' }}>
-              ⚡ ROCKLAW GOD MODE
+              ROCKLAW CONTROL
             </span>
             <span style={{ marginLeft: 12, fontSize: 13, color: '#9ca3af' }}>
               Day {worldState?.day ?? '?'}, {worldState?.timeOfDay ?? '?'} — Tick {worldState?.tick ?? '?'}
             </span>
+            <div style={{ marginTop: 4, fontSize: 12, color: '#64748b' }}>
+              Analytical dashboard first. Open the Live tab when you want the town view.
+            </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             {/* Tension meter */}
@@ -227,7 +232,9 @@ export default function GodDashboard({ onClose }: { onClose: () => void }) {
             >
               {isRunning ? '⏸ Stop' : '▶ Start'}
             </button>
-            <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: '#9ca3af', fontSize: 18, cursor: 'pointer', padding: '0 4px' }}>✕</button>
+            {onClose && (
+              <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: '#9ca3af', fontSize: 18, cursor: 'pointer', padding: '0 4px' }}>✕</button>
+            )}
           </div>
         </div>
 
@@ -289,6 +296,9 @@ export default function GodDashboard({ onClose }: { onClose: () => void }) {
 
         {/* ── Tab: Run ── */}
         {activeTab === 'run' && <RunConsolePanel />}
+
+        {/* ── Tab: Live ── */}
+        {activeTab === 'live' && <LiveSimulationFrame />}
 
         {/* ── Tab: Economy ── */}
         {activeTab === 'economy' && <EconomyPanel />}
@@ -359,15 +369,13 @@ export default function GodDashboard({ onClose }: { onClose: () => void }) {
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
-const OVERLAY_STYLE: React.CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  background: 'rgba(0,0,0,0.75)',
-  zIndex: 50,
+const PAGE_STYLE: React.CSSProperties = {
+  minHeight: '100vh',
+  background: 'linear-gradient(180deg, #090f1a 0%, #0f172a 100%)',
   display: 'flex',
-  alignItems: 'center',
+  alignItems: 'stretch',
   justifyContent: 'center',
-  padding: 16,
+  padding: 20,
 };
 
 const PANEL_STYLE: React.CSSProperties = {
@@ -376,8 +384,8 @@ const PANEL_STYLE: React.CSSProperties = {
   borderRadius: 8,
   padding: 20,
   width: '100%',
-  maxWidth: 1380,
-  maxHeight: '90vh',
+  maxWidth: 1500,
+  minHeight: 'calc(100vh - 40px)',
   overflowY: 'auto',
   overflowX: 'hidden',
   color: '#e5e7eb',

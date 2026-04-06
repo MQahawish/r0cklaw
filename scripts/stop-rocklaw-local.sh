@@ -9,12 +9,13 @@ cd "$ROOT_DIR"
 
 echo "[1/3] Stopping Rocklaw simulation..."
 npx convex run rocklaw/god:stopSim >/dev/null 2>&1 || true
+npx convex run testing:stop >/dev/null 2>&1 || true
 
 echo "[2/3] Stopping ZeroClaw agent gateways..."
 "$SCRIPT_DIR/stop-all-agents.sh" || true
 
 echo "[3/3] Stopping self-hosted Convex services..."
-docker compose stop backend dashboard >/dev/null 2>&1 || true
+docker compose stop frontend backend dashboard >/dev/null 2>&1 || true
 
 if command -v lsof >/dev/null 2>&1; then
   frontend_pids="$(lsof -ti tcp:5173 2>/dev/null || true)"

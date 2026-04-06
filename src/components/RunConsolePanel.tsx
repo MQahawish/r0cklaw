@@ -37,28 +37,23 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-function modeLabel(mode: RunMode) {
-  return mode === 'fresh' ? 'Reset world' : 'Keep current world';
-}
-
-function profileLabel(profile: RunProfile) {
-  return profile === 'blank-self' ? 'Reset agent self-state' : 'Keep seeded self-state';
-}
-
-function providerLabel(config: {
-  providerPreset: string;
-  modelProvider?: string | null;
+function providerSummary(config: {
   modelId?: string | null;
-  fallbackProvider?: string | null;
-  fallbackModel?: string | null;
 }) {
-  if (config.providerPreset === 'direct-model') {
-    return `${config.modelProvider ?? 'openrouter'}:${config.modelId || '(missing model id)'}`;
+  return `All selected agents will start on ${config.modelId || 'the recommended free OpenRouter model'}. Fallback stays fixed on openrouter / google/gemini-2.5-flash.`;
+}
+
+function runModeSummary(mode: RunMode, profile: RunProfile) {
+  if (mode === 'fresh' && profile === 'blank-self') {
+    return 'Start from a fresh world and clear each selected agent’s self-state.';
   }
-  if (config.providerPreset === 'openrouter-free') {
-    return `OpenRouter free -> fallback ${config.fallbackProvider ?? 'openrouter'}:${config.fallbackModel || '(missing fallback model)'}`;
+  if (mode === 'fresh' && profile === 'seeded') {
+    return 'Start from a fresh world and keep each selected agent’s seeded self-state.';
   }
-  return 'Keep existing models';
+  if (mode === 'continue' && profile === 'blank-self') {
+    return 'Keep the current world, but clear each selected agent’s self-state.';
+  }
+  return 'Keep the current world and each selected agent’s seeded self-state.';
 }
 
 function CompactLogLine({ text, subtle = false }: { text: string; subtle?: boolean }) {
@@ -229,30 +224,42 @@ export function TickSummaryCard({
 export default function RunConsolePanel() {
   const runConsole = useQuery(api.rocklaw.god.getRunConsole);
   const prepareRun = useAction(api.rocklaw.godNode.prepareRunConsole);
+  const listOpenRouterRecommendedModels = useAction(api.rocklaw.godNode.listOpenRouterRecommendedModels);
   const startAutoRun = useMutation(api.rocklaw.god.startRunAuto);
   const stopAutoRun = useMutation(api.rocklaw.god.stopRunAuto);
 
   const [mode, setMode] = useState<RunMode>('fresh');
   const [profile, setProfile] = useState<RunProfile>('blank-self');
   const [selectedAgents, setSelectedAgents] = useState<string[]>(AGENT_OPTIONS.map((entry) => entry.slug));
-  const [providerPreset, setProviderPreset] = useState('keep');
-  const [modelProvider, setModelProvider] = useState('openrouter');
   const [modelId, setModelId] = useState('');
-  const [fallbackProvider, setFallbackProvider] = useState('openrouter');
-  const [fallbackModel, setFallbackModel] = useState('');
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [openRouterModels, setOpenRouterModels] = useState<Array<{ id: string; name: string; contextLength: number }>>([]);
 
   useEffect(() => {
     if (!runConsole) return;
     setMode(runConsole.state.mode);
     setProfile(runConsole.state.profile);
     setSelectedAgents(runConsole.state.selectedAgentSlugs);
-    setProviderPreset(runConsole.state.providerPreset);
-    setModelProvider(runConsole.state.modelProvider ?? 'openrouter');
     setModelId(runConsole.state.modelId ?? '');
-    setFallbackProvider(runConsole.state.fallbackProvider ?? 'openrouter');
-    setFallbackModel(runConsole.state.fallbackModel ?? '');
   }, [runConsole?.state.lastPreparedTick]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listOpenRouterRecommendedModels({ topN: 24 })
+      .then((result) => {
+        if (cancelled) return;
+        setOpenRouterModels(result.ranked);
+        setModelId((current) => current || result.selected);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setOpenRouterModels([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [listOpenRouterRecommendedModels]);
 
   const tickHistory = useMemo(() => runConsole?.tickHistory ?? [], [runConsole]);
 
@@ -261,13 +268,9 @@ export default function RunConsolePanel() {
       mode,
       profile,
       selectedAgentSlugs: [...selectedAgents].sort(),
-      providerPreset,
-      modelProvider: providerPreset === 'direct-model' ? modelProvider : null,
-      modelId: providerPreset === 'direct-model' ? modelId.trim() : null,
-      fallbackProvider: providerPreset === 'openrouter-free' ? fallbackProvider : null,
-      fallbackModel: providerPreset === 'openrouter-free' ? fallbackModel.trim() : null,
+      modelId: modelId.trim(),
     }),
-    [fallbackModel, fallbackProvider, mode, modelId, modelProvider, profile, providerPreset, selectedAgents],
+    [mode, modelId, profile, selectedAgents],
   );
 
   const appliedConfig = useMemo(
@@ -275,11 +278,7 @@ export default function RunConsolePanel() {
       mode: runConsole?.state.mode,
       profile: runConsole?.state.profile,
       selectedAgentSlugs: [...(runConsole?.state.selectedAgentSlugs ?? [])].sort(),
-      providerPreset: runConsole?.state.providerPreset,
-      modelProvider: runConsole?.state.providerPreset === 'direct-model' ? runConsole?.state.modelProvider ?? 'openrouter' : null,
-      modelId: runConsole?.state.providerPreset === 'direct-model' ? runConsole?.state.modelId ?? '' : null,
-      fallbackProvider: runConsole?.state.providerPreset === 'openrouter-free' ? runConsole?.state.fallbackProvider ?? 'openrouter' : null,
-      fallbackModel: runConsole?.state.providerPreset === 'openrouter-free' ? runConsole?.state.fallbackModel ?? '' : null,
+      modelId: runConsole?.state.modelId ?? '',
     }),
     [runConsole],
   );
@@ -291,9 +290,13 @@ export default function RunConsolePanel() {
     [selectedAgents],
   );
 
-  const draftSummary = useMemo(() => {
-    const selected = selectedAgentLabels.length > 0 ? selectedAgentLabels.join(', ') : 'no agents selected';
-    return `${modeLabel(mode)} · ${profileLabel(profile)} · ${selected} · ${providerLabel(draftConfig)}`;
+  const runBrief = useMemo(() => {
+    const selected = selectedAgentLabels.length > 0 ? selectedAgentLabels.join(', ') : 'No agents selected';
+    return {
+      setup: runModeSummary(mode, profile),
+      agents: `Agents in this run: ${selected}.`,
+      models: providerSummary(draftConfig),
+    };
   }, [draftConfig, mode, profile, selectedAgentLabels]);
 
   const primaryButtonLabel = useMemo(() => {
@@ -316,11 +319,10 @@ export default function RunConsolePanel() {
         mode,
         profile,
         selectedAgentSlugs: selectedAgents,
-        providerPreset,
-        modelProvider: providerPreset === 'direct-model' ? modelProvider : undefined,
-        modelId: providerPreset === 'direct-model' ? modelId.trim() || undefined : undefined,
-        fallbackProvider: providerPreset === 'openrouter-free' ? fallbackProvider : undefined,
-        fallbackModel: providerPreset === 'openrouter-free' ? fallbackModel.trim() || undefined : undefined,
+        providerPreset: 'openrouter-free',
+        modelId: modelId.trim() || undefined,
+        fallbackProvider: 'openrouter',
+        fallbackModel: 'google/gemini-2.5-flash',
       });
       await startAutoRun({ stepBatchSize: 1 });
     } finally {
@@ -355,40 +357,20 @@ export default function RunConsolePanel() {
           </div>
 
           <div>
-            <div style={FIELD_LABEL_STYLE}>Models</div>
-            <select value={providerPreset} onChange={(event) => setProviderPreset(event.target.value)} style={INPUT_STYLE}>
-              <option value="keep">Keep existing models</option>
-              <option value="openrouter-free">Use OpenRouter free</option>
-              <option value="direct-model">Use a specific model</option>
+            <div style={FIELD_LABEL_STYLE}>Model</div>
+            <select value={modelId} onChange={(event) => setModelId(event.target.value)} style={INPUT_STYLE}>
+              {openRouterModels.map((entry) => (
+                <option key={entry.id} value={entry.id}>
+                  {entry.name} ({entry.contextLength.toLocaleString()} ctx)
+                </option>
+              ))}
             </select>
           </div>
         </div>
 
-        {providerPreset === 'direct-model' && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginTop: 12 }}>
-            <div>
-              <div style={FIELD_LABEL_STYLE}>Model provider</div>
-              <input value={modelProvider} onChange={(event) => setModelProvider(event.target.value)} style={INPUT_STYLE} placeholder="openrouter" />
-            </div>
-            <div>
-              <div style={FIELD_LABEL_STYLE}>Model id</div>
-              <input value={modelId} onChange={(event) => setModelId(event.target.value)} style={INPUT_STYLE} placeholder="stepfun/step-3.5-flash:free" />
-            </div>
-          </div>
-        )}
-
-        {providerPreset === 'openrouter-free' && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginTop: 12 }}>
-            <div>
-              <div style={FIELD_LABEL_STYLE}>Fallback provider</div>
-              <input value={fallbackProvider} onChange={(event) => setFallbackProvider(event.target.value)} style={INPUT_STYLE} placeholder="openrouter" />
-            </div>
-            <div>
-              <div style={FIELD_LABEL_STYLE}>Fallback model</div>
-              <input value={fallbackModel} onChange={(event) => setFallbackModel(event.target.value)} style={INPUT_STYLE} placeholder="google/gemini-2.5-flash" />
-            </div>
-          </div>
-        )}
+        <div style={{ marginTop: 10, fontSize: 11, color: '#64748b' }}>
+          If the selected free model fails, the run falls back automatically to <span style={{ color: '#cbd5e1' }}>openrouter: google/gemini-2.5-flash</span>.
+        </div>
 
         <div style={{ marginTop: 12 }}>
           <div style={FIELD_LABEL_STYLE}>Agents in this run</div>
@@ -419,7 +401,9 @@ export default function RunConsolePanel() {
 
         <div style={SUMMARY_STYLE}>
           <div style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Next run</div>
-          <div style={{ fontSize: 13, color: '#dbeafe', marginTop: 5 }}>{draftSummary}</div>
+          <div style={{ fontSize: 13, color: '#dbeafe', marginTop: 5 }}>{runBrief.setup}</div>
+          <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>{runBrief.agents}</div>
+          <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>{runBrief.models}</div>
           <div style={{ fontSize: 12, color: hasDraftChanges ? '#fdba74' : '#64748b', marginTop: 6 }}>
             {hasDraftChanges ? 'Changed from the currently applied setup.' : 'Matches the currently applied setup.'}
           </div>

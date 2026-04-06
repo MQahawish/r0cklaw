@@ -7,7 +7,7 @@ import { internalMutation } from '../_generated/server';
 import { canonicalizeItemQuantities, demandPressureForItem } from './economy';
 
 // Base prices and village-wide supply thresholds
-const ITEM_CONFIG: Record<string, { basePrice: number; criticalSupply: number; moderateSupply: number }> = {
+export const ITEM_CONFIG: Record<string, { basePrice: number; criticalSupply: number; moderateSupply: number }> = {
   iron_ore:  { basePrice: 6,  criticalSupply: 5,  moderateSupply: 15 },
   coal:      { basePrice: 4,  criticalSupply: 8,  moderateSupply: 20 },
   grain:     { basePrice: 8,  criticalSupply: 10, moderateSupply: 30 },

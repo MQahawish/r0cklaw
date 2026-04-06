@@ -22,6 +22,8 @@ source "$SCRIPT_DIR/provider-env.sh"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/agent-process.sh"
 
+"$SCRIPT_DIR/sync-openrouter-default-models.sh"
+
 echo "Starting all Rocklaw agents..."
 echo ""
 

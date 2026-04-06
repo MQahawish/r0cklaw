@@ -10,6 +10,8 @@
 import { v } from 'convex/values';
 import { query } from '../_generated/server';
 import { describeBusyStatus } from './actionTiming';
+import { canonicalizeItemQuantities, demandPressureForItem } from './economy';
+import { ITEM_CONFIG } from './priceEngine';
 
 export type AgentFileEntry = {
   label: string;
@@ -609,6 +611,20 @@ export type ItemPriceHistory = {
   history: PricePoint[]; // newest last
 };
 
+export type EconomyDiagnostic = {
+  item: string;
+  price: number;
+  basePrice: number;
+  shortageLevel: 'none' | 'moderate' | 'critical';
+  agentSupply: number;
+  placeSupply: number;
+  totalSupply: number;
+  criticalSupply: number;
+  moderateSupply: number;
+  demandMultiplier: number;
+  reasons: string[];
+};
+
 export const getPriceHistory = query({
   args: { ticks: v.optional(v.number()) },
   handler: async (ctx, { ticks = 50 }): Promise<ItemPriceHistory[]> => {
@@ -644,5 +660,100 @@ export const getPriceHistory = query({
       basePrice: basePriceMap.get(item) ?? 0,
       history,
     }));
+  },
+});
+
+export const getEconomyDiagnostics = query({
+  args: {},
+  handler: async (ctx): Promise<EconomyDiagnostic[]> => {
+    const agents = await ctx.db.query('rl_agents').collect();
+    const placeStocks = await ctx.db.query('rl_place_stocks').collect();
+    const events = await ctx.db
+      .query('rl_world_events')
+      .withIndex('active', (q) => q.eq('active', true))
+      .collect();
+    const marketPrices = await ctx.db.query('rl_market_prices').collect();
+    const priceByItem = new Map(marketPrices.map((entry) => [entry.item, entry]));
+
+    const totalHunger = agents.reduce((sum, agent) => sum + agent.hunger, 0);
+    const lowHealthAgents = agents.filter((agent) => agent.health < 70).length;
+    const blacksmiths = agents.filter((agent) => agent.role === 'Blacksmith').length;
+    const innkeepers = agents.filter((agent) => agent.role === 'Innkeeper').length;
+
+    return Object.entries(ITEM_CONFIG).map(([item, config]) => {
+      const agentSupply = agents.reduce((sum, agent) => {
+        const inventory = canonicalizeItemQuantities(JSON.parse(agent.inventory) as Record<string, number>);
+        return sum + (inventory[item] ?? 0);
+      }, 0);
+      const placeSupply = placeStocks.reduce((sum, stock) => (
+        stock.item === item ? sum + stock.quantity : sum
+      ), 0);
+      const totalSupply = agentSupply + placeSupply;
+      const market = priceByItem.get(item);
+      const shortageLevel = market?.shortageLevel ?? 'none';
+      const demandMultiplier = demandPressureForItem(item, agents, events);
+      const reasons: string[] = [];
+
+      if (totalSupply <= config.criticalSupply) {
+        reasons.push(`Supply is at ${totalSupply}, below the critical threshold of ${config.criticalSupply}.`);
+      } else if (totalSupply <= config.moderateSupply) {
+        reasons.push(`Supply is at ${totalSupply}, inside the shortage band up to ${config.moderateSupply}.`);
+      } else {
+        reasons.push(`Supply is at ${totalSupply}, above the shortage thresholds.`);
+      }
+
+      if (agentSupply === 0 && placeSupply > 0) {
+        reasons.push(`All remaining stock is in market/storage listings (${placeSupply}); agents hold none directly.`);
+      } else if (placeSupply === 0 && agentSupply > 0) {
+        reasons.push(`No market stock is listed; the remaining ${agentSupply} units are held only by agents.`);
+      } else if (placeSupply === 0 && agentSupply === 0) {
+        reasons.push('There is no listed or carried supply anywhere in the village.');
+      }
+
+      if (demandMultiplier > 1.05) {
+        reasons.push(`Demand pressure is ${demandMultiplier.toFixed(2)}x base.`);
+      }
+
+      if ((item === 'bread' || item === 'meal' || item === 'grain' || item === 'vegetable') && totalHunger > 0) {
+        reasons.push(`Village hunger is ${totalHunger}, pushing food demand upward.`);
+      }
+      if ((item === 'medicine' || item === 'herb') && lowHealthAgents > 0) {
+        reasons.push(`${lowHealthAgents} agent${lowHealthAgents === 1 ? '' : 's'} are below 70 health, increasing medical demand.`);
+      }
+      if ((item === 'iron_ore' || item === 'coal' || item === 'tool' || item === 'horseshoe' || item === 'knife') && blacksmiths > 0) {
+        reasons.push(`${blacksmiths} blacksmith demand source${blacksmiths === 1 ? '' : 's'} depend on this supply chain.`);
+      }
+      if ((item === 'bread' || item === 'ale' || item === 'meal') && innkeepers > 0) {
+        reasons.push(`${innkeepers} innkeeper demand source${innkeepers === 1 ? '' : 's'} increase hospitality demand.`);
+      }
+
+      const matchingEvents = events.filter((event) => {
+        const description = event.description.toLowerCase();
+        if ((item === 'grain' || item === 'bread' || item === 'meal') && /drought|famine|hunger/.test(description)) {
+          return true;
+        }
+        if ((item === 'medicine' || item === 'herb') && /illness|plague|sick|fever/.test(description)) {
+          return true;
+        }
+        return false;
+      });
+      for (const event of matchingEvents.slice(0, 2)) {
+        reasons.push(`Active ${event.severity} event: ${event.description}`);
+      }
+
+      return {
+        item,
+        price: market?.price ?? config.basePrice,
+        basePrice: market?.basePrice ?? config.basePrice,
+        shortageLevel,
+        agentSupply,
+        placeSupply,
+        totalSupply,
+        criticalSupply: config.criticalSupply,
+        moderateSupply: config.moderateSupply,
+        demandMultiplier,
+        reasons,
+      };
+    });
   },
 });

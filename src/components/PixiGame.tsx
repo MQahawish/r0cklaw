@@ -13,7 +13,7 @@ import { useSendInput } from '../hooks/sendInput.ts';
 import { toastOnError } from '../toasts.ts';
 import { DebugPath } from './DebugPath.tsx';
 import { PositionIndicator } from './PositionIndicator.tsx';
-import { SHOW_DEBUG_UI } from './Game.tsx';
+import { SHOW_DEBUG_UI } from './gameDebug.ts';
 import { ServerGame } from '../hooks/serverGame.ts';
 import { RocklawMapOverlay } from './RocklawMapOverlay.tsx';
 

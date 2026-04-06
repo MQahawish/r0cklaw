@@ -33,10 +33,6 @@ wait_for_url() {
   exit 1
 }
 
-is_frontend_ready() {
-  curl -fsS "http://127.0.0.1:5173/ai-town" >/dev/null 2>&1
-}
-
 ensure_port_free() {
   local port=$1
   local pids
@@ -118,6 +114,7 @@ if [[ "$missing_credentials" -ne 0 ]]; then
 fi
 
 echo "[1/6] Starting self-hosted Convex backend..."
+docker compose stop frontend >/dev/null 2>&1 || true
 docker compose up -d backend dashboard
 wait_for_url "http://127.0.0.1:3210/version"
 "$SCRIPT_DIR/sync-convex-env.sh"
@@ -150,6 +147,7 @@ npx convex run rocklaw/init:setWorkspaceRoot "{\"rootPath\":\"$ROOT_DIR\"}" >/de
 
 echo "[4/6] Stopping Rocklaw simulation..."
 npx convex run rocklaw/god:stopSim >/dev/null 2>&1 || true
+npx convex run testing:stop >/dev/null 2>&1 || true
 if [[ "$AUTO_START_SIM" -eq 1 ]]; then
   echo "        Auto-start enabled; restarting Rocklaw simulation..."
   npx convex run rocklaw/god:startSim >/dev/null
@@ -164,10 +162,5 @@ echo "Mode:     $RESET_MODE"
 echo "Profile:  $([[ "$PROFILE" == "--blank-self" ]] && echo blank-self || echo seeded)"
 echo "Sim:      $([[ "$AUTO_START_SIM" -eq 1 ]] && echo auto-start || echo stopped)"
 echo ""
-
-if is_frontend_ready; then
-  echo "Frontend on 5173 is already running; reusing existing dev server."
-  exec npm run dev:backend
-fi
 
 exec npx concurrently "npm run dev:backend" "bash $SCRIPT_DIR/start-rocklaw-frontend.sh 5173 127.0.0.1"

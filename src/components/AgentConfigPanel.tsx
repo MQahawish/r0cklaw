@@ -9,7 +9,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery, useMutation, useAction } from 'convex/react';
+import { useQuery, useAction } from 'convex/react';
 import { api } from '../../convex/_generated/api';
 
 const PROVIDER_OPTIONS = [
@@ -135,7 +135,7 @@ function AgentRow({
           <RepBadge score={repScore} />
           {agent.paused && (
             <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: 3, background: '#7c3aed22', color: '#a78bfa' }}>
-              paused
+              excluded
             </span>
           )}
           <span
@@ -177,31 +177,79 @@ function AgentRow({
   );
 }
 
-function AgentDetail({ agentName, repByAgent }: { agentName: string; repByAgent: Record<string, number> }) {
+function AgentDetail({
+  agentName,
+  repByAgent,
+}: {
+  agentName: string;
+  repByAgent: Record<string, number>;
+}) {
   const detail = useQuery(api.rocklaw.god.getAgentDetail, { agentName });
-  const pauseAgent = useMutation(api.rocklaw.god.pauseAgent);
-  const resumeAgent = useMutation(api.rocklaw.god.resumeAgent);
   const setAgentModel = useAction(api.rocklaw.godNode.setAgentModel);
+  const getAgentConfigDefaults = useAction(api.rocklaw.godNode.getAgentConfigDefaults);
+  const listOpenRouterRecommendedModels = useAction(api.rocklaw.godNode.listOpenRouterRecommendedModels);
 
   const [providerInput, setProviderInput] = useState('openrouter');
   const [modelChoice, setModelChoice] = useState('');
   const [customProviderInput, setCustomProviderInput] = useState('');
   const [customModelInput, setCustomModelInput] = useState('');
   const [saving, setSaving] = useState(false);
+  const [configDefaults, setConfigDefaults] = useState<{ defaultProvider: string | null; defaultModel: string | null } | null>(null);
+  const [openRouterOptions, setOpenRouterOptions] = useState<{ value: string; label: string }[] | null>(null);
 
   const modelOptions = useMemo(
-    () => MODEL_OPTIONS_BY_PROVIDER[providerInput] ?? MODEL_OPTIONS_BY_PROVIDER.custom,
-    [providerInput],
+    () =>
+      providerInput === 'openrouter' && openRouterOptions
+        ? [...openRouterOptions, { value: 'custom', label: 'Custom model id' }]
+        : MODEL_OPTIONS_BY_PROVIDER[providerInput] ?? MODEL_OPTIONS_BY_PROVIDER.custom,
+    [openRouterOptions, providerInput],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    void getAgentConfigDefaults({ agentName }).then((defaults) => {
+      if (!cancelled) {
+        setConfigDefaults(defaults);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentName, getAgentConfigDefaults]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listOpenRouterRecommendedModels({ topN: 24 })
+      .then((result) => {
+        if (cancelled) return;
+        setOpenRouterOptions(
+          result.ranked.map((entry: { id: string; name: string; contextLength: number }) => ({
+            value: entry.id,
+            label: `${entry.name} (${entry.contextLength.toLocaleString()} ctx)`,
+          })),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setOpenRouterOptions(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [listOpenRouterRecommendedModels]);
 
   useEffect(() => {
     if (!detail) return;
     const { agent } = detail;
-    const currentProvider = agent.providerOverride ?? 'openrouter';
+    const currentProvider = agent.providerOverride ?? configDefaults?.defaultProvider ?? 'openrouter';
     const providerOptionExists = PROVIDER_OPTIONS.some((option) => option.value === currentProvider);
     const nextProvider = providerOptionExists ? currentProvider : 'custom';
-    const currentModel = agent.modelOverride ?? '';
-    const currentOptions = MODEL_OPTIONS_BY_PROVIDER[nextProvider] ?? MODEL_OPTIONS_BY_PROVIDER.custom;
+    const currentModel = agent.modelOverride ?? configDefaults?.defaultModel ?? '';
+    const currentOptions =
+      nextProvider === 'openrouter' && openRouterOptions
+        ? [...openRouterOptions, { value: 'custom', label: 'Custom model id' }]
+        : MODEL_OPTIONS_BY_PROVIDER[nextProvider] ?? MODEL_OPTIONS_BY_PROVIDER.custom;
     const modelOptionExists = currentOptions.some((option) => option.value === currentModel);
 
     setProviderInput(nextProvider);
@@ -218,7 +266,7 @@ function AgentDetail({ agentName, repByAgent }: { agentName: string; repByAgent:
       setModelChoice('custom');
       setCustomModelInput(currentModel);
     }
-  }, [detail, agentName]);
+  }, [detail, configDefaults, openRouterOptions]);
 
   if (!detail) {
     return <div style={{ color: '#6b7280', fontSize: 12 }}>Loading...</div>;
@@ -228,6 +276,10 @@ function AgentDetail({ agentName, repByAgent }: { agentName: string; repByAgent:
   const incidents: { tick: number; note: string }[] = rep
     ? JSON.parse(rep.recentIncidents)
     : [];
+  const effectiveProvider = agent.providerOverride ?? configDefaults?.defaultProvider ?? 'openrouter';
+  const effectiveModel = agent.modelOverride ?? configDefaults?.defaultModel ?? 'unknown';
+  const providerSource = agent.providerOverride ? 'override' : 'config';
+  const modelSource = agent.modelOverride ? 'override' : 'config';
 
   const resolvedProvider = providerInput === 'custom' ? customProviderInput.trim() : providerInput;
   const resolvedModel = modelChoice === 'custom' ? customModelInput.trim() : modelChoice;
@@ -259,17 +311,6 @@ function AgentDetail({ agentName, repByAgent }: { agentName: string; repByAgent:
           <span style={{ fontSize: 15, fontWeight: 700, color: '#f9fafb' }}>{agent.name}</span>
           <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 8 }}>{agent.role}</span>
         </div>
-        <button
-          onClick={() => agent.paused ? resumeAgent({ agentName }) : pauseAgent({ agentName })}
-          style={{
-            fontSize: 12, padding: '4px 12px', borderRadius: 4, cursor: 'pointer', fontWeight: 600,
-            background: agent.paused ? '#14532d' : '#7f1d1d',
-            color: agent.paused ? '#86efac' : '#fca5a5',
-            border: `1px solid ${agent.paused ? '#22c55e44' : '#ef444444'}`,
-          }}
-        >
-          {agent.paused ? '▶ Resume' : '⏸ Pause'}
-        </button>
       </div>
 
       {/* Config fields */}
@@ -281,9 +322,15 @@ function AgentDetail({ agentName, repByAgent }: { agentName: string; repByAgent:
           <span style={{ color: '#6b7280' }}>Port</span>
           <span style={{ color: '#93c5fd', fontFamily: 'monospace' }}>{agent.gatewayPort}</span>
           <span style={{ color: '#6b7280' }}>Model</span>
-          <span style={{ color: '#e5e7eb', fontFamily: 'monospace' }}>{agent.modelOverride ?? <em style={{ color: '#4b5563' }}>default</em>}</span>
+          <span style={{ color: '#e5e7eb', fontFamily: 'monospace' }}>
+            {effectiveModel}
+            <span style={{ color: '#6b7280', marginLeft: 6, fontFamily: 'inherit' }}>({modelSource})</span>
+          </span>
           <span style={{ color: '#6b7280' }}>Provider</span>
-          <span style={{ color: '#e5e7eb', fontFamily: 'monospace' }}>{agent.providerOverride ?? <em style={{ color: '#4b5563' }}>default</em>}</span>
+          <span style={{ color: '#e5e7eb', fontFamily: 'monospace' }}>
+            {effectiveProvider}
+            <span style={{ color: '#6b7280', marginLeft: 6, fontFamily: 'inherit' }}>({providerSource})</span>
+          </span>
         </div>
         <div style={{ display: 'grid', gap: 8, marginTop: 4 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '130px minmax(0, 1fr) auto', gap: 6 }}>
