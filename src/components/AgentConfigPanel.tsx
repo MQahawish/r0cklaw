@@ -449,7 +449,7 @@ function AgentDetail({
           {modelChoice === 'custom' && (
             <input
               value={customModelInput}
-              onChange={(e) => setCustomModelInput(e.target.value)}
+              onChange={(e) => { setCustomModelInput(e.target.value); setTestResult(null); }}
               placeholder="Custom model id"
               style={INPUT_STYLE}
             />
