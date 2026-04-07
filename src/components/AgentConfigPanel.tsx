@@ -36,8 +36,9 @@ const MODEL_OPTIONS_BY_PROVIDER: Record<string, { value: string; label: string }
     { value: 'custom', label: 'Custom model id' },
   ],
   anthropic: [
-    { value: 'claude-3-5-sonnet', label: 'Claude 3.5 Sonnet' },
-    { value: 'claude-3-7-sonnet', label: 'Claude 3.7 Sonnet' },
+    { value: 'claude-opus-4-6',   label: 'Claude Opus 4.6'   },
+    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+    { value: 'claude-haiku-4-5',  label: 'Claude Haiku 4.5'  },
     { value: 'custom', label: 'Custom model id' },
   ],
   google: [
