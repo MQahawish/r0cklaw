@@ -17,6 +17,12 @@ export type ViewportProps = {
   children?: ReactNode;
 };
 
+function fitScale(props: Pick<ViewportProps, 'screenWidth' | 'screenHeight' | 'worldWidth' | 'worldHeight'>) {
+  const xScale = props.screenWidth / Math.max(1, props.worldWidth);
+  const yScale = props.screenHeight / Math.max(1, props.worldHeight);
+  return Math.min(xScale, yScale) * 0.94;
+}
+
 // https://davidfig.github.io/pixi-viewport/jsdoc/Viewport.html
 export default PixiComponent('Viewport', {
   create(props: ViewportProps) {
@@ -37,11 +43,11 @@ export default PixiComponent('Viewport', {
       .wheel()
       .decelerate()
       .clamp({ direction: 'all', underflow: 'center' })
-      .setZoom(-10)
       .clampZoom({
-        minScale: (1.04 * props.screenWidth) / (props.worldWidth / 2),
+        minScale: fitScale(props),
         maxScale: 3.0,
       });
+    viewport.fitWorld(true);
     return viewport;
   },
   applyProps(viewport, oldProps: any, newProps: any) {
@@ -52,5 +58,17 @@ export default PixiComponent('Viewport', {
         viewport[p] = newProps[p];
       }
     });
+    if (
+      oldProps.screenWidth !== newProps.screenWidth
+      || oldProps.screenHeight !== newProps.screenHeight
+      || oldProps.worldWidth !== newProps.worldWidth
+      || oldProps.worldHeight !== newProps.worldHeight
+    ) {
+      viewport.clampZoom({
+        minScale: fitScale(newProps),
+        maxScale: 3.0,
+      });
+      viewport.fitWorld(true);
+    }
   },
 });

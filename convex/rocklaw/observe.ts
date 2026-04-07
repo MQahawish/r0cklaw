@@ -11,7 +11,15 @@ import { v } from 'convex/values';
 import { query } from '../_generated/server';
 import { describeBusyStatus } from './actionTiming';
 import { canonicalizeItemQuantities, demandPressureForItem } from './economy';
+import {
+  RocklawLiveActionState,
+  RocklawLiveMoveState,
+  RocklawLiveSnapshot,
+  ROCKLAW_AGENT_SPRITES,
+  ROCKLAW_LIVE_TICK_INTERVAL_MS,
+} from './liveScene';
 import { ITEM_CONFIG } from './priceEngine';
+import { getPlaceGraph } from './mapLayout';
 
 export type AgentFileEntry = {
   label: string;
@@ -52,6 +60,48 @@ function parsePendingActionLabel(agent: any): string | null {
   } catch {
     return `busy until tick ${agent.busyUntilTick}`;
   }
+}
+
+function parsePendingAction(agent: any): Record<string, unknown> | null {
+  if (typeof agent.pendingActionJson !== 'string') return null;
+  try {
+    return JSON.parse(agent.pendingActionJson) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function toActionState(entry: any): RocklawLiveActionState {
+  return {
+    action: entry.action,
+    target: entry.target ?? null,
+    location: entry.location ?? null,
+    message: entry.message ?? null,
+    outcome: entry.outcome ?? null,
+    outcomeNote: entry.outcomeNote ?? null,
+  };
+}
+
+function inferMoveState(agent: any, pendingAction: Record<string, unknown> | null): RocklawLiveMoveState | null {
+  if (!agent.busy || !pendingAction || pendingAction.action !== 'move') return null;
+  const target = typeof pendingAction.location === 'string'
+    ? pendingAction.location
+    : typeof pendingAction.target === 'string'
+      ? pendingAction.target
+      : null;
+  if (
+    !target
+    || typeof agent.pendingActionStartedTick !== 'number'
+    || typeof agent.busyUntilTick !== 'number'
+  ) {
+    return null;
+  }
+  return {
+    fromLocationId: agent.location,
+    toLocationId: target,
+    startedTick: agent.pendingActionStartedTick,
+    endsTick: agent.busyUntilTick,
+  };
 }
 
 function createSceneThreadKey(scene: { agentA: string; agentB: string }) {
@@ -189,6 +239,89 @@ export const getFrontendWorld = query({
       liveScenes,
       recentActions,
       recentTransactions,
+    };
+  },
+});
+
+export const getLiveSnapshot = query({
+  args: {},
+  handler: async (ctx): Promise<RocklawLiveSnapshot> => {
+    const worldState = await ctx.db.query('rl_world_state').unique();
+    const agents = await ctx.db.query('rl_agents').collect();
+    const actions = await ctx.db.query('rl_actions_log').collect();
+    const scenes = await ctx.db
+      .query('rl_chat_scenes')
+      .withIndex('status_location', (q) => q.eq('status', 'live'))
+      .collect();
+
+    const liveScenes = await Promise.all(
+      scenes.map(async (scene) => ({
+        sceneId: scene.sceneId,
+        left: scene.agentA,
+        right: scene.agentB,
+        location: scene.location,
+        nextSpeaker: scene.nextSpeaker,
+        recentMessages: await getRenderableSceneMessages(ctx, scene, 3),
+      })),
+    );
+
+    const latestActionByAgent = new Map<string, RocklawLiveActionState>();
+    const recentActions = actions
+      .slice()
+      .sort((a, b) => b.tick - a.tick || b._creationTime - a._creationTime)
+      .map((entry) => {
+        const normalized = toActionState(entry);
+        if (!latestActionByAgent.has(entry.agentName)) {
+          latestActionByAgent.set(entry.agentName, normalized);
+        }
+        return normalized;
+      })
+      .slice(0, 16);
+
+    const scenePartnerByAgent = new Map<string, string>();
+    for (const scene of liveScenes) {
+      scenePartnerByAgent.set(scene.left, scene.right);
+      scenePartnerByAgent.set(scene.right, scene.left);
+    }
+
+    return {
+      tick: worldState?.tick ?? 0,
+      day: worldState?.day ?? 1,
+      timeOfDay: worldState?.timeOfDay ?? 'morning',
+      tickIntervalMs: ROCKLAW_LIVE_TICK_INTERVAL_MS,
+      locations: getPlaceGraph(),
+      agents: agents.map((agent) => {
+        const pendingAction = parsePendingAction(agent);
+        const moveState = inferMoveState(agent, pendingAction);
+        const currentAction =
+          pendingAction && typeof pendingAction.action === 'string'
+            ? toActionState({
+                action: pendingAction.action,
+                target: pendingAction.target,
+                location: pendingAction.location,
+                message: pendingAction.text ?? pendingAction.message,
+                outcome: 'pending',
+                outcomeNote: null,
+              })
+            : latestActionByAgent.get(agent.name) ?? null;
+        return {
+          name: agent.name,
+          role: agent.role,
+          locationId: agent.location,
+          busy: agent.busy,
+          busyLabel: parsePendingActionLabel(agent),
+          coin: agent.coin,
+          energy: agent.energy,
+          health: agent.health,
+          hunger: agent.hunger,
+          spriteKey: ROCKLAW_AGENT_SPRITES[agent.name] ?? 'villager',
+          currentAction,
+          moveState,
+          scenePartner: scenePartnerByAgent.get(agent.name) ?? null,
+        };
+      }),
+      liveScenes,
+      recentActions,
     };
   },
 });
