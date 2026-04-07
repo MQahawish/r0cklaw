@@ -50,6 +50,20 @@ const MODEL_OPTIONS_BY_PROVIDER: Record<string, { value: string; label: string }
   ],
 };
 
+function formatPricing(pricing: { prompt: string; completion: string }): string {
+  const pIn = parseFloat(pricing.prompt);
+  const pOut = parseFloat(pricing.completion);
+  if (pIn === 0 && pOut === 0) return 'free';
+  const fmt = (n: number) => n === 0 ? '$0' : `$${(n * 1_000_000).toFixed(2)}/M`;
+  return `${fmt(pIn)} in · ${fmt(pOut)} out`;
+}
+
+function formatModelLabel(m: { id: string; name: string; contextLength: number; pricing?: { prompt: string; completion: string } }): string {
+  const ctx = m.contextLength > 0 ? ` (${(m.contextLength / 1000).toFixed(0)}k ctx)` : '';
+  const price = m.pricing ? ` · ${formatPricing(m.pricing)}` : '';
+  return `${m.name}${ctx}${price}`;
+}
+
 function repColour(score: number): string {
   if (score >= 70) return '#22c55e';
   if (score >= 40) return '#f97316';
@@ -187,7 +201,7 @@ function AgentDetail({
   const detail = useQuery(api.rocklaw.god.getAgentDetail, { agentName });
   const setAgentModel = useAction(api.rocklaw.godNode.setAgentModel);
   const getAgentConfigDefaults = useAction(api.rocklaw.godNode.getAgentConfigDefaults);
-  const listOpenRouterRecommendedModels = useAction(api.rocklaw.godNode.listOpenRouterRecommendedModels);
+  const listProviderModels = useAction(api.rocklaw.godNode.listProviderModels);
 
   const [providerInput, setProviderInput] = useState('openrouter');
   const [modelChoice, setModelChoice] = useState('');
@@ -195,15 +209,19 @@ function AgentDetail({
   const [customModelInput, setCustomModelInput] = useState('');
   const [saving, setSaving] = useState(false);
   const [configDefaults, setConfigDefaults] = useState<{ defaultProvider: string | null; defaultModel: string | null } | null>(null);
-  const [openRouterOptions, setOpenRouterOptions] = useState<{ value: string; label: string }[] | null>(null);
+  type ProviderModel = { id: string; name: string; contextLength: number; pricing?: { prompt: string; completion: string } };
+  const [allProviderModels, setAllProviderModels] = useState<Record<string, ProviderModel[]>>({});
 
-  const modelOptions = useMemo(
-    () =>
-      providerInput === 'openrouter' && openRouterOptions
-        ? [...openRouterOptions, { value: 'custom', label: 'Custom model id' }]
-        : MODEL_OPTIONS_BY_PROVIDER[providerInput] ?? MODEL_OPTIONS_BY_PROVIDER.custom,
-    [openRouterOptions, providerInput],
-  );
+  const modelOptions = useMemo(() => {
+    const fetched = allProviderModels[providerInput] ?? [];
+    if (fetched.length > 0) {
+      return [
+        ...fetched.map((m) => ({ value: m.id, label: formatModelLabel(m) })),
+        { value: 'custom', label: 'Custom model id' },
+      ];
+    }
+    return MODEL_OPTIONS_BY_PROVIDER[providerInput] ?? MODEL_OPTIONS_BY_PROVIDER.custom;
+  }, [allProviderModels, providerInput]);
 
   useEffect(() => {
     let cancelled = false;
@@ -219,25 +237,23 @@ function AgentDetail({
 
   useEffect(() => {
     let cancelled = false;
-    void listOpenRouterRecommendedModels({ topN: 24 })
-      .then((result) => {
-        if (cancelled) return;
-        setOpenRouterOptions(
-          result.ranked.map((entry: { id: string; name: string; contextLength: number }) => ({
-            value: entry.id,
-            label: `${entry.name} (${entry.contextLength.toLocaleString()} ctx)`,
-          })),
-        );
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setOpenRouterOptions(null);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [listOpenRouterRecommendedModels]);
+    const providers = ['openrouter', 'openai', 'google', 'anthropic'];
+    void Promise.all(
+      providers.map((p) =>
+        listProviderModels({ provider: p })
+          .then((res) => ({ provider: p, models: res.models }))
+          .catch(() => ({ provider: p, models: [] as ProviderModel[] })),
+      ),
+    ).then((results) => {
+      if (cancelled) return;
+      const map: Record<string, ProviderModel[]> = {};
+      for (const { provider, models } of results) {
+        map[provider] = models;
+      }
+      setAllProviderModels(map);
+    });
+    return () => { cancelled = true; };
+  }, [listProviderModels]);
 
   useEffect(() => {
     if (!detail) return;
@@ -247,8 +263,11 @@ function AgentDetail({
     const nextProvider = providerOptionExists ? currentProvider : 'custom';
     const currentModel = agent.modelOverride ?? configDefaults?.defaultModel ?? '';
     const currentOptions =
-      nextProvider === 'openrouter' && openRouterOptions
-        ? [...openRouterOptions, { value: 'custom', label: 'Custom model id' }]
+      nextProvider === 'openrouter' && (allProviderModels.openrouter?.length ?? 0) > 0
+        ? [
+            ...(allProviderModels.openrouter ?? []).map((m: ProviderModel) => ({ value: m.id, label: formatModelLabel(m) })),
+            { value: 'custom', label: 'Custom model id' },
+          ]
         : MODEL_OPTIONS_BY_PROVIDER[nextProvider] ?? MODEL_OPTIONS_BY_PROVIDER.custom;
     const modelOptionExists = currentOptions.some((option) => option.value === currentModel);
 
@@ -266,7 +285,7 @@ function AgentDetail({
       setModelChoice('custom');
       setCustomModelInput(currentModel);
     }
-  }, [detail, configDefaults, openRouterOptions]);
+  }, [detail, configDefaults, allProviderModels]);
 
   if (!detail) {
     return <div style={{ color: '#6b7280', fontSize: 12 }}>Loading...</div>;
