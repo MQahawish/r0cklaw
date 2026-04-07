@@ -50,6 +50,8 @@ const MODEL_OPTIONS_BY_PROVIDER: Record<string, { value: string; label: string }
   ],
 };
 
+type ProviderModel = { id: string; name: string; contextLength: number; pricing?: { prompt: string; completion: string } };
+
 function formatPricing(pricing: { prompt: string; completion: string }): string {
   const pIn = parseFloat(pricing.prompt);
   const pOut = parseFloat(pricing.completion);
@@ -202,14 +204,16 @@ function AgentDetail({
   const setAgentModel = useAction(api.rocklaw.godNode.setAgentModel);
   const getAgentConfigDefaults = useAction(api.rocklaw.godNode.getAgentConfigDefaults);
   const listProviderModels = useAction(api.rocklaw.godNode.listProviderModels);
+  const testModel = useAction(api.rocklaw.godNode.testModel);
 
   const [providerInput, setProviderInput] = useState('openrouter');
   const [modelChoice, setModelChoice] = useState('');
   const [customProviderInput, setCustomProviderInput] = useState('');
   const [customModelInput, setCustomModelInput] = useState('');
   const [saving, setSaving] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; reply?: string; latencyMs: number; error?: string } | null>(null);
+  const [testing, setTesting] = useState(false);
   const [configDefaults, setConfigDefaults] = useState<{ defaultProvider: string | null; defaultModel: string | null } | null>(null);
-  type ProviderModel = { id: string; name: string; contextLength: number; pricing?: { prompt: string; completion: string } };
   const [allProviderModels, setAllProviderModels] = useState<Record<string, ProviderModel[]>>({});
 
   const modelOptions = useMemo(() => {
@@ -321,6 +325,18 @@ function AgentDetail({
     }
   };
 
+  const handleTest = async () => {
+    if (!resolvedModel || !resolvedProvider) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await testModel({ provider: resolvedProvider, modelId: resolvedModel });
+      setTestResult(result);
+    } finally {
+      setTesting(false);
+    }
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
 
@@ -352,13 +368,14 @@ function AgentDetail({
           </span>
         </div>
         <div style={{ display: 'grid', gap: 8, marginTop: 4 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '130px minmax(0, 1fr) auto', gap: 6 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '130px minmax(0, 1fr) auto auto', gap: 6 }}>
             <select
               value={providerInput}
               onChange={(e) => {
                 setProviderInput(e.target.value);
                 setModelChoice('');
                 setCustomModelInput('');
+                setTestResult(null);
               }}
               style={INPUT_STYLE}
             >
@@ -368,7 +385,10 @@ function AgentDetail({
             </select>
             <select
               value={modelChoice}
-              onChange={(e) => setModelChoice(e.target.value)}
+              onChange={(e) => {
+                setModelChoice(e.target.value);
+                setTestResult(null);
+              }}
               style={INPUT_STYLE}
             >
               <option value="">Choose model</option>
@@ -388,7 +408,35 @@ function AgentDetail({
             >
               {saving ? '...' : 'Save'}
             </button>
+            <button
+              onClick={handleTest}
+              disabled={!resolvedModel || testing}
+              style={{
+                fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                cursor: resolvedModel && !testing ? 'pointer' : 'default',
+                background: resolvedModel && !testing ? '#065f46' : '#1f2937',
+                color: resolvedModel && !testing ? '#6ee7b7' : '#4b5563',
+                border: 'none', flexShrink: 0,
+              }}
+            >
+              {testing ? '...' : 'Test'}
+            </button>
           </div>
+          {testResult && (
+            <div style={{
+              fontSize: 11,
+              padding: '4px 8px',
+              borderRadius: 4,
+              background: testResult.ok ? '#052e1622' : '#2d0a0a',
+              border: `1px solid ${testResult.ok ? '#065f46' : '#7f1d1d'}`,
+              color: testResult.ok ? '#6ee7b7' : '#fca5a5',
+              fontFamily: 'ui-monospace, monospace',
+            }}>
+              {testResult.ok
+                ? `✓ "${testResult.reply}" · ${testResult.latencyMs}ms`
+                : `✗ ${testResult.error} · ${testResult.latencyMs}ms`}
+            </div>
+          )}
           {providerInput === 'custom' && (
             <input
               value={customProviderInput}
