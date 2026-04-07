@@ -413,6 +413,96 @@ export const listProviderModels = action({
   },
 });
 
+async function callModelTest(provider: string, modelId: string): Promise<string> {
+  const messages = [{ role: 'user', content: 'Reply with exactly one word: ok' }];
+
+  if (provider === 'openrouter') {
+    const apiKey = process.env.OPENROUTER_API_KEY ?? process.env.ZEROCLAW_API_KEY;
+    if (!apiKey) throw new Error('OPENROUTER_API_KEY not set');
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: modelId, messages, max_tokens: 32 }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const data = await res.json() as any;
+    return String(data?.choices?.[0]?.message?.content ?? '(empty)').trim();
+  }
+
+  if (provider === 'openai') {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) throw new Error('OPENAI_API_KEY not set');
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: modelId, messages, max_tokens: 32 }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const data = await res.json() as any;
+    return String(data?.choices?.[0]?.message?.content ?? '(empty)').trim();
+  }
+
+  if (provider === 'google') {
+    const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
+    if (!apiKey) throw new Error('GEMINI_API_KEY not set');
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: 'Reply with exactly one word: ok' }] }],
+          generationConfig: { maxOutputTokens: 32 },
+        }),
+      },
+    );
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const data = await res.json() as any;
+    return String(data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '(empty)').trim();
+  }
+
+  if (provider === 'anthropic') {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ model: modelId, messages, max_tokens: 32 }),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+    const data = await res.json() as any;
+    return String(data?.content?.[0]?.text ?? '(empty)').trim();
+  }
+
+  throw new Error(`Unknown provider: ${provider}`);
+}
+
+export const testModel = action({
+  args: {
+    provider: v.string(),
+    modelId: v.string(),
+  },
+  handler: async (
+    _ctx,
+    { provider, modelId },
+  ): Promise<{ ok: boolean; reply?: string; latencyMs: number; error?: string }> => {
+    const start = Date.now();
+    try {
+      const reply = await callModelTest(provider, modelId);
+      return { ok: true, reply, latencyMs: Date.now() - start };
+    } catch (e) {
+      return { ok: false, error: String(e), latencyMs: Date.now() - start };
+    }
+  },
+});
+
 export const prepareRunConsole = action({
   args: {
     mode: v.union(v.literal('fresh'), v.literal('continue')),
