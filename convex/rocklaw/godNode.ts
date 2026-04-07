@@ -295,6 +295,124 @@ export const listOpenRouterRecommendedModels = action({
   },
 });
 
+// ─── Multi-provider model listing ────────────────────────────────────────────
+
+type ProviderModel = {
+  id: string;
+  name: string;
+  contextLength: number;
+  pricing?: { prompt: string; completion: string };
+};
+
+const ANTHROPIC_MODELS: ProviderModel[] = [
+  { id: 'claude-opus-4-6',   name: 'Claude Opus 4.6',   contextLength: 200000 },
+  { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', contextLength: 200000 },
+  { id: 'claude-haiku-4-5',  name: 'Claude Haiku 4.5',  contextLength: 200000 },
+];
+
+const OPENAI_FALLBACK_MODELS: ProviderModel[] = [
+  { id: 'gpt-4.1',      name: 'GPT-4.1',      contextLength: 1047576 },
+  { id: 'gpt-4.1-mini', name: 'GPT-4.1 Mini', contextLength: 1047576 },
+  { id: 'o4-mini',      name: 'o4-mini',       contextLength: 200000 },
+  { id: 'o3',           name: 'o3',            contextLength: 200000 },
+];
+
+const GOOGLE_FALLBACK_MODELS: ProviderModel[] = [
+  { id: 'gemini-2.5-pro',   name: 'Gemini 2.5 Pro',   contextLength: 1048576 },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', contextLength: 1048576 },
+];
+
+async function fetchAllOpenRouterModels(topN = 80): Promise<ProviderModel[]> {
+  const response = await fetch('https://openrouter.ai/api/v1/models');
+  if (!response.ok) throw new Error(`OpenRouter fetch failed: ${response.status}`);
+  const payload = await response.json() as any;
+  const models: any[] = Array.isArray(payload?.data) ? payload.data : [];
+  return models
+    .filter((m) =>
+      Array.isArray(m?.supported_parameters) &&
+      m.supported_parameters.includes('tools'))
+    .map((m) => ({
+      id: String(m.id),
+      name: String(m.name ?? m.id),
+      contextLength: (m?.top_provider?.context_length ?? m?.context_length ?? 0) as number,
+      pricing: {
+        prompt: String(m?.pricing?.prompt ?? '0'),
+        completion: String(m?.pricing?.completion ?? '0'),
+      },
+    }))
+    .sort((a, b) => {
+      const aFree = a.pricing!.prompt === '0' && a.pricing!.completion === '0';
+      const bFree = b.pricing!.prompt === '0' && b.pricing!.completion === '0';
+      if (aFree && !bFree) return -1;
+      if (!aFree && bFree) return 1;
+      return b.contextLength - a.contextLength || a.id.localeCompare(b.id);
+    })
+    .slice(0, topN);
+}
+
+async function fetchOpenAIModels(): Promise<ProviderModel[]> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return OPENAI_FALLBACK_MODELS;
+  const response = await fetch('https://api.openai.com/v1/models', {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!response.ok) throw new Error(`OpenAI fetch failed: ${response.status}`);
+  const payload = await response.json() as any;
+  const models: any[] = Array.isArray(payload?.data) ? payload.data : [];
+  const CHAT_PREFIXES = ['gpt-4', 'gpt-3.5-turbo', 'o1', 'o3', 'o4'];
+  const SKIP = ['instruct', 'audio', 'realtime', 'search', 'transcribe', 'tts', 'whisper', 'dall-e', 'embedding', 'babbage', 'davinci', 'ada', 'curie'];
+  return models
+    .filter((m) => {
+      const id = String(m.id);
+      return CHAT_PREFIXES.some((p) => id.startsWith(p)) && !SKIP.some((s) => id.includes(s));
+    })
+    .map((m) => ({ id: String(m.id), name: String(m.id), contextLength: 0 }))
+    .sort((a, b) => b.id.localeCompare(a.id));
+}
+
+async function fetchGoogleModels(): Promise<ProviderModel[]> {
+  const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
+  if (!apiKey) return GOOGLE_FALLBACK_MODELS;
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`
+  );
+  if (!response.ok) throw new Error(`Google fetch failed: ${response.status}`);
+  const payload = await response.json() as any;
+  const models: any[] = Array.isArray(payload?.models) ? payload.models : [];
+  return models
+    .filter((m) =>
+      Array.isArray(m?.supportedGenerationMethods) &&
+      m.supportedGenerationMethods.includes('generateContent') &&
+      String(m.name).includes('gemini'))
+    .map((m) => ({
+      id: String(m.name).replace('models/', ''),
+      name: String(m.displayName ?? m.name),
+      contextLength: (m?.inputTokenLimit ?? 0) as number,
+    }))
+    .sort((a, b) => b.contextLength - a.contextLength || a.id.localeCompare(b.id));
+}
+
+export const listProviderModels = action({
+  args: {
+    provider: v.string(),
+    topN: v.optional(v.number()),
+  },
+  handler: async (_ctx, { provider, topN }): Promise<{ models: ProviderModel[] }> => {
+    switch (provider) {
+      case 'openrouter':
+        return { models: await fetchAllOpenRouterModels(topN ?? 80) };
+      case 'openai':
+        return { models: await fetchOpenAIModels() };
+      case 'google':
+        return { models: await fetchGoogleModels() };
+      case 'anthropic':
+        return { models: ANTHROPIC_MODELS };
+      default:
+        return { models: [] };
+    }
+  },
+});
+
 export const prepareRunConsole = action({
   args: {
     mode: v.union(v.literal('fresh'), v.literal('continue')),
