@@ -324,7 +324,7 @@ const GOOGLE_FALLBACK_MODELS: ProviderModel[] = [
 
 async function fetchAllOpenRouterModels(topN = 80): Promise<ProviderModel[]> {
   const response = await fetch('https://openrouter.ai/api/v1/models');
-  if (!response.ok) throw new Error(`OpenRouter fetch failed: ${response.status}`);
+  if (!response.ok) return [];
   const payload = await response.json() as any;
   const models: any[] = Array.isArray(payload?.data) ? payload.data : [];
   return models
@@ -356,7 +356,7 @@ async function fetchOpenAIModels(): Promise<ProviderModel[]> {
   const response = await fetch('https://api.openai.com/v1/models', {
     headers: { Authorization: `Bearer ${apiKey}` },
   });
-  if (!response.ok) throw new Error(`OpenAI fetch failed: ${response.status}`);
+  if (!response.ok) return OPENAI_FALLBACK_MODELS;
   const payload = await response.json() as any;
   const models: any[] = Array.isArray(payload?.data) ? payload.data : [];
   const CHAT_PREFIXES = ['gpt-4', 'gpt-3.5-turbo', 'o1', 'o3', 'o4'];
@@ -373,10 +373,10 @@ async function fetchOpenAIModels(): Promise<ProviderModel[]> {
 async function fetchGoogleModels(): Promise<ProviderModel[]> {
   const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
   if (!apiKey) return GOOGLE_FALLBACK_MODELS;
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`
-  );
-  if (!response.ok) throw new Error(`Google fetch failed: ${response.status}`);
+  const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+    headers: { 'x-goog-api-key': apiKey },
+  });
+  if (!response.ok) return GOOGLE_FALLBACK_MODELS;
   const payload = await response.json() as any;
   const models: any[] = Array.isArray(payload?.models) ? payload.models : [];
   return models
