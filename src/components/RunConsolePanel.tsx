@@ -164,16 +164,25 @@ export function TickSummaryCard({
                       {entry.outcomeNote && <span style={{ color: '#6b7280', margin: '0 4px' }}> · {trimInline(entry.outcomeNote, 256)}</span>}
                     </div>
                   ))}
-                  {/* Show agents who were busy but didn't have an action record this tick */}
+                  {/* Show all agents in the expanded view for a complete status report */}
                   {(summary.agents ?? [])
-                    .filter((a: any) => a.busy && !actionRows.some((ar: any) => ar.agentName === a.name))
-                    .map((a: any) => (
-                      <div key={`busy-${a.name}`} style={{ fontSize: 12, color: '#94a3b8' }}>
-                        <span style={{ color: '#94a3af', fontWeight: 600 }}>{a.name}</span>
-                        <span style={{ color: '#4b5563', margin: '0 6px' }}>·</span>
-                        <span style={{ color: '#7c3aed', fontSize: 11, fontStyle: 'italic' }}>{a.busyLabel ?? 'busy'}</span>
-                      </div>
-                    ))}
+                    .sort((a: any, b: any) => a.name.localeCompare(b.name))
+                    .map((a: any) => {
+                      const hasAction = actionRows.some((ar: any) => ar.agentName === a.name);
+                      if (hasAction) return null; // Already shown in the actions section above
+                      
+                      return (
+                        <div key={`status-${a.name}`} style={{ fontSize: 12, color: '#94a3b8' }}>
+                          <span style={{ color: '#94a3af', fontWeight: 600 }}>{a.name}</span>
+                          <span style={{ color: '#4b5563', margin: '0 6px' }}>·</span>
+                          {a.busy ? (
+                            <span style={{ color: '#7c3aed', fontSize: 11, fontStyle: 'italic' }}>{a.busyLabel ?? 'busy'}</span>
+                          ) : (
+                            <span style={{ color: '#64748b', fontSize: 11, fontStyle: 'italic' }}>idle</span>
+                          )}
+                        </div>
+                      );
+                    })}
                 </>
               )}
             </div>
