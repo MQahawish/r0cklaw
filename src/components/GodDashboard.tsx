@@ -58,6 +58,18 @@ function StatBar({ value, inverted = false }: { value: number; inverted?: boolea
 
 // ── Agent card ────────────────────────────────────────────────────────────────
 
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function formatCostUsd(usd: number): string {
+  if (usd === 0) return '$0.000';
+  if (usd < 0.001) return `$${usd.toFixed(5)}`;
+  return `$${usd.toFixed(3)}`;
+}
+
 function repColour(score: number): string {
   if (score >= 70) return '#22c55e';
   if (score >= 40) return '#f97316';
@@ -128,6 +140,16 @@ function AgentCard({ agent, repScore }: { agent: any; repScore?: number }) {
           <span style={{ marginLeft: 8, color: '#a78bfa' }}>busy until tick {agent.busyUntilTick}</span>
         )}
       </div>
+      {((agent.lifetimeInputTokens ?? 0) > 0 || (agent.lifetimeOutputTokens ?? 0) > 0) && (
+        <div style={{ marginTop: 4, fontSize: 11, color: '#6b7280', fontFamily: 'ui-monospace, monospace' }}>
+          {formatTokenCount(agent.lifetimeInputTokens ?? 0)} in
+          {' / '}
+          {formatTokenCount(agent.lifetimeOutputTokens ?? 0)} out
+          {(agent.lifetimeCostUsd ?? 0) > 0 && (
+            <span style={{ color: '#fde68a', marginLeft: 8 }}>{formatCostUsd(agent.lifetimeCostUsd ?? 0)}</span>
+          )}
+        </div>
+      )}
       {expanded && (
         <div style={{ marginTop: 8, borderTop: '1px solid #374151', paddingTop: 8 }}>
           <div style={{ fontSize: 11, color: '#9ca3af' }}>

@@ -13,6 +13,18 @@ const AGENT_OPTIONS = [
 type RunMode = 'fresh' | 'continue';
 type RunProfile = 'blank-self' | 'seeded';
 
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function formatCostUsd(usd: number): string {
+  if (usd === 0) return '$0.000';
+  if (usd < 0.001) return `$${usd.toFixed(5)}`;
+  return `$${usd.toFixed(3)}`;
+}
+
 function trimInline(text: string | null | undefined, max = 84) {
   const compact = String(text ?? '').replace(/\s+/g, ' ').trim();
   if (!compact) return '';
@@ -38,9 +50,19 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 }
 
 function providerSummary(config: {
-  modelId?: string | null;
+  selectedAgentConfigs: Array<{
+    slug: string;
+    agentName: string;
+    effectiveProvider: string;
+    effectiveModel: string;
+    providerSource: string;
+    modelSource: string;
+  }>;
 }) {
-  return `All selected agents will start on ${config.modelId || 'the recommended free OpenRouter model'}. Fallback stays fixed on openrouter / google/gemini-2.5-flash.`;
+  if (config.selectedAgentConfigs.length === 0) {
+    return 'No agents selected.';
+  }
+  return 'Agent models come from the Agents tab. The next run will use the provider/model currently configured for each selected agent.';
 }
 
 function runModeSummary(mode: RunMode, profile: RunProfile) {
@@ -223,43 +245,48 @@ export function TickSummaryCard({
 
 export default function RunConsolePanel() {
   const runConsole = useQuery(api.rocklaw.god.getRunConsole);
+  const dashboard = useQuery(api.rocklaw.god.getDashboard);
   const prepareRun = useAction(api.rocklaw.godNode.prepareRunConsole);
-  const listOpenRouterRecommendedModels = useAction(api.rocklaw.godNode.listOpenRouterRecommendedModels);
+  const getRunAgentConfigs = useAction(api.rocklaw.godNode.getRunAgentConfigs);
   const startAutoRun = useMutation(api.rocklaw.god.startRunAuto);
   const stopAutoRun = useMutation(api.rocklaw.god.stopRunAuto);
 
   const [mode, setMode] = useState<RunMode>('fresh');
   const [profile, setProfile] = useState<RunProfile>('blank-self');
   const [selectedAgents, setSelectedAgents] = useState<string[]>(AGENT_OPTIONS.map((entry) => entry.slug));
-  const [modelId, setModelId] = useState('');
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [openRouterModels, setOpenRouterModels] = useState<Array<{ id: string; name: string; contextLength: number }>>([]);
+  const [runAgentConfigs, setRunAgentConfigs] = useState<Array<{
+    slug: string;
+    agentName: string;
+    effectiveProvider: string;
+    effectiveModel: string;
+    providerSource: string;
+    modelSource: string;
+  }>>([]);
 
   useEffect(() => {
     if (!runConsole) return;
     setMode(runConsole.state.mode);
     setProfile(runConsole.state.profile);
     setSelectedAgents(runConsole.state.selectedAgentSlugs);
-    setModelId(runConsole.state.modelId ?? '');
   }, [runConsole?.state.lastPreparedTick]);
 
   useEffect(() => {
     let cancelled = false;
-    void listOpenRouterRecommendedModels({ topN: 24 })
+    void getRunAgentConfigs({ selectedAgentSlugs: selectedAgents })
       .then((result) => {
         if (cancelled) return;
-        setOpenRouterModels(result.ranked);
-        setModelId((current) => current || result.selected);
+        setRunAgentConfigs(result);
       })
       .catch(() => {
         if (!cancelled) {
-          setOpenRouterModels([]);
+          setRunAgentConfigs([]);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [listOpenRouterRecommendedModels]);
+  }, [getRunAgentConfigs, selectedAgents]);
 
   const tickHistory = useMemo(() => runConsole?.tickHistory ?? [], [runConsole]);
 
@@ -268,9 +295,8 @@ export default function RunConsolePanel() {
       mode,
       profile,
       selectedAgentSlugs: [...selectedAgents].sort(),
-      modelId: modelId.trim(),
     }),
-    [mode, modelId, profile, selectedAgents],
+    [mode, profile, selectedAgents],
   );
 
   const appliedConfig = useMemo(
@@ -278,12 +304,12 @@ export default function RunConsolePanel() {
       mode: runConsole?.state.mode,
       profile: runConsole?.state.profile,
       selectedAgentSlugs: [...(runConsole?.state.selectedAgentSlugs ?? [])].sort(),
-      modelId: runConsole?.state.modelId ?? '',
     }),
     [runConsole],
   );
 
-  const hasDraftChanges = JSON.stringify(draftConfig) !== JSON.stringify(appliedConfig);
+  const hasPreparedRun = runConsole?.state.lastPreparedTick !== undefined;
+  const hasDraftChanges = hasPreparedRun && JSON.stringify(draftConfig) !== JSON.stringify(appliedConfig);
 
   const selectedAgentLabels = useMemo(
     () => AGENT_OPTIONS.filter((entry) => selectedAgents.includes(entry.slug)).map((entry) => entry.label),
@@ -295,9 +321,16 @@ export default function RunConsolePanel() {
     return {
       setup: runModeSummary(mode, profile),
       agents: `Agents in this run: ${selected}.`,
-      models: providerSummary(draftConfig),
+      models: providerSummary({ selectedAgentConfigs: runAgentConfigs }),
     };
-  }, [draftConfig, mode, profile, selectedAgentLabels]);
+  }, [mode, profile, runAgentConfigs, selectedAgentLabels]);
+
+  const sessionCostUsd = runConsole?.state.sessionCostUsd ?? 0;
+  const sessionTotalTokens = useMemo(() => {
+    return (dashboard?.agents ?? []).reduce((sum: number, a: any) => {
+      return sum + (a.lifetimeInputTokens ?? 0) + (a.lifetimeOutputTokens ?? 0);
+    }, 0);
+  }, [dashboard?.agents]);
 
   const primaryButtonLabel = useMemo(() => {
     if (busyAction === 'run') {
@@ -319,10 +352,7 @@ export default function RunConsolePanel() {
         mode,
         profile,
         selectedAgentSlugs: selectedAgents,
-        providerPreset: 'openrouter-free',
-        modelId: modelId.trim() || undefined,
-        fallbackProvider: 'openrouter',
-        fallbackModel: 'google/gemini-2.5-flash',
+        providerPreset: 'keep',
       });
       await startAutoRun({ stepBatchSize: 1 });
     } finally {
@@ -336,6 +366,27 @@ export default function RunConsolePanel() {
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
+      {(sessionCostUsd > 0 || sessionTotalTokens > 0) && (
+        <div style={{
+          background: '#0f1923',
+          border: '1px solid #1e3a2e',
+          borderRadius: 6,
+          padding: '6px 12px',
+          fontSize: 12,
+          color: '#6b7280',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+        }}>
+          <span style={{ color: '#4b5563' }}>Session</span>
+          {sessionTotalTokens > 0 && (
+            <span style={{ color: '#9ca3af' }}>{formatTokenCount(sessionTotalTokens)} tokens</span>
+          )}
+          {sessionCostUsd > 0 && (
+            <span style={{ color: '#fde68a', fontWeight: 600 }}>{formatCostUsd(sessionCostUsd)}</span>
+          )}
+        </div>
+      )}
       <div style={PANEL_STYLE}>
         <SectionLabel>New Run Setup</SectionLabel>
 
@@ -356,20 +407,6 @@ export default function RunConsolePanel() {
             </div>
           </div>
 
-          <div>
-            <div style={FIELD_LABEL_STYLE}>Model</div>
-            <select value={modelId} onChange={(event) => setModelId(event.target.value)} style={INPUT_STYLE}>
-              {openRouterModels.map((entry) => (
-                <option key={entry.id} value={entry.id}>
-                  {entry.name} ({entry.contextLength.toLocaleString()} ctx)
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <div style={{ marginTop: 10, fontSize: 11, color: '#64748b' }}>
-          If the selected free model fails, the run falls back automatically to <span style={{ color: '#cbd5e1' }}>openrouter: google/gemini-2.5-flash</span>.
         </div>
 
         <div style={{ marginTop: 12 }}>
@@ -404,8 +441,41 @@ export default function RunConsolePanel() {
           <div style={{ fontSize: 13, color: '#dbeafe', marginTop: 5 }}>{runBrief.setup}</div>
           <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>{runBrief.agents}</div>
           <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>{runBrief.models}</div>
-          <div style={{ fontSize: 12, color: hasDraftChanges ? '#fdba74' : '#64748b', marginTop: 6 }}>
-            {hasDraftChanges ? 'Changed from the currently applied setup.' : 'Matches the currently applied setup.'}
+          <div style={{ display: 'grid', gap: 6, marginTop: 10 }}>
+            {runAgentConfigs.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#64748b' }}>No selected agent configs available.</div>
+            ) : (
+              runAgentConfigs.map((entry) => (
+                <div
+                  key={entry.slug}
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '96px minmax(0, 1fr)',
+                    gap: 8,
+                    fontSize: 12,
+                    alignItems: 'baseline',
+                  }}
+                >
+                  <div style={{ color: '#cbd5e1', fontWeight: 600 }}>{entry.agentName}</div>
+                  <div style={{ color: '#94a3b8', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace' }}>
+                    {entry.effectiveProvider} / {entry.effectiveModel}
+                    <span style={{ color: '#64748b', fontFamily: 'inherit' }}>
+                      {' '}({entry.providerSource === 'override' || entry.modelSource === 'override' ? 'override' : 'config'})
+                    </span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: '#64748b', marginTop: 10 }}>
+            Change provider/model in the Agents tab. Those settings apply immediately to the agent gateway and are also what the next run will use.
+          </div>
+          <div style={{ fontSize: 12, color: !hasPreparedRun ? '#64748b' : hasDraftChanges ? '#fdba74' : '#64748b', marginTop: 6 }}>
+            {!hasPreparedRun
+              ? 'No prepared run yet.'
+              : hasDraftChanges
+                ? 'Changed from the currently applied setup.'
+                : 'Matches the currently applied setup.'}
           </div>
         </div>
 
@@ -488,18 +558,6 @@ const FIELD_LABEL_STYLE: React.CSSProperties = {
   fontSize: 11,
   color: '#64748b',
   marginBottom: 6,
-};
-
-const INPUT_STYLE: React.CSSProperties = {
-  width: '100%',
-  background: '#1f2937',
-  border: '1px solid #374151',
-  borderRadius: 6,
-  padding: '7px 9px',
-  color: '#e5e7eb',
-  fontSize: 12,
-  fontFamily: 'inherit',
-  boxSizing: 'border-box',
 };
 
 const PRIMARY_BUTTON_STYLE: React.CSSProperties = {
