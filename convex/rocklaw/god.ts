@@ -49,6 +49,7 @@ function defaultRunConsoleState() {
     lastPreparedTick: undefined as number | undefined,
     lastSummaryTick: undefined as number | undefined,
     lastError: undefined as string | undefined,
+    sessionCostUsd: 0,
   };
 }
 
@@ -162,6 +163,7 @@ export const getRunConsole = query({
           lastPreparedTick: stateDoc.lastPreparedTick,
           lastSummaryTick: stateDoc.lastSummaryTick,
           lastError: stateDoc.lastError,
+          sessionCostUsd: stateDoc.sessionCostUsd ?? 0,
         }
       : defaults;
 
@@ -334,6 +336,71 @@ export const _clearRunTickSummaries = internalMutation({
     const entries = await ctx.db.query('rl_run_tick_summaries').collect();
     for (const entry of entries) {
       await ctx.db.delete(entry._id);
+    }
+  },
+});
+
+export const _patchAgentCosts = internalMutation({
+  args: {
+    agentName: v.string(),
+    deltaCostUsd: v.number(),
+    deltaInputTokens: v.number(),
+    deltaOutputTokens: v.number(),
+    newOffset: v.number(),
+  },
+  handler: async (ctx, { agentName, deltaCostUsd, deltaInputTokens, deltaOutputTokens, newOffset }) => {
+    const agent = await ctx.db
+      .query('rl_agents')
+      .withIndex('name', (q) => q.eq('name', agentName))
+      .unique();
+    if (!agent) return;
+    await ctx.db.patch(agent._id, {
+      lifetimeCostUsd: (agent.lifetimeCostUsd ?? 0) + deltaCostUsd,
+      lifetimeInputTokens: (agent.lifetimeInputTokens ?? 0) + deltaInputTokens,
+      lifetimeOutputTokens: (agent.lifetimeOutputTokens ?? 0) + deltaOutputTokens,
+      costsFileOffset: newOffset,
+    });
+    if (deltaCostUsd > 0) {
+      const runState = await ctx.db
+        .query('rl_run_console_state')
+        .withIndex('singletonKey', (q) => q.eq('singletonKey', RUN_CONSOLE_SINGLETON))
+        .unique();
+      if (runState) {
+        await ctx.db.patch(runState._id, {
+          sessionCostUsd: (runState.sessionCostUsd ?? 0) + deltaCostUsd,
+        });
+      }
+    }
+  },
+});
+
+export const _clearAgentCosts = internalMutation({
+  args: {
+    agentUpdates: v.array(v.object({
+      agentName: v.string(),
+      costsFileOffset: v.number(),
+    })),
+  },
+  handler: async (ctx, { agentUpdates }) => {
+    for (const { agentName, costsFileOffset } of agentUpdates) {
+      const agent = await ctx.db
+        .query('rl_agents')
+        .withIndex('name', (q) => q.eq('name', agentName))
+        .unique();
+      if (!agent) continue;
+      await ctx.db.patch(agent._id, {
+        lifetimeCostUsd: 0,
+        lifetimeInputTokens: 0,
+        lifetimeOutputTokens: 0,
+        costsFileOffset,
+      });
+    }
+    const runState = await ctx.db
+      .query('rl_run_console_state')
+      .withIndex('singletonKey', (q) => q.eq('singletonKey', RUN_CONSOLE_SINGLETON))
+      .unique();
+    if (runState) {
+      await ctx.db.patch(runState._id, { sessionCostUsd: 0 });
     }
   },
 });
@@ -621,13 +688,22 @@ export const _patchAgentModel = internalMutation({
     agentName: v.string(),
     modelOverride: v.string(),
     providerOverride: v.optional(v.string()),
+    currentModelPromptPrice: v.optional(v.number()),
+    currentModelCompletionPrice: v.optional(v.number()),
   },
-  handler: async (ctx, { agentName, modelOverride, providerOverride }) => {
+  handler: async (ctx, { agentName, modelOverride, providerOverride, currentModelPromptPrice, currentModelCompletionPrice }) => {
     const agent = await ctx.db
       .query('rl_agents')
       .withIndex('name', (q) => q.eq('name', agentName))
       .unique();
-    if (agent) await ctx.db.patch(agent._id, { modelOverride, providerOverride });
+    if (agent) {
+      await ctx.db.patch(agent._id, {
+        modelOverride,
+        providerOverride,
+        currentModelPromptPrice,
+        currentModelCompletionPrice,
+      });
+    }
   },
 });
 
