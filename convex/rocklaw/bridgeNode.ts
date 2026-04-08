@@ -507,6 +507,13 @@ export const tickAgent = internalAction({
       return;
     }
 
+    // Verify the world is still running before committing (prevent race conditions if another agent paused the sim)
+    const finalWorldState = await ctx.runQuery(internal.rocklaw.engine.getWorldState);
+    if (!finalWorldState?.isRunning && !_manual) {
+      console.log(`[bridge] ${agentName}: sim stopped during LLM call, discarding action`);
+      return;
+    }
+
     const result = await ctx.runMutation(internal.rocklaw.bridge.commitAction, {
       agentName,
       action: JSON.stringify(action),
