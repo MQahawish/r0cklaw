@@ -21,7 +21,7 @@ require_pairing = false
 allow_public_bind = true
 
 [cost]
-enabled = false
+enabled = true
 
 [observability]
 backend = "log"

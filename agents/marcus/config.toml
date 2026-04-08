@@ -1,5 +1,5 @@
 default_provider = "openrouter"
-default_model = "qwen/qwen3.6-plus:free"
+default_model = "nvidia/nemotron-3-super-120b-a12b:free"
 default_temperature = 0.8
 
 [agent]
@@ -21,7 +21,7 @@ require_pairing = false
 allow_public_bind = true
 
 [cost]
-enabled = false
+enabled = true
 
 [observability]
 backend = "log"
