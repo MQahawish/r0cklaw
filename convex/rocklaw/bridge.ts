@@ -29,6 +29,7 @@ import {
 import { describeActionForHumans, getActionDuration } from './actionTiming';
 import { isSleepPeriod, timeOfDayForTick } from './dayCycle';
 import { derivePlaceQuote } from './placeMarkets';
+import { getPlaceLayout } from './mapLayout';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -443,12 +444,10 @@ async function buildPromptActionHints(ctx: any, agentDoc: any, tick?: number): P
   const chatLine = formatPromptHintLine('chat', Array.from(knownTargets).sort((a, b) => a.localeCompare(b)));
   if (chatLine) lines.push(chatLine);
 
-  const locations = await ctx.db.query('rl_locations').collect();
+  const reachableSet = new Set(getPlaceLayout(agentDoc.location).neighbors);
   const moveLine = formatPromptHintLine(
     'move',
-    locations
-      .map((entry: any) => entry.name)
-      .filter((name: string) => name !== agentDoc.location)
+    Array.from(reachableSet)
       .sort((a: string, b: string) => a.localeCompare(b)),
   );
   if (moveLine) lines.push(moveLine);
@@ -1514,7 +1513,23 @@ async function ensurePlaceCounterparty(
 
 async function targetAgentAtSameLocation(ctx: any, actorLocation: string, targetName: string) {
   const trimmedTarget = targetName.trim().toLowerCase();
-  if (trimmedTarget === 'market' || trimmedTarget === 'inn' || trimmedTarget === 'forge' || trimmedTarget === 'farm' || trimmedTarget === 'shrine' || trimmedTarget === 'square' || trimmedTarget === 'gate' || trimmedTarget === 'mine' || trimmedTarget === 'bakery' || trimmedTarget === 'warehouse') {
+  if (
+    trimmedTarget === 'market'
+    || trimmedTarget === 'inn'
+    || trimmedTarget === 'forge'
+    || trimmedTarget === 'farm'
+    || trimmedTarget === 'shrine'
+    || trimmedTarget === 'square'
+    || trimmedTarget === 'gate'
+    || trimmedTarget === 'mine'
+    || trimmedTarget === 'bakery'
+    || trimmedTarget === 'warehouse'
+    || trimmedTarget === 'elena_home'
+    || trimmedTarget === 'marcus_home'
+    || trimmedTarget === 'finn_home'
+    || trimmedTarget === 'lena_home'
+    || trimmedTarget === 'sera_home'
+  ) {
     return {
       ok: false,
       note: `${targetName} is a place, not a trading counterparty. Buy or sell only with a person who is here.`,
@@ -2132,6 +2147,10 @@ async function validateWorldExecution(ctx: any, agentDoc: any, parsed: RocklawAc
       const locationDoc = await resolveLocationName(ctx, destination);
       if (!locationDoc) return { ok: false, note: `Unknown location: ${destination}.` };
       if (locationDoc.name === agentDoc.location) return { ok: false, note: `You are already at ${locationDoc.name}.` };
+      const reachableSet = new Set(getPlaceLayout(agentDoc.location).neighbors);
+      if (!reachableSet.has(locationDoc.name)) {
+        return { ok: false, note: `${locationDoc.name} is not directly reachable from ${agentDoc.location}. Choose one of the reachable places listed in TURN.md.` };
+      }
       return { ok: true, resolvedLocation: locationDoc.name };
     }
     case 'chat': {
@@ -2581,11 +2600,17 @@ async function recordFailedAction(
   day: number,
   failNote: string,
 ) {
+  const moveFromLocation = parsed.action === 'move' ? agentDoc.location : undefined;
+  const moveToLocation = parsed.action === 'move'
+    ? parsed.location ?? parsed.target ?? agentDoc.location
+    : undefined;
   await ctx.db.insert('rl_actions_log', {
     agentName,
     action: parsed.action,
     target: parsed.target ?? parsed.location ?? parsed.item ?? undefined,
     location: agentDoc.location,
+    fromLocation: moveFromLocation,
+    toLocation: moveToLocation,
     message: parsed.text ?? parsed.message,
     tick,
     day,
@@ -2625,6 +2650,10 @@ async function startBusyAction(
   },
 ) {
   const { agentName, action, tick, day, durationTicks } = args;
+  const moveFromLocation = action.action === 'move' ? agentDoc.location : undefined;
+  const moveToLocation = action.action === 'move'
+    ? action.location ?? action.target ?? agentDoc.location
+    : undefined;
 
   // Record that the action has started immediately for UI visibility
   await ctx.db.insert('rl_actions_log', {
@@ -2632,6 +2661,8 @@ async function startBusyAction(
     action: action.action,
     target: action.target ?? action.location ?? action.item ?? undefined,
     location: agentDoc.location,
+    fromLocation: moveFromLocation,
+    toLocation: moveToLocation,
     message: action.text ?? action.message,
     tick,
     day,
@@ -4731,6 +4762,8 @@ async function executeResolvedAction(
     action: parsed.action,
     target: parsed.target ?? parsed.location ?? parsed.item ?? undefined,
     location: newLocation,
+    fromLocation: parsed.action === 'move' ? agentDoc.location : undefined,
+    toLocation: parsed.action === 'move' ? newLocation : undefined,
     message: parsed.text ?? parsed.message,
     tick,
     day,

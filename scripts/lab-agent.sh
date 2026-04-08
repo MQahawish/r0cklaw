@@ -120,7 +120,7 @@ configure_debug_observability "$CONFIG_PATH"
 
 echo "[5/5] Starting $AGENT in background..."
 cd "$AGENT_DIR"
-nohup zeroclaw --config-dir "$AGENT_DIR" gateway start > "$LOG_PATH" 2>&1 < /dev/null &
+ZEROCLAW_DISABLE_PROVIDER_STREAMING=1 nohup zeroclaw --config-dir "$AGENT_DIR" gateway start > "$LOG_PATH" 2>&1 < /dev/null &
 echo $! > "$PID_PATH"
 wait_for_url "http://127.0.0.1:${GATEWAY_PORT}/health" 30 1
 

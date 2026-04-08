@@ -37,6 +37,8 @@ type NodeSummary = {
   active: boolean;
   presentAgents: string[];
   travelingAgents: string[];
+  agentDetails: { name: string; status: string; action: string }[];
+  recentActivity: string[];
 };
 
 type EdgeUsage = {
@@ -46,7 +48,22 @@ type EdgeUsage = {
   activeCount: number;
 };
 
-export default function RocklawLiveScene({ snapshot }: { snapshot: RocklawLiveSnapshot }) {
+type RecentMoveGlow = {
+  edgeKey: string;
+  startedAt: number;
+};
+
+export default function RocklawLiveScene({
+  snapshot,
+  mode = 'full',
+  isExpanded = false,
+  onToggleExpanded,
+}: {
+  snapshot: RocklawLiveSnapshot;
+  mode?: 'compact' | 'full';
+  isExpanded?: boolean;
+  onToggleExpanded?: () => void;
+}) {
   const [wrapperRef, { width, height }] = useElementSize();
   const [frameNow, setFrameNow] = useState(() => Date.now());
   const [tickObservedAt, setTickObservedAt] = useState(() => Date.now());
@@ -55,6 +72,7 @@ export default function RocklawLiveScene({ snapshot }: { snapshot: RocklawLiveSn
   const [showBusy, setShowBusy] = useState(true);
   const [showTravel, setShowTravel] = useState(true);
   const [showScenes, setShowScenes] = useState(true);
+  const [recentMoveGlows, setRecentMoveGlows] = useState<Record<string, RecentMoveGlow>>({});
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -69,6 +87,48 @@ export default function RocklawLiveScene({ snapshot }: { snapshot: RocklawLiveSn
       setTickObservedAt(Date.now());
     }
   }, [observedTick, snapshot.tick]);
+
+  const recentMoveActionKeys = useMemo(
+    () =>
+      snapshot.recentActions
+        .filter((action) =>
+          action.action === 'move'
+          && action.outcome === 'success'
+          && typeof action.agentName === 'string'
+          && typeof action.fromLocationId === 'string'
+          && typeof action.toLocationId === 'string')
+        .map((action) => ({
+          key: [
+            action.agentName,
+            action.tick ?? 'na',
+            action.fromLocationId,
+            action.toLocationId,
+          ].join('::'),
+          edgeKey: [action.fromLocationId!, action.toLocationId!].sort().join('::'),
+        })),
+    [snapshot.recentActions],
+  );
+
+  useEffect(() => {
+    const now = Date.now();
+    setRecentMoveGlows((prev) => {
+      const next: Record<string, RecentMoveGlow> = {};
+      for (const [key, glow] of Object.entries(prev)) {
+        if (now - glow.startedAt < snapshot.tickIntervalMs) {
+          next[key] = glow;
+        }
+      }
+      for (const action of recentMoveActionKeys) {
+        if (!next[action.key]) {
+          next[action.key] = {
+            edgeKey: action.edgeKey,
+            startedAt: now,
+          };
+        }
+      }
+      return next;
+    });
+  }, [recentMoveActionKeys, snapshot.tickIntervalMs]);
 
   const locationById = useMemo(
     () => new Map(snapshot.locations.map((location) => [location.id, location])),
@@ -127,47 +187,99 @@ export default function RocklawLiveScene({ snapshot }: { snapshot: RocklawLiveSn
     return true;
   });
   const visibleEdgeCounts = buildVisibleEdgeCounts(visiblePlacements);
+  const recentMoveGlowByEdge = useMemo(
+    () => buildRecentMoveGlowByEdge(recentMoveGlows, frameNow, snapshot.tickIntervalMs),
+    [frameNow, recentMoveGlows, snapshot.tickIntervalMs],
+  );
+  const compact = mode === 'compact';
+  const frameStyle: React.CSSProperties = {
+    ...LIVE_FRAME_STYLE,
+    minHeight: compact && !isExpanded ? 360 : LIVE_FRAME_STYLE.minHeight,
+    height: compact && !isExpanded ? 360 : LIVE_FRAME_STYLE.height,
+  };
+  const contentStyle: React.CSSProperties = {
+    ...LIVE_CONTENT_STYLE,
+    gridTemplateColumns: compact && !isExpanded ? 'minmax(0, 1fr)' : LIVE_CONTENT_STYLE.gridTemplateColumns,
+  };
+  const graphStyle: React.CSSProperties = {
+    ...LIVE_GRAPH_STYLE,
+    minHeight: compact && !isExpanded ? 284 : LIVE_GRAPH_STYLE.minHeight,
+  };
+  const panelStyle: React.CSSProperties = {
+    ...LIVE_PANEL_STYLE,
+    maxHeight: compact && !isExpanded ? 360 : undefined,
+  };
+  const summaryText = `${snapshot.day}.${snapshot.tick} · ${snapshot.timeOfDay} · ${busyAgents} busy · ${movingAgents} traveling · ${activeChats} scenes`;
 
   return (
-    <div style={LIVE_FRAME_STYLE}>
-      <div style={LIVE_FRAME_HEADER_STYLE}>
+    <div style={frameStyle}>
+      <div
+        style={{
+          ...LIVE_FRAME_HEADER_STYLE,
+          padding: compact && !isExpanded ? '10px 12px' : LIVE_FRAME_HEADER_STYLE.padding,
+        }}
+      >
         <div style={HEADER_TITLE_GROUP_STYLE}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: compact && !isExpanded ? 0 : 2 }}>
             <span style={HEADER_LABEL_STYLE}>Live Simulation</span>
-            <span style={HEADER_NOTE_STYLE}>
-              Full-map graph view. Click a location node to inspect exactly what is happening there.
-            </span>
+            {compact && !isExpanded ? (
+              <span style={HEADER_SUMMARY_STYLE}>{summaryText}</span>
+            ) : (
+              <span style={HEADER_NOTE_STYLE}>
+                Full-map graph view. Click a location node to inspect exactly what is happening there.
+              </span>
+            )}
           </div>
           <div style={HEADER_TOGGLES_STYLE}>
-            <ToggleChip label="Busy" active={showBusy} onClick={() => setShowBusy((value) => !value)} />
-            <ToggleChip
-              label="Travel"
-              active={showTravel}
-              onClick={() => setShowTravel((value) => !value)}
-            />
-            <ToggleChip
-              label="Scenes"
-              active={showScenes}
-              onClick={() => setShowScenes((value) => !value)}
-            />
+            {onToggleExpanded ? (
+              <button
+                type="button"
+                onClick={onToggleExpanded}
+                style={{
+                  ...TOGGLE_CHIP_STYLE,
+                  ...(isExpanded ? TOGGLE_CHIP_ACTIVE_STYLE : TOGGLE_CHIP_INACTIVE_STYLE),
+                }}
+              >
+                {isExpanded ? 'Collapse scene' : 'Expand scene'}
+              </button>
+            ) : null}
+            {(!compact || isExpanded) && (
+              <>
+                <ToggleChip label="Busy" active={showBusy} onClick={() => setShowBusy((value) => !value)} />
+                <ToggleChip
+                  label="Travel"
+                  active={showTravel}
+                  onClick={() => setShowTravel((value) => !value)}
+                />
+                <ToggleChip
+                  label="Scenes"
+                  active={showScenes}
+                  onClick={() => setShowScenes((value) => !value)}
+                />
+              </>
+            )}
           </div>
         </div>
-        <div style={HEADER_CHIPS_STYLE}>
-          <HeaderChip label="Tick" value={`${snapshot.day}.${snapshot.tick}`} />
-          <HeaderChip label="Time" value={snapshot.timeOfDay} />
-          <HeaderChip label="Busy" value={String(busyAgents)} />
-          <HeaderChip label="Traveling" value={String(movingAgents)} />
-          <HeaderChip label="Live scenes" value={String(activeChats)} />
-        </div>
+        {(!compact || isExpanded) && (
+          <div style={HEADER_CHIPS_STYLE}>
+            <HeaderChip label="Tick" value={`${snapshot.day}.${snapshot.tick}`} />
+            <HeaderChip label="Time" value={snapshot.timeOfDay} />
+            <HeaderChip label="Busy" value={String(busyAgents)} />
+            <HeaderChip label="Traveling" value={String(movingAgents)} />
+            <HeaderChip label="Live scenes" value={String(activeChats)} />
+          </div>
+        )}
       </div>
-      <div style={LIVE_CONTENT_STYLE}>
-        <div style={LIVE_GRAPH_STYLE} ref={wrapperRef}>
-          <div style={LEGEND_STYLE}>
-            <LegendItem color="#38bdf8" label="Travel route" />
-            <LegendItem color="#f59e0b" label="Live scene node" />
-            <LegendItem color="#94a3b8" label="Idle route" />
-            <LegendItem color="#f8fafc" label="Selected node" />
-          </div>
+      <div style={contentStyle}>
+        <div style={graphStyle} ref={wrapperRef}>
+          {(!compact || isExpanded) && (
+            <div style={LEGEND_STYLE}>
+              <LegendItem color="#38bdf8" label="Travel route" />
+              <LegendItem color="#f59e0b" label="Live scene node" />
+              <LegendItem color="#94a3b8" label="Idle route" />
+              <LegendItem color="#f8fafc" label="Selected node" />
+            </div>
+          )}
           {width > 0 && height > 0 ? (
             <div style={{ position: 'absolute', inset: 0 }}>
               <Stage width={width} height={height} options={{ backgroundColor: 0x0f172a, antialias: true }}>
@@ -182,21 +294,26 @@ export default function RocklawLiveScene({ snapshot }: { snapshot: RocklawLiveSn
                   nodeSummaries={nodeSummaries}
                   edges={edges}
                   visibleEdgeCounts={visibleEdgeCounts}
+                  recentMoveGlowByEdge={recentMoveGlowByEdge}
                   selectedLocationId={selectedLocationId}
                   onSelectLocation={setSelectedLocationId}
+                  compact={compact && !isExpanded}
                 />
               </Stage>
             </div>
           ) : null}
         </div>
-        <div style={LIVE_PANEL_STYLE}>
-          <LocationPanel
-            location={selectedLocation}
-            agents={selectedAgents}
-            scenes={selectedScenes}
-            recentActions={selectedRecentActions}
-          />
-        </div>
+        {(!compact || isExpanded) && (
+          <div style={panelStyle}>
+            <LocationPanel
+              location={selectedLocation}
+              agents={selectedAgents}
+              scenes={selectedScenes}
+              recentActions={selectedRecentActions}
+              compact={compact && !isExpanded}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -213,8 +330,10 @@ function RocklawGraphCanvas({
   nodeSummaries,
   edges,
   visibleEdgeCounts,
+  recentMoveGlowByEdge,
   selectedLocationId,
   onSelectLocation,
+  compact = false,
 }: {
   snapshot: RocklawLiveSnapshot;
   width: number;
@@ -226,8 +345,10 @@ function RocklawGraphCanvas({
   nodeSummaries: NodeSummary[];
   edges: EdgeUsage[];
   visibleEdgeCounts: Map<string, number>;
+  recentMoveGlowByEdge: Map<string, number>;
   selectedLocationId: string | null;
   onSelectLocation: (locationId: string) => void;
+  compact?: boolean;
 }) {
   const app = useApp();
 
@@ -246,6 +367,7 @@ function RocklawGraphCanvas({
           edge={edge}
           frameNow={frameNow}
           visibleActiveCount={visibleEdgeCounts.get(edge.key) ?? 0}
+          recentGlowStrength={recentMoveGlowByEdge.get(edge.key) ?? 0}
         />
       ))}
       {nodeSummaries.map((summary) => (
@@ -254,9 +376,10 @@ function RocklawGraphCanvas({
           summary={summary}
           selected={summary.location.id === selectedLocationId}
           onSelect={onSelectLocation}
+          compact={compact}
         />
       ))}
-      {placements.map((placement) => (
+      {!compact && placements.map((placement) => (
         <AgentMarker key={placement.agent.name} placement={placement} frameNow={frameNow} />
       ))}
     </PixiViewport>
@@ -309,10 +432,12 @@ function GraphEdge({
   edge,
   frameNow,
   visibleActiveCount,
+  recentGlowStrength,
 }: {
   edge: EdgeUsage;
   frameNow: number;
   visibleActiveCount: number;
+  recentGlowStrength: number;
 }) {
   const activeCount = visibleActiveCount;
   const pulse = activeCount > 0 ? 0.55 + Math.sin(frameNow / 260) * 0.18 : 0.18;
@@ -339,6 +464,18 @@ function GraphEdge({
         g.lineTo(bend.x, bend.y);
         g.lineTo(endX, endY);
 
+        if (recentGlowStrength > 0) {
+          g.lineStyle(12, 0x67e8f9, Math.min(0.26, recentGlowStrength * 0.26));
+          g.moveTo(startX, startY);
+          g.lineTo(bend.x, bend.y);
+          g.lineTo(endX, endY);
+
+          g.lineStyle(6, 0xe0f2fe, Math.min(0.9, recentGlowStrength * 0.9));
+          g.moveTo(startX, startY);
+          g.lineTo(bend.x, bend.y);
+          g.lineTo(endX, endY);
+        }
+
         if (activeCount > 1) {
           g.beginFill(0x7dd3fc, 0.96);
           g.drawCircle(bend.x, bend.y, 9);
@@ -353,18 +490,21 @@ function LocationNode({
   summary,
   selected,
   onSelect,
+  compact = false,
 }: {
   summary: NodeSummary;
   selected: boolean;
   onSelect: (locationId: string) => void;
+  compact?: boolean;
 }) {
   const { location } = summary;
   const x = toPx(location.center.x);
   const y = toPx(location.center.y);
   const activePulse = summary.active ? 0.5 + 0.2 * Math.sin(Date.now() / 400) : 0;
-  const nodeWidth = 156;
-  const nodeHeight = 88;
+  const nodeWidth = compact ? 236 : 156;
+  const nodeHeight = compact ? 118 : 88;
   const hitArea = new PIXI.Rectangle(x - nodeWidth / 2, y - nodeHeight / 2, nodeWidth, nodeHeight);
+  const compactMeta = buildCompactNodeMeta(summary);
 
   return (
     <Container interactive cursor="pointer" pointertap={() => onSelect(location.id)} hitArea={hitArea}>
@@ -374,26 +514,26 @@ function LocationNode({
           if (summary.active) {
             g.lineStyle(0);
             g.beginFill(summary.liveSceneCount > 0 ? 0xf59e0b : 0x38bdf8, 0.18 + activePulse * 0.18);
-            g.drawRoundedRect(x - 82, y - 52, 164, 104, 24);
+            g.drawRoundedRect(x - nodeWidth / 2 - 6, y - nodeHeight / 2 - 6, nodeWidth + 12, nodeHeight + 12, 24);
             g.endFill();
           }
 
           if (selected) {
             g.lineStyle(0);
             g.beginFill(0xf8fafc, 0.12);
-            g.drawRoundedRect(x - 88, y - 58, 176, 116, 28);
+            g.drawRoundedRect(x - nodeWidth / 2 - 10, y - nodeHeight / 2 - 10, nodeWidth + 20, nodeHeight + 20, 28);
             g.endFill();
           }
 
           g.lineStyle(selected ? 3 : 2, selected ? 0xf8fafc : summary.active ? 0xf8e6a8 : 0x64748b, selected ? 0.95 : 0.55);
           g.beginFill(selected ? 0x1e293b : 0x0f172a, 0.96);
-          g.drawRoundedRect(x - 78, y - 44, 156, 88, 18);
+          g.drawRoundedRect(x - nodeWidth / 2, y - nodeHeight / 2, nodeWidth, nodeHeight, 18);
           g.endFill();
         }}
       />
       <Text
         x={x}
-        y={y - 18}
+        y={compact ? y - 34 : y - 18}
         anchor={{ x: 0.5, y: 0.5 }}
         text={location.label}
         style={
@@ -403,23 +543,56 @@ function LocationNode({
             fontWeight: '700',
             align: 'center',
             wordWrap: true,
-            wordWrapWidth: 132,
+            wordWrapWidth: compact ? 188 : 132,
           })
         }
       />
-      <Text
-        x={x}
-        y={y + 26}
-        anchor={{ x: 0.5, y: 0.5 }}
-        text={buildNodeCaption(summary)}
-        style={
-          new PIXI.TextStyle({
-            fill: '#94a3b8',
-            fontSize: 9,
-            align: 'center',
-          })
-        }
-      />
+      {compact ? (
+        <>
+          <Text
+            x={x}
+            y={y - 12}
+            anchor={{ x: 0.5, y: 0.5 }}
+            text={buildNodeCaption(summary)}
+            style={
+              new PIXI.TextStyle({
+                fill: '#94a3b8',
+                fontSize: 10,
+                align: 'center',
+              })
+            }
+          />
+          <Text
+            x={x - 100}
+            y={y + 14}
+            anchor={{ x: 0, y: 0.5 }}
+            text={compactMeta}
+            style={
+              new PIXI.TextStyle({
+                fill: '#cbd5e1',
+                fontSize: 9,
+                lineHeight: 13,
+                wordWrap: true,
+                wordWrapWidth: 200,
+              })
+            }
+          />
+        </>
+      ) : (
+        <Text
+          x={x}
+          y={y + 26}
+          anchor={{ x: 0.5, y: 0.5 }}
+          text={buildNodeCaption(summary)}
+          style={
+            new PIXI.TextStyle({
+              fill: '#94a3b8',
+              fontSize: 9,
+              align: 'center',
+            })
+          }
+        />
+      )}
     </Container>
   );
 }
@@ -469,24 +642,20 @@ function LocationPanel({
   agents,
   scenes,
   recentActions,
+  compact = false,
 }: {
   location: RocklawLocationNode | null;
   agents: AgentPlacement[];
   scenes: RocklawLiveSceneEntry[];
   recentActions: RocklawLiveActionState[];
+  compact?: boolean;
 }) {
   if (!location) {
     return (
-      <div style={PANEL_PLACEHOLDER_STYLE}>
+      <div style={{ ...PANEL_PLACEHOLDER_STYLE, gap: compact ? 10 : 16 }}>
         <div style={PANEL_TITLE_STYLE}>Location Detail</div>
         <div style={PANEL_PLACEHOLDER_TEXT_STYLE}>
-          Click a node on the map to inspect that location without losing the full graph.
-        </div>
-        <div style={PANEL_HINT_GRID_STYLE}>
-          <HintTile label="Agents" text="See who is currently there." />
-          <HintTile label="Actions" text="See what each agent is doing right now." />
-          <HintTile label="Live Scenes" text="See active conversations and recent messages." />
-          <HintTile label="Recent Activity" text="See the latest location-specific actions as the sim advances." />
+          Select a node to inspect that location.
         </div>
       </div>
     );
@@ -583,15 +752,6 @@ function LocationPanel({
   );
 }
 
-function HintTile({ label, text }: { label: string; text: string }) {
-  return (
-    <div style={HINT_TILE_STYLE}>
-      <div style={HINT_TILE_LABEL_STYLE}>{label}</div>
-      <div style={HINT_TILE_TEXT_STYLE}>{text}</div>
-    </div>
-  );
-}
-
 function LegendItem({ color, label }: { color: string; label: string }) {
   return (
     <div style={LEGEND_ITEM_STYLE}>
@@ -643,6 +803,15 @@ function buildNodeSummaries(snapshot: RocklawLiveSnapshot, placements: AgentPlac
     const travelingAgents = here
       .filter((placement) => placement.moving)
       .map((placement) => placement.agent.name);
+    const agentDetails = here.slice(0, 2).map((placement) => ({
+      name: placement.agent.name,
+      status: placement.moving ? 'traveling' : deriveStatusLabel(placement.agent),
+      action: placement.agent.currentAction ? describeAction(placement.agent.currentAction) : placement.agent.busyLabel ?? 'idle',
+    }));
+    const recentActivity = snapshot.recentActions
+      .filter((action) => matchesLocationAction(action, location))
+      .slice(0, 1)
+      .map((action) => trimLabel(action.outcomeNote ?? action.outcome ?? action.message ?? describeAction(action)));
     return {
       location,
       agentCount: here.length,
@@ -652,6 +821,8 @@ function buildNodeSummaries(snapshot: RocklawLiveSnapshot, placements: AgentPlac
       active: liveSceneCount > 0 || busyCount > 0 || movingInCount > 0,
       presentAgents,
       travelingAgents,
+      agentDetails,
+      recentActivity,
     };
   });
 }
@@ -694,6 +865,21 @@ function buildVisibleEdgeCounts(placements: AgentPlacement[]) {
     if (!moveState) continue;
     const key = [moveState.fromLocationId, moveState.toLocationId].sort().join('::');
     counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function buildRecentMoveGlowByEdge(
+  glows: Record<string, RecentMoveGlow>,
+  frameNow: number,
+  tickDurationMs: number,
+) {
+  const counts = new Map<string, number>();
+  for (const glow of Object.values(glows)) {
+    const elapsed = Math.max(0, frameNow - glow.startedAt);
+    const remaining = Math.max(0, 1 - elapsed / Math.max(1, tickDurationMs));
+    if (remaining <= 0) continue;
+    counts.set(glow.edgeKey, Math.max(counts.get(glow.edgeKey) ?? 0, remaining));
   }
   return counts;
 }
@@ -839,6 +1025,22 @@ function buildNodeCaption(summary: NodeSummary) {
   return parts.join(' · ');
 }
 
+function buildCompactNodeMeta(summary: NodeSummary) {
+  const lines: string[] = [];
+  if (summary.agentDetails[0]) {
+    const detail = summary.agentDetails[0];
+    lines.push(detail.name);
+    lines.push(`${detail.status} · ${trimLabel(detail.action)}`);
+  }
+  if (summary.agentDetails.length > 1) {
+    lines.push(`+${summary.agentDetails.length - 1} more here`);
+  }
+  if (summary.recentActivity[0]?.trim()) {
+    lines.push(`Last: ${summary.recentActivity[0]}`);
+  }
+  return lines.slice(0, 3).join('\n');
+}
+
 function trimLabel(value: string | null) {
   if (!value) return '';
   return value.length > 48 ? `${value.slice(0, 45)}...` : value;
@@ -909,6 +1111,11 @@ const HEADER_LABEL_STYLE: React.CSSProperties = {
 const HEADER_NOTE_STYLE: React.CSSProperties = {
   fontSize: 12,
   color: '#9ca3af',
+};
+
+const HEADER_SUMMARY_STYLE: React.CSSProperties = {
+  fontSize: 11,
+  color: '#94a3b8',
 };
 
 const HEADER_TOGGLES_STYLE: React.CSSProperties = {
@@ -1037,32 +1244,6 @@ const PANEL_PLACEHOLDER_TEXT_STYLE: React.CSSProperties = {
   color: '#cbd5e1',
   fontSize: 14,
   lineHeight: 1.5,
-};
-
-const PANEL_HINT_GRID_STYLE: React.CSSProperties = {
-  display: 'grid',
-  gap: 10,
-};
-
-const HINT_TILE_STYLE: React.CSSProperties = {
-  padding: 12,
-  borderRadius: 12,
-  border: '1px solid #334155',
-  background: '#111827',
-  display: 'grid',
-  gap: 6,
-};
-
-const HINT_TILE_LABEL_STYLE: React.CSSProperties = {
-  color: '#f8fafc',
-  fontWeight: 700,
-  fontSize: 13,
-};
-
-const HINT_TILE_TEXT_STYLE: React.CSSProperties = {
-  color: '#94a3b8',
-  fontSize: 12,
-  lineHeight: 1.45,
 };
 
 const PANEL_SECTION_STYLE: React.CSSProperties = {

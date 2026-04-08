@@ -23,7 +23,7 @@ const AGENT_ROSTER = [
   {
     name: 'Elena Voss',
     role: 'Blacksmith',
-    location: 'forge',
+    location: 'elena_home',
     inventory: JSON.stringify({ iron_ore: 5, coal: 8, bread: 2 }),
     coin: 20,
     gatewayPort: 42617,
@@ -32,7 +32,7 @@ const AGENT_ROSTER = [
   {
     name: 'Marcus Hale',
     role: 'Merchant',
-    location: 'market',
+    location: 'marcus_home',
     inventory: JSON.stringify({ coal: 20, grain: 5, coin_purse: 1 }),
     coin: 80,
     gatewayPort: 42618,
@@ -41,7 +41,7 @@ const AGENT_ROSTER = [
   {
     name: 'Finn',
     role: 'Farmer',
-    location: 'farm',
+    location: 'finn_home',
     inventory: JSON.stringify({ grain: 15, iron_ore: 8, vegetable: 10 }),
     coin: 30,
     gatewayPort: 42619,
@@ -50,7 +50,7 @@ const AGENT_ROSTER = [
   {
     name: 'Lena Marsh',
     role: 'Herbalist',
-    location: 'shrine',
+    location: 'lena_home',
     inventory: JSON.stringify({ herb: 12, medicine: 5, bread: 1 }),
     coin: 15,
     gatewayPort: 42620,
@@ -59,7 +59,7 @@ const AGENT_ROSTER = [
   {
     name: 'Sera',
     role: 'Innkeeper',
-    location: 'inn',
+    location: 'sera_home',
     inventory: JSON.stringify({ bread: 10, grain: 8, ale: 5 }),
     coin: 45,
     gatewayPort: 42621,
@@ -68,6 +68,11 @@ const AGENT_ROSTER = [
 ];
 
 const LOCATIONS = [
+  { name: 'elena_home', type: 'residence', capacity: 2 },
+  { name: 'marcus_home', type: 'residence', capacity: 2 },
+  { name: 'finn_home', type: 'residence', capacity: 2 },
+  { name: 'lena_home', type: 'residence', capacity: 2 },
+  { name: 'sera_home', type: 'residence', capacity: 2 },
   { name: 'forge',  type: 'workshop', capacity: 4 },
   { name: 'market', type: 'commerce', capacity: 20 },
   { name: 'inn',    type: 'social',   capacity: 30 },

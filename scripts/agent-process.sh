@@ -14,6 +14,19 @@ agent_pattern() {
   echo "zeroclaw --config-dir .*/agents/$1 gateway start"
 }
 
+agent_pid_matches() {
+  local pid=$1
+  local agent=$2
+  local args=''
+  local comm=''
+
+  comm="$(ps -p "$pid" -o comm= 2>/dev/null | awk '{print $1}' || true)"
+  [[ "$comm" == "zeroclaw" ]] || return 1
+  args="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+  [[ -n "$args" ]] || return 1
+  grep -Eq "$(agent_pattern "$agent")" <<<"$args"
+}
+
 agent_running_pid() {
   local agent=$1
   local pid_file
@@ -22,14 +35,22 @@ agent_running_pid() {
   if [[ -f "$pid_file" ]]; then
     local pid
     pid="$(cat "$pid_file")"
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && agent_pid_matches "$pid" "$agent"; then
       echo "$pid"
       return 0
     fi
+    rm -f "$pid_file"
   fi
 
-  local found
-  found="$(pgrep -af "$(agent_pattern "$agent")" | awk 'NR==1 {print $1}')"
+  local found=''
+  while read -r pid; do
+    [[ -n "$pid" ]] || continue
+    if agent_pid_matches "$pid" "$agent"; then
+      found="$pid"
+      break
+    fi
+  done < <(pgrep -x zeroclaw || true)
+
   if [[ -n "$found" ]]; then
     echo "$found" > "$pid_file"
     echo "$found"

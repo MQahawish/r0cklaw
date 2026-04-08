@@ -20,6 +20,7 @@ import {
 } from './liveScene';
 import { ITEM_CONFIG } from './priceEngine';
 import { getPlaceGraph } from './mapLayout';
+import { timeOfDayForTick } from './dayCycle';
 
 export type AgentFileEntry = {
   label: string;
@@ -73,10 +74,14 @@ function parsePendingAction(agent: any): Record<string, unknown> | null {
 
 function toActionState(entry: any): RocklawLiveActionState {
   return {
+    agentName: entry.agentName ?? null,
     action: entry.action,
     target: entry.target ?? null,
     location: entry.location ?? null,
+    fromLocationId: entry.fromLocation ?? null,
+    toLocationId: entry.toLocation ?? null,
     message: entry.message ?? null,
+    tick: typeof entry.tick === 'number' ? entry.tick : null,
     outcome: entry.outcome ?? null,
     outcomeNote: entry.outcomeNote ?? null,
   };
@@ -296,10 +301,14 @@ export const getLiveSnapshot = query({
         const currentAction =
           pendingAction && typeof pendingAction.action === 'string'
             ? toActionState({
+                agentName: agent.name,
                 action: pendingAction.action,
                 target: pendingAction.target,
                 location: pendingAction.location,
+                fromLocation: null,
+                toLocation: pendingAction.location ?? pendingAction.target,
                 message: pendingAction.text ?? pendingAction.message,
+                tick: worldState?.tick ?? null,
                 outcome: 'pending',
                 outcomeNote: null,
               })
@@ -453,18 +462,24 @@ function summarizeTransactionItems(items: Array<{ item: string; quantity: number
 }
 
 export const getStepSummary = query({
-  args: {},
-  handler: async (ctx) => {
+  args: {
+    tick: v.optional(v.number()),
+    day: v.optional(v.number()),
+    timeOfDay: v.optional(v.string()),
+  },
+  handler: async (ctx, { tick: requestedTick, day: requestedDay, timeOfDay: requestedTimeOfDay }) => {
     const worldState = await ctx.db.query('rl_world_state').unique();
     const agentDocs = await ctx.db.query('rl_agents').collect();
-    const tick = worldState?.tick ?? 0;
-    const day = worldState?.day ?? 1;
+    const tick = requestedTick ?? worldState?.tick ?? 0;
+    const day = requestedDay ?? worldState?.day ?? 1;
+    const timeOfDay = requestedTimeOfDay ?? (requestedTick !== undefined ? timeOfDayForTick(requestedTick) : worldState?.timeOfDay ?? 'morning');
+    const actionTick = tick === 1 ? 0 : tick;
     const scenes = await ctx.db
       .query('rl_chat_scenes')
       .withIndex('status_location', (q) => q.eq('status', 'live'))
       .collect();
     const transactions = await ctx.db.query('rl_transactions').collect();
-    const actions = await ctx.db.query('rl_actions_log').withIndex('tick', (q) => q.eq('tick', tick)).collect();
+    const actions = await ctx.db.query('rl_actions_log').withIndex('tick', (q) => q.eq('tick', actionTick)).collect();
     const marketPrices = await ctx.db.query('rl_market_prices').collect();
     const priceHistory = await ctx.db.query('rl_price_history').withIndex('tick', (q) => q.eq('tick', tick)).collect();
     const allPriceHistory = await ctx.db.query('rl_price_history').collect();
@@ -711,7 +726,7 @@ export const getStepSummary = query({
     return {
       tick,
       day,
-      timeOfDay: worldState?.timeOfDay ?? 'morning',
+      timeOfDay,
       agents,
       liveScenes: sceneSummaries,
       currentTickActions,

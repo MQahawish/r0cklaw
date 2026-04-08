@@ -36,10 +36,23 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 }
 ```
 
-## Economic actions
+## Economic actions right now
 
-Runtime availability for your role will be listed here each tick.
+### Available now
+- `buy_place:market:bread`: Available now at market: 4 bread in stock for 7c each.
+- `sell_place:market:bread`: market is buying bread for 5c each.
+- `deliver_place:market:bread`: You can deliver bread into market for storage or supply without immediate payment.
+- `buy_place:market:tool`: Available now at market: 1 tool in stock for 70c each.
+- `buy_place:market:medicine`: Available now at market: 1 medicine in stock for 30c each.
 
+### Unavailable here
+- `sell_place:market:tool`: You do not have tool to sell into market.
+- `buy_place:market:horseshoe`: market is out of horseshoe right now.
+- `sell_place:market:horseshoe`: You do not have horseshoe to sell into market.
+- `sell_place:market:medicine`: You do not have medicine to sell into market.
+- `work:flour`: Unavailable here. Move to bakery to work on flour.
+- `work:bread`: Unavailable here. Move to bakery to work on bread.
+- `work`: Move to the bakery if you want to mill flour or bake bread.
 ## Act in the world
 
 - Do not use `observe`, `inspect`, `look`, or `survey` as a final world action. Observation is done through file reads and notes during tool use.

@@ -47,7 +47,7 @@ The world action happens only when you return your final JSON action.
 
 Return only one JSON object.
 
-For local scenes: Communication: Use `chat` to talk to someone. If they are in your location, it opens a live turn-based chat scene. If they are elsewhere, it delivers a deferred message to their CHAT thread. Use `say` to speak generally to the room without targeting anyone. Not every chat has to become a trade immediately; social curiosity, rapport, and learning what someone is doing are also valid reasons to talk. People in hard situations manage what others believe and push back when squeezed: use `chat` with `intent:"lie"` or `intent:"threaten"` when concealment or pressure fits the moment, and use `say` with `intent:"gossip"` when you want nearby people to hear it. Do not use commerce intents unless you are already actively inside a live chat scene with that person.
+Communication: Use `chat` to chat to someone. If they are in your location, it opens a live turn-based chat scene. If they are elsewhere, it delivers a deferred chat to their CHAT thread. Use `say` to speak generally to the room without targeting anyone. You may include a structured commerce `intent` on the first `chat` only when that person is here and available for a live chat right now. People in hard situations manage what others believe and push back when squeezed: use `chat` with `lie` or `threaten` when the scene calls for concealment or pressure, and use `say` with `gossip` when you want nearby people to hear it. Deferred thread chat stays non-binding.
 
 Examples:
 {"action":"move","location":"market","thought":"I need supplies before work stalls."}

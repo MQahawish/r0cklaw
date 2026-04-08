@@ -552,7 +552,11 @@ export const tickAgent = internalAction({
 
     // Refresh UI summary so this action appears immediately
     try {
-      await ctx.runAction(internal.rocklaw.godNode.recordCurrentStepSummary, {});
+      await ctx.runAction(internal.rocklaw.godNode.recordCurrentStepSummary, {
+        tick,
+        day,
+        timeOfDay,
+      });
     } catch (uiErr) {
       console.warn(`[bridge] UI summary refresh failed for ${agentName}:`, uiErr);
     }

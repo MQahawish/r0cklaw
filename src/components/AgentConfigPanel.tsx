@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useAction } from 'convex/react';
 import { api } from '../../convex/_generated/api';
 import { toast } from 'react-toastify';
+import type { AgentDebugTraceEntry } from '../../convex/rocklaw/observeNode';
 
 const PROVIDER_OPTIONS = [
   { value: 'openrouter', label: 'OpenRouter' },
@@ -53,6 +54,30 @@ const MODEL_OPTIONS_BY_PROVIDER: Record<string, { value: string; label: string }
 
 type ProviderModel = { id: string; name: string; contextLength: number; pricing?: { prompt: string; completion: string } };
 type ProviderModelsResult = { models: ProviderModel[]; isLive: boolean };
+type AgentRecentAction = {
+  _id: string;
+  day: number;
+  tick: number;
+  timeOfDay?: string;
+  action: string;
+  target?: string | null;
+  message?: string | null;
+  outcome?: string;
+  outcomeNote?: string | null;
+};
+type MergedTurnRow = {
+  key: string;
+  day: number | null;
+  tick: number | null;
+  timeOfDay: string | null;
+  action: string | null;
+  target: string | null;
+  message: string | null;
+  thought: string | null;
+  outcome: string | null;
+  outcomeNote: string | null;
+  trace: AgentDebugTraceEntry | null;
+};
 
 function formatPricing(pricing: { prompt: string; completion: string }): string {
   const pIn = parseFloat(pricing.prompt);
@@ -83,10 +108,95 @@ function formatTokenCount(n: number): string {
   return String(n);
 }
 
-function formatCostUsd(usd: number): string {
-  if (usd === 0) return '$0.000';
-  if (usd < 0.001) return `$${usd.toFixed(5)}`;
-  return `$${usd.toFixed(3)}`;
+function hasUsageData(inputTokens: number, outputTokens: number): boolean {
+  return inputTokens > 0 || outputTokens > 0;
+}
+
+function trimInline(text: string | null | undefined, max = 180) {
+  const compact = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!compact) return '';
+  if (compact.length <= max) return compact;
+  return `${compact.slice(0, max - 1).trimEnd()}…`;
+}
+
+function parseTraceAction(json: string | null | undefined): Record<string, unknown> | null {
+  if (!json) return null;
+  try {
+    return JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function parseRecentIncidents(json: string | null | undefined): { tick: number; note: string }[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (entry): entry is { tick: number; note: string } =>
+        !!entry
+        && typeof entry === 'object'
+        && typeof (entry as { tick?: unknown }).tick === 'number'
+        && typeof (entry as { note?: unknown }).note === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+function formatTurnTime(day: number | null, timeOfDay: string | null, tick: number | null): string {
+  if (day !== null && timeOfDay) return `D${day} ${timeOfDay}`;
+  if (day !== null && tick !== null) return `D${day} t${tick}`;
+  if (tick !== null) return `t${tick}`;
+  return 'unknown';
+}
+
+function buildMergedTurnRows(recentActions: AgentRecentAction[], debugTrace: AgentDebugTraceEntry[]): MergedTurnRow[] {
+  const traceByKey = new Map<string, AgentDebugTraceEntry[]>();
+  for (const entry of debugTrace) {
+    const key = `${entry.day ?? 'x'}-${entry.tick ?? 'x'}`;
+    const bucket = traceByKey.get(key) ?? [];
+    bucket.push(entry);
+    traceByKey.set(key, bucket);
+  }
+
+  const actionByKey = new Map<string, AgentRecentAction>();
+  for (const action of recentActions) {
+    actionByKey.set(`${action.day}-${action.tick}`, action);
+  }
+
+  const allKeys = new Set<string>([...traceByKey.keys(), ...actionByKey.keys()]);
+  const rows: MergedTurnRow[] = [];
+
+  for (const key of allKeys) {
+    const action = actionByKey.get(key) ?? null;
+    const traces = traceByKey.get(key) ?? [];
+    const preferredTrace = traces.find((entry) => entry.phase === 'completed')
+      ?? traces.find((entry) => entry.phase === 'planned')
+      ?? traces[0]
+      ?? null;
+    const traceAction = parseTraceAction(preferredTrace?.parsedActionJson);
+
+    rows.push({
+      key,
+      day: action?.day ?? preferredTrace?.day ?? null,
+      tick: action?.tick ?? preferredTrace?.tick ?? null,
+      timeOfDay: action?.timeOfDay ?? preferredTrace?.timeOfDay ?? null,
+      action: action?.action ?? (typeof traceAction?.action === 'string' ? traceAction.action : null),
+      target: action?.target ?? (typeof traceAction?.target === 'string' ? traceAction.target : null),
+      message: action?.message
+        ?? (typeof traceAction?.text === 'string' ? traceAction.text : null)
+        ?? (typeof traceAction?.message === 'string' ? traceAction.message : null)
+        ?? (typeof traceAction?.journal === 'string' ? traceAction.journal : null),
+      thought: typeof traceAction?.thought === 'string' ? traceAction.thought : null,
+      outcome: action?.outcome ?? preferredTrace?.validationOutcome ?? null,
+      outcomeNote: action?.outcomeNote ?? preferredTrace?.validationNote ?? null,
+      trace: preferredTrace,
+    });
+  }
+
+  return rows.sort((a, b) => (b.day ?? -1) - (a.day ?? -1) || (b.tick ?? -1) - (a.tick ?? -1));
 }
 
 function repColour(score: number): string {
@@ -240,6 +350,7 @@ function AgentDetail({
   const listProviderModels = useAction(api.rocklaw.godNode.listProviderModels);
   const testModel = useAction(api.rocklaw.godNode.testModel);
   const clearCostStats = useAction(api.rocklaw.godNode.clearCostStats);
+  const getAgentDebugTrace = useAction(api.rocklaw.observeNode.getAgentDebugTrace);
   const [clearingStats, setClearingStats] = useState(false);
 
   const [providerInput, setProviderInput] = useState('openrouter');
@@ -252,6 +363,8 @@ function AgentDetail({
   const [configDefaults, setConfigDefaults] = useState<{ defaultProvider: string | null; defaultModel: string | null } | null>(null);
   const [allProviderModels, setAllProviderModels] = useState<Record<string, ProviderModel[]>>({});
   const [providerAvailability, setProviderAvailability] = useState<Record<string, boolean>>({});
+  const [debugTrace, setDebugTrace] = useState<AgentDebugTraceEntry[]>([]);
+  const [debugTraceLoading, setDebugTraceLoading] = useState(false);
 
   const providerOptions = useMemo(() => {
     const currentProvider = detail?.agent.providerOverride ?? configDefaults?.defaultProvider ?? null;
@@ -346,18 +459,48 @@ function AgentDetail({
     }
   }, [detail, configDefaults, allProviderModels, providerOptions]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setDebugTraceLoading(true);
+    void getAgentDebugTrace({ agentName, limit: 10 })
+      .then((result) => {
+        if (!cancelled) {
+          setDebugTrace(result.entries);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDebugTrace([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setDebugTraceLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentName, getAgentDebugTrace, detail?.recentActions]);
+
+  const mergedTurns = useMemo(
+    () => buildMergedTurnRows((detail?.recentActions ?? []) as AgentRecentAction[], debugTrace),
+    [detail?.recentActions, debugTrace],
+  );
+
   if (!detail) {
     return <div style={{ color: '#6b7280', fontSize: 12 }}>Loading...</div>;
   }
 
   const { agent, rep, recentActions } = detail;
-  const incidents: { tick: number; note: string }[] = rep
-    ? JSON.parse(rep.recentIncidents)
-    : [];
+  const incidents = parseRecentIncidents(rep?.recentIncidents);
   const effectiveProvider = agent.providerOverride ?? configDefaults?.defaultProvider ?? 'openrouter';
   const effectiveModel = agent.modelOverride ?? configDefaults?.defaultModel ?? 'unknown';
   const providerSource = agent.providerOverride ? 'override' : 'config';
   const modelSource = agent.modelOverride ? 'override' : 'config';
+  const lifetimeInputTokens = agent.lifetimeInputTokens ?? 0;
+  const lifetimeOutputTokens = agent.lifetimeOutputTokens ?? 0;
+  const usageAvailable = hasUsageData(lifetimeInputTokens, lifetimeOutputTokens);
 
   const resolvedProvider = providerInput.trim();
   const resolvedModel = modelChoice === 'custom' ? customModelInput.trim() : modelChoice;
@@ -458,7 +601,7 @@ function AgentDetail({
           <span style={{ fontSize: 15, fontWeight: 700, color: '#f9fafb' }}>{agent.name}</span>
           <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 8 }}>{agent.role}</span>
         </div>
-        {((agent.lifetimeCostUsd ?? 0) > 0 || (agent.lifetimeInputTokens ?? 0) > 0) && (
+        {usageAvailable && (
           <button
             onClick={async () => {
               setClearingStats(true);
@@ -596,23 +739,24 @@ function AgentDetail({
       </div>
 
       {/* Cost & Token Stats */}
-      {((agent.lifetimeInputTokens ?? 0) > 0 || (agent.lifetimeOutputTokens ?? 0) > 0) && (
-        <div style={{ background: '#1f2937', borderRadius: 5, padding: '8px 10px' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 6 }}>
-            Usage (lifetime)
-          </div>
-          <div style={{ fontSize: 12, color: '#9ca3af', fontFamily: 'ui-monospace, monospace' }}>
-            {'↑ '}
-            <span style={{ color: '#e5e7eb' }}>{formatTokenCount(agent.lifetimeInputTokens ?? 0)}</span>
-            {' in · '}
-            <span style={{ color: '#e5e7eb' }}>{formatTokenCount(agent.lifetimeOutputTokens ?? 0)}</span>
-            {' out'}
-            {(agent.lifetimeCostUsd ?? 0) > 0 && (
-              <span style={{ color: '#fde68a', marginLeft: 8 }}>{formatCostUsd(agent.lifetimeCostUsd ?? 0)}</span>
-            )}
-          </div>
+      <div style={{ background: '#1f2937', borderRadius: 5, padding: '8px 10px' }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 6 }}>
+          Usage (lifetime)
         </div>
-      )}
+        <div style={{ fontSize: 12, color: '#9ca3af', fontFamily: 'ui-monospace, monospace' }}>
+          {usageAvailable ? (
+            <>
+              {'↑ '}
+              <span style={{ color: '#e5e7eb' }}>{formatTokenCount(lifetimeInputTokens)}</span>
+              {' in · '}
+              <span style={{ color: '#e5e7eb' }}>{formatTokenCount(lifetimeOutputTokens)}</span>
+              {' out'}
+            </>
+          ) : (
+            <span style={{ color: '#6b7280' }}>Tokens: no data yet</span>
+          )}
+        </div>
+      </div>
 
       {/* Reputation */}
       <div style={{ background: '#1f2937', borderRadius: 5, padding: 10 }}>
@@ -647,26 +791,139 @@ function AgentDetail({
         )}
       </div>
 
-      {/* Recent actions */}
       <div style={{ background: '#1f2937', borderRadius: 5, padding: 10 }}>
         <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 8 }}>
-          Recent Actions
+          Turn Log
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 240, overflowY: 'auto' }}>
-          {recentActions.length === 0 ? (
-            <div style={{ fontSize: 12, color: '#4b5563', fontStyle: 'italic' }}>No actions yet.</div>
-          ) : recentActions.map((a: any) => (
-            <div key={a._id} style={{ fontSize: 11, color: '#9ca3af', borderBottom: '1px solid #111827', paddingBottom: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                <span style={{ color: '#6b7280', whiteSpace: 'nowrap' }}>D{a.day} {a.timeOfDay ?? 't'+a.tick}</span>
-                <span style={{ color: a.outcome === 'failed' ? '#f87171' : '#93c5fd', fontWeight: 600 }}>{a.action}</span>
-                {a.target && <span style={{ color: '#6b7280' }}> → {a.target}</span>}
-              </div>
-              {a.message && <div style={{ color: '#e5e7eb', fontStyle: 'italic', paddingLeft: 10, lineHeight: 1.2 }}>"{a.message.slice(0, 512)}{a.message.length > 512 ? '...' : ''}"</div>}
-              {a.outcomeNote && <div style={{ color: '#f97316', fontSize: 10, paddingLeft: 10 }}>· {a.outcomeNote}</div>}
-            </div>
-          ))}
-        </div>
+        {debugTraceLoading ? (
+          <div style={{ fontSize: 12, color: '#4b5563', fontStyle: 'italic' }}>Loading trace…</div>
+        ) : mergedTurns.length === 0 ? (
+          <div style={{ fontSize: 12, color: '#4b5563', fontStyle: 'italic' }}>
+            No turns yet. Run the sim and this panel will show the committed Rocklaw action together with the internal ZeroClaw trace for that tick.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {mergedTurns.map((turn) => {
+              const traceAction = parseTraceAction(turn.trace?.parsedActionJson);
+              return (
+              <details key={turn.key} style={{ border: '1px solid #111827', borderRadius: 6, padding: '8px 10px', background: '#111827' }}>
+                <summary style={{ cursor: 'pointer', listStyle: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 12, color: '#f3f4f6', fontWeight: 600 }}>
+                      <span style={{ color: '#6b7280', marginRight: 8 }}>{formatTurnTime(turn.day, turn.timeOfDay, turn.tick)}</span>
+                      <span style={{ color: turn.outcome === 'failed' ? '#f87171' : '#93c5fd' }}>{turn.action ?? 'unknown'}</span>
+                      {turn.target ? <span style={{ color: '#6b7280' }}> → {turn.target}</span> : null}
+                    </div>
+                    {turn.message && (
+                      <div style={{ fontSize: 11, color: '#e5e7eb', fontStyle: 'italic', marginTop: 3, lineHeight: 1.3 }}>
+                        "{trimInline(turn.message, 220)}"
+                      </div>
+                    )}
+                    {turn.thought && (
+                      <div style={{ fontSize: 11, color: '#93c5fd', marginTop: 3, lineHeight: 1.3 }}>
+                        Thought: {trimInline(turn.thought, 220)}
+                      </div>
+                    )}
+                    {turn.outcomeNote && (
+                      <div style={{ fontSize: 10, color: '#f59e0b', marginTop: 4, lineHeight: 1.3 }}>
+                        {turn.outcomeNote}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#6b7280', textAlign: 'right', flexShrink: 0, alignSelf: 'flex-start' }}>
+                    {turn.trace?.gatewayHost ? `${turn.trace.gatewayHost}` : ''}
+                  </div>
+                </summary>
+                <div style={{ display: 'grid', gap: 10, marginTop: 10 }}>
+                  {turn.trace ? (
+                    <>
+                      <div style={{ fontSize: 11, color: '#6b7280' }}>
+                        Tick {turn.trace.tick ?? '?'} · Day {turn.trace.day ?? '?'} · {turn.trace.timeOfDay ?? 'unknown'}
+                        {turn.trace.phase ? ` · ${turn.trace.phase}` : ''}
+                        {turn.trace.validationOutcome ? ` · ${turn.trace.validationOutcome}` : ''}
+                        {turn.trace.retryAttempted ? ' · retried' : ''}
+                        {turn.trace.sessionId ? ` · ${turn.trace.sessionId}` : ''}
+                      </div>
+                      {turn.trace.validationNote && (
+                        <div style={{ fontSize: 11, color: '#f59e0b' }}>
+                          Validation: {turn.trace.validationNote}
+                        </div>
+                      )}
+                      {turn.trace.error && (
+                        <div style={{ fontSize: 11, color: '#f87171' }}>
+                          Error: {turn.trace.error}
+                        </div>
+                      )}
+                      {turn.trace.promptText && (
+                        <div>
+                          <div style={{ fontSize: 10, color: '#4b5563', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>
+                            Rocklaw Prompt
+                          </div>
+                          <details>
+                            <summary style={{ cursor: 'pointer', color: '#9ca3af', fontSize: 11 }}>
+                              {trimInline(turn.trace.promptPreview ?? turn.trace.promptText, 140)}
+                            </summary>
+                            <pre style={{ margin: '8px 0 0 0', fontSize: 11, color: '#cbd5e1', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'ui-monospace, monospace' }}>
+                              {turn.trace.promptText}
+                            </pre>
+                          </details>
+                        </div>
+                      )}
+                      {turn.trace.events.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: 10, color: '#4b5563', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>
+                            Internal ZeroClaw Events
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            {turn.trace.events.map((event, eventIndex) => (
+                              <div key={`${event.type}-${eventIndex}`} style={{ border: '1px solid #1f2937', borderRadius: 4, padding: '6px 8px' }}>
+                                <div style={{ fontSize: 11, fontFamily: 'ui-monospace, monospace' }}>
+                                  <span style={{ color: '#60a5fa' }}>{event.type}</span>
+                                  {event.name ? <span style={{ color: '#a78bfa' }}> {event.name}</span> : null}
+                                </div>
+                                <pre style={{ margin: '4px 0 0 0', fontSize: 11, color: '#9ca3af', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'ui-monospace, monospace' }}>
+                                  {event.full ?? event.preview}
+                                </pre>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {(turn.trace.parsedActionJson || turn.trace.rawResponse) && (
+                        <div style={{ display: 'grid', gap: 10 }}>
+                          {turn.trace.parsedActionJson && (
+                            <div>
+                              <div style={{ fontSize: 10, color: '#4b5563', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>
+                                Parsed Rocklaw Action
+                              </div>
+                              <pre style={{ margin: 0, fontSize: 11, color: '#d1d5db', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'ui-monospace, monospace' }}>
+                                {turn.trace.parsedActionJson}
+                              </pre>
+                            </div>
+                          )}
+                          {turn.trace.rawResponse && turn.trace.rawResponse !== turn.trace.parsedActionJson && (
+                            <div>
+                              <div style={{ fontSize: 10, color: '#4b5563', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>
+                                Raw Model Response
+                              </div>
+                              <pre style={{ margin: 0, fontSize: 11, color: '#9ca3af', whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'ui-monospace, monospace' }}>
+                                {turn.trace.rawResponse}
+                              </pre>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div style={{ fontSize: 11, color: '#f87171' }}>
+                      No ZeroClaw trace found for this committed action.
+                    </div>
+                  )}
+                </div>
+              </details>
+            )})}
+          </div>
+        )}
       </div>
     </div>
   );

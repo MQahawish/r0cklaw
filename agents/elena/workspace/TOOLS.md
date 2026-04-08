@@ -36,10 +36,23 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 }
 ```
 
-## Economic actions
+## Economic actions right now
 
-Runtime availability for your role will be listed here each tick.
+### Best blacksmith work now
+- `work:horseshoe`: use bare `{"action":"work"}` unless you specifically need a different output.
 
+
+### Available now
+- `work:horseshoe`: Available now at forge; horseshoe is priced around 37c.
+- `work:tool`: Available now at forge; tool is priced around 45c.
+- `work:knife`: Available now at forge; knife is priced around 10c.
+- `work:iron_ingot`: Available now at forge.
+
+### Unavailable here
+- `work:horseshoe`: Unavailable now. You lack the inputs to work on horseshoe.
+- `work:tool`: Unavailable now. You lack the inputs to work on tool.
+- `work:knife`: Unavailable now. You lack the inputs to work on knife.
+- `work:iron_ingot`: Unavailable now. You lack the inputs to work on iron_ingot.
 ## Act in the world
 
 - Do not use `observe`, `inspect`, `look`, or `survey` as a final world action. Observation is done through file reads and notes during tool use.

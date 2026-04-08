@@ -19,12 +19,6 @@ function formatTokenCount(n: number): string {
   return String(n);
 }
 
-function formatCostUsd(usd: number): string {
-  if (usd === 0) return '$0.000';
-  if (usd < 0.001) return `$${usd.toFixed(5)}`;
-  return `$${usd.toFixed(3)}`;
-}
-
 function trimInline(text: string | null | undefined, max = 84) {
   const compact = String(text ?? '').replace(/\s+/g, ' ').trim();
   if (!compact) return '';
@@ -112,6 +106,14 @@ export function TickSummaryCard({
   const deltaRows = Array.isArray(summary.priceDeltas) ? summary.priceDeltas : [];
   const interruptRows = Array.isArray(summary.interrupts) ? summary.interrupts : [];
   const suspiciousRows = actionRows.filter((entry: any) => entry.outcome !== 'success');
+  const busyWithoutActionRows = ((summary.agents ?? []) as any[])
+    .filter((a: any) => a.busy)
+    .sort((a: any, b: any) => a.name.localeCompare(b.name))
+    .filter((a: any) => !actionRows.some((ar: any) => ar.agentName === a.name));
+  const idleWithoutActionCount = ((summary.agents ?? []) as any[])
+    .filter((a: any) => !a.busy)
+    .filter((a: any) => !actionRows.some((ar: any) => ar.agentName === a.name))
+    .length;
 
   return (
     <div
@@ -150,7 +152,7 @@ export function TickSummaryCard({
           <div>
             <SectionLabel>Agent Actions</SectionLabel>
             <div style={{ display: 'grid', gap: 4 }}>
-              {actionRows.length === 0 && (summary.agents ?? []).filter((a: any) => a.busy).length === 0 ? (
+              {actionRows.length === 0 && busyWithoutActionRows.length === 0 ? (
                 <div style={{ fontSize: 11, color: '#6b7280', fontStyle: 'italic' }}>No actions recorded this tick.</div>
               ) : (
                 <>
@@ -164,25 +166,18 @@ export function TickSummaryCard({
                       {entry.outcomeNote && <span style={{ color: '#6b7280', margin: '0 4px' }}> · {trimInline(entry.outcomeNote, 256)}</span>}
                     </div>
                   ))}
-                  {/* Show all agents in the expanded view for a complete status report */}
-                  {(summary.agents ?? [])
-                    .sort((a: any, b: any) => a.name.localeCompare(b.name))
-                    .map((a: any) => {
-                      const hasAction = actionRows.some((ar: any) => ar.agentName === a.name);
-                      if (hasAction) return null; // Already shown in the actions section above
-                      
-                      return (
-                        <div key={`status-${a.name}`} style={{ fontSize: 12, color: '#94a3b8' }}>
-                          <span style={{ color: '#94a3af', fontWeight: 600 }}>{a.name}</span>
-                          <span style={{ color: '#4b5563', margin: '0 6px' }}>·</span>
-                          {a.busy ? (
-                            <span style={{ color: '#7c3aed', fontSize: 11, fontStyle: 'italic' }}>{a.busyLabel ?? 'busy'}</span>
-                          ) : (
-                            <span style={{ color: '#64748b', fontSize: 11, fontStyle: 'italic' }}>idle</span>
-                          )}
-                        </div>
-                      );
-                    })}
+                  {busyWithoutActionRows.map((a: any) => (
+                    <div key={`status-${a.name}`} style={{ fontSize: 12, color: '#94a3b8' }}>
+                      <span style={{ color: '#94a3af', fontWeight: 600 }}>{a.name}</span>
+                      <span style={{ color: '#4b5563', margin: '0 6px' }}>·</span>
+                      <span style={{ color: '#7c3aed', fontSize: 11, fontStyle: 'italic' }}>{a.busyLabel ?? 'busy'}</span>
+                    </div>
+                  ))}
+                  {idleWithoutActionCount > 0 && (
+                    <div style={{ fontSize: 11, color: '#64748b', fontStyle: 'italic' }}>
+                      {idleWithoutActionCount} other {idleWithoutActionCount === 1 ? 'agent is' : 'agents are'} idle.
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -353,12 +348,18 @@ export default function RunConsolePanel() {
     };
   }, [mode, profile, runAgentConfigs, selectedAgentLabels]);
 
-  const sessionCostUsd = runConsole?.state.sessionCostUsd ?? 0;
+  const sessionInputTokens = useMemo(() => {
+    return (dashboard?.agents ?? []).reduce((sum: number, a: any) => sum + (a.lifetimeInputTokens ?? 0), 0);
+  }, [dashboard?.agents]);
+  const sessionOutputTokens = useMemo(() => {
+    return (dashboard?.agents ?? []).reduce((sum: number, a: any) => sum + (a.lifetimeOutputTokens ?? 0), 0);
+  }, [dashboard?.agents]);
   const sessionTotalTokens = useMemo(() => {
     return (dashboard?.agents ?? []).reduce((sum: number, a: any) => {
       return sum + (a.lifetimeInputTokens ?? 0) + (a.lifetimeOutputTokens ?? 0);
     }, 0);
   }, [dashboard?.agents]);
+  const sessionUsageAvailable = sessionTotalTokens > 0;
 
   const primaryButtonLabel = useMemo(() => {
     if (busyAction === 'run') {
@@ -394,27 +395,29 @@ export default function RunConsolePanel() {
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
-      {(sessionCostUsd > 0 || sessionTotalTokens > 0) && (
-        <div style={{
-          background: '#0f1923',
-          border: '1px solid #1e3a2e',
-          borderRadius: 6,
-          padding: '6px 12px',
-          fontSize: 12,
-          color: '#6b7280',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-        }}>
-          <span style={{ color: '#4b5563' }}>Session</span>
-          {sessionTotalTokens > 0 && (
+      <div style={{
+        background: '#0f1923',
+        border: '1px solid #1e3a2e',
+        borderRadius: 6,
+        padding: '6px 12px',
+        fontSize: 12,
+        color: '#6b7280',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        flexWrap: 'wrap',
+      }}>
+        <span style={{ color: '#4b5563' }}>Session</span>
+        {sessionUsageAvailable ? (
+          <>
+            <span style={{ color: '#9ca3af' }}>{formatTokenCount(sessionInputTokens)} in</span>
+            <span style={{ color: '#9ca3af' }}>{formatTokenCount(sessionOutputTokens)} out</span>
             <span style={{ color: '#9ca3af' }}>{formatTokenCount(sessionTotalTokens)} tokens</span>
-          )}
-          {sessionCostUsd > 0 && (
-            <span style={{ color: '#fde68a', fontWeight: 600 }}>{formatCostUsd(sessionCostUsd)}</span>
-          )}
-        </div>
-      )}
+          </>
+        ) : (
+          <span style={{ color: '#6b7280' }}>Tokens: no data yet</span>
+        )}
+      </div>
       <div style={PANEL_STYLE}>
         <SectionLabel>New Run Setup</SectionLabel>
 

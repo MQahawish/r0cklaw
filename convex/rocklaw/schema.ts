@@ -324,6 +324,8 @@ export const rocklawTables = {
     action: v.string(),
     target: v.optional(v.string()),
     location: v.optional(v.string()),
+    fromLocation: v.optional(v.string()),
+    toLocation: v.optional(v.string()),
     message: v.optional(v.string()),
     tick: v.number(),
     day: v.number(),

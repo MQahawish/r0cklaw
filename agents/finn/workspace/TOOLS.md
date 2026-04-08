@@ -36,10 +36,22 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 }
 ```
 
-## Economic actions
+## Economic actions right now
 
-Runtime availability for your role will be listed here each tick.
+### Available now
+- `work:grain`: Available now. Harvest grain from north_field.
 
+### Unavailable here
+- `work:flour`: Unavailable here. Move to bakery to work on flour.
+- `work:bread`: Unavailable here. Move to bakery to work on bread.
+- `work:horseshoe`: Unavailable here. Move to forge to work on horseshoe.
+- `work:horseshoe`: Unavailable here. Move to forge to work on horseshoe.
+- `work:tool`: Unavailable here. Move to forge to work on tool.
+- `work:tool`: Unavailable here. Move to forge to work on tool.
+- `work:knife`: Unavailable here. Move to forge to work on knife.
+- `work:knife`: Unavailable here. Move to forge to work on knife.
+- `work:iron_ingot`: Unavailable here. Move to forge to work on iron_ingot.
+- `work:iron_ingot`: Unavailable here. Move to forge to work on iron_ingot.
 ## Act in the world
 
 - Do not use `observe`, `inspect`, `look`, or `survey` as a final world action. Observation is done through file reads and notes during tool use.

@@ -70,6 +70,12 @@ require_cmd lsof
 cd "$ROOT_DIR"
 export HOST_UID="${HOST_UID:-$(id -u)}"
 export HOST_GID="${HOST_GID:-$(id -g)}"
+mkdir -p "$ROOT_DIR/.rocklaw/bin"
+TMP_ZEROCLAW_BIN="$ROOT_DIR/.rocklaw/bin/zeroclaw.tmp.$$"
+cp "$(command -v zeroclaw)" "$TMP_ZEROCLAW_BIN"
+chmod +x "$TMP_ZEROCLAW_BIN"
+mv -f "$TMP_ZEROCLAW_BIN" "$ROOT_DIR/.rocklaw/bin/zeroclaw"
+export ROCKLAW_ZEROCLAW_BIN="$ROOT_DIR/.rocklaw/bin/zeroclaw"
 
 RESET_MODE="fresh"
 PROFILE="--blank-self"

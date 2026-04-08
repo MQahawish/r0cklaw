@@ -36,10 +36,14 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 }
 ```
 
-## Economic actions
+## Economic actions right now
 
-Runtime availability for your role will be listed here each tick.
+### Available now
+- `work:herb`: Available now. Gather herb from shrine_patch.
+- `work:medicine`: Available now. Brew medicine at the shrine.
 
+### Unavailable here
+  (none)
 ## Act in the world
 
 - Do not use `observe`, `inspect`, `look`, or `survey` as a final world action. Observation is done through file reads and notes during tool use.

@@ -38,6 +38,47 @@ const FALLBACK_AGENT_CONFIG_DEFAULTS: Record<string, { defaultProvider: string; 
 
 const ALL_AGENT_SLUGS = Object.keys(AGENT_NAME_BY_SLUG);
 
+const KNOWN_MODEL_PRICING_USD_PER_TOKEN: Record<string, { input: number; output: number }> = {
+  'openai:gpt-4.1': {
+    input: 2 / 1_000_000,
+    output: 8 / 1_000_000,
+  },
+  'openai:gpt-4.1-mini': {
+    input: 0.4 / 1_000_000,
+    output: 1.6 / 1_000_000,
+  },
+  'openai:gpt-4.1-nano': {
+    input: 0.1 / 1_000_000,
+    output: 0.4 / 1_000_000,
+  },
+  'openai:gpt-4o-mini': {
+    input: 0.15 / 1_000_000,
+    output: 0.6 / 1_000_000,
+  },
+};
+
+function normalizeModelId(modelId: string | null | undefined): string | null {
+  if (!modelId) return null;
+  const trimmed = modelId.trim();
+  if (!trimmed) return null;
+  return trimmed.split(':')[0];
+}
+
+function lookupKnownModelPricing(
+  provider: string | null | undefined,
+  modelId: string | null | undefined,
+): { promptPriceUsd: number; completionPriceUsd: number } | null {
+  const normalizedProvider = provider?.trim().toLowerCase();
+  const normalizedModel = normalizeModelId(modelId);
+  if (!normalizedProvider || !normalizedModel) return null;
+  const pricing = KNOWN_MODEL_PRICING_USD_PER_TOKEN[`${normalizedProvider}:${normalizedModel}`];
+  if (!pricing) return null;
+  return {
+    promptPriceUsd: pricing.input,
+    completionPriceUsd: pricing.output,
+  };
+}
+
 async function applyAgentModelSwitch(
   ctx: any,
   agentName: string,
@@ -46,12 +87,17 @@ async function applyAgentModelSwitch(
   promptPriceUsd?: number,
   completionPriceUsd?: number,
 ) {
+  const provider = providerOverride ?? 'openrouter';
+  const resolvedPricing =
+    promptPriceUsd !== undefined && completionPriceUsd !== undefined
+      ? { promptPriceUsd, completionPriceUsd }
+      : lookupKnownModelPricing(provider, modelOverride);
   await ctx.runMutation(internal.rocklaw.god._patchAgentModel, {
     agentName,
     modelOverride,
-    providerOverride,
-    currentModelPromptPrice: promptPriceUsd,
-    currentModelCompletionPrice: completionPriceUsd,
+    providerOverride: provider,
+    currentModelPromptPrice: resolvedPricing?.promptPriceUsd,
+    currentModelCompletionPrice: resolvedPricing?.completionPriceUsd,
   });
 
   const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
@@ -61,8 +107,7 @@ async function applyAgentModelSwitch(
 
   const fs = await import('fs/promises');
   const path = await import('path');
-  const { execSync, spawn } = await import('child_process');
-  const nodeFs = await import('fs');
+  const { execSync } = await import('child_process');
 
   const workspacePath = path.resolve(process.cwd(), agent.workspacePath);
   const agentDir = path.dirname(workspacePath);
@@ -74,8 +119,6 @@ async function applyAgentModelSwitch(
   } else {
     toml = `default_model = "${modelOverride}" # pinned\n${toml}`;
   }
-
-  const provider = providerOverride ?? 'openrouter';
   if (/^default_provider\s*=/m.test(toml)) {
     toml = toml.replace(/^default_provider\s*=\s*.+$/m, `default_provider = "${provider}"`);
   } else {
@@ -97,48 +140,9 @@ async function applyAgentModelSwitch(
     // already stopped or no pid file
   }
 
-  // Robust ZeroClaw path discovery
-  let zeroclawCmd = 'zeroclaw';
-  try {
-    execSync('which zeroclaw 2>/dev/null');
-  } catch {
-    const home = process.env.HOME || '/home/mahmoudqahawish';
-    const candidates = [
-      path.join(home, '.cargo/bin/zeroclaw'),
-      path.join(home, '.local/bin/zeroclaw'),
-      '/usr/local/bin/zeroclaw',
-      '/usr/bin/zeroclaw',
-    ];
-    for (const cand of candidates) {
-      if (nodeFs.existsSync(cand)) {
-        zeroclawCmd = cand;
-        break;
-      }
-    }
-  }
-
-  const child = spawn(
-    zeroclawCmd,
-    ['--config-dir', agentDir, 'gateway', 'start'],
-    {
-      cwd: agentDir,
-      detached: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env },
-    },
-  );
-  child.on('error', (err) => {
-    console.error(`Failed to spawn zeroclaw for ${agentName}:`, err);
-  });
-
-  if (child.pid) {
-    await fs.writeFile(pidFile, String(child.pid), 'utf8');
-  }
-
-  const logStream = nodeFs.createWriteStream(logFile, { flags: 'a' });
-  child.stdout?.pipe(logStream);
-  child.stderr?.pipe(logStream);
-  child.unref();
+  const projectRoot = await resolveProjectRoot(workspacePath);
+  await fs.rm(pidFile, { force: true });
+  await startAgentGateway(agentSlug, projectRoot);
 
   // Force a UI refresh after model change
   await recordCurrentStepSummaryInternal(ctx);
@@ -229,10 +233,93 @@ async function fetchOpenRouterRecommendedModels(topN = 24) {
   };
 }
 
-async function stopAllAgentProcesses() {
+async function resolveProjectRoot(pathHint?: string | null) {
+  const path = await import('path');
+  if (pathHint && path.isAbsolute(pathHint)) {
+    const normalized = pathHint.replace(/\\/g, '/');
+    if (normalized.endsWith('/workspace') || normalized.includes('/agents/')) {
+      return path.resolve(pathHint, '..', '..', '..');
+    }
+    return pathHint;
+  }
+  return process.env.ROCKLAW_PROJECT_ROOT || process.cwd();
+}
+
+async function resolveProjectOwner(projectRoot: string) {
+  const { execFileSync } = await import('child_process');
+  try {
+    const owner = execFileSync('stat', ['-c', '%U', projectRoot], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8',
+    }).trim();
+    return owner || null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveZeroClawBinary(pathHint?: string | null) {
+  const path = await import('path');
+  const os = await import('os');
+  const nodeFs = await import('fs');
+  const { execFileSync } = await import('child_process');
+  const projectRoot = await resolveProjectRoot(pathHint);
+
+  const homes = Array.from(new Set([
+    process.env.HOME,
+    os.homedir?.(),
+    '/home/mahmoudqahawish',
+  ].filter((value): value is string => Boolean(value))));
+
+  const candidates = [
+    path.join(projectRoot, '.rocklaw/bin/zeroclaw'),
+    ...homes.flatMap((home) => [
+      path.join(home, '.cargo/bin/zeroclaw'),
+      path.join(home, '.local/bin/zeroclaw'),
+    ]),
+    '/usr/local/bin/zeroclaw',
+    '/usr/bin/zeroclaw',
+  ];
+
+  for (const cand of candidates) {
+    if (nodeFs.existsSync(cand)) return cand;
+  }
+
+  try {
+    const resolved = execFileSync('bash', ['-lc', 'command -v zeroclaw'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8',
+      env: { ...process.env },
+    }).trim();
+    if (resolved) return resolved;
+  } catch {
+    // fall through
+  }
+
+  throw new Error('Unable to locate zeroclaw binary.');
+}
+
+async function buildGatewayEnv() {
+  const path = await import('path');
+  const os = await import('os');
+  const home = process.env.HOME || os.homedir?.() || '/home/mahmoudqahawish';
+  return {
+    ...process.env,
+    PATH: [
+      path.join(home, '.cargo/bin'),
+      path.join(home, '.local/bin'),
+      '/usr/local/bin',
+      '/usr/bin',
+      process.env.PATH || '',
+    ].filter(Boolean).join(':'),
+    ZEROCLAW_DISABLE_PROVIDER_STREAMING: '1',
+  };
+}
+
+async function stopAllAgentProcesses(projectRoot?: string | null) {
   const { execFileSync } = await import('child_process');
   const path = await import('path');
-  const root = process.cwd();
+  const root = await resolveProjectRoot(projectRoot);
   execFileSync('bash', [path.join(root, 'scripts', 'stop-all-agents.sh')], {
     cwd: root,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -240,10 +327,10 @@ async function stopAllAgentProcesses() {
   });
 }
 
-async function resetAgentSession(agentSlug: string, profile: 'blank-self' | 'seeded') {
+async function resetAgentSession(agentSlug: string, profile: 'blank-self' | 'seeded', projectRoot?: string | null) {
   const { execFileSync } = await import('child_process');
   const path = await import('path');
-  const root = process.cwd();
+  const root = await resolveProjectRoot(projectRoot);
   execFileSync('bash', [path.join(root, 'scripts', 'reset-agent-session.sh'), agentSlug, profile === 'blank-self' ? '--blank-self' : '--seeded'], {
     cwd: root,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -251,64 +338,52 @@ async function resetAgentSession(agentSlug: string, profile: 'blank-self' | 'see
   });
 }
 
-async function startAgentGateway(agentSlug: string) {
+async function startAgentGateway(agentSlug: string, projectRoot?: string | null) {
   const fs = await import('fs/promises');
-  const nodeFs = await import('fs');
   const path = await import('path');
-  const { execSync, spawn } = await import('child_process');
-  const root = process.cwd();
-  const agentDir = path.join(root, 'agents', agentSlug);
-  const logFile = `/tmp/zeroclaw-${agentSlug}.log`;
+  const { spawn } = await import('child_process');
+  const root = await resolveProjectRoot(projectRoot);
   const pidFile = `/tmp/zeroclaw-${agentSlug}.pid`;
+  await fs.rm(pidFile, { force: true });
 
-  // Robust ZeroClaw path discovery
-  let zeroclawCmd = 'zeroclaw';
-  try {
-    execSync('which zeroclaw 2>/dev/null');
-  } catch {
-    const home = process.env.HOME || '/home/mahmoudqahawish';
-    const candidates = [
-      path.join(home, '.cargo/bin/zeroclaw'),
-      path.join(home, '.local/bin/zeroclaw'),
-      '/usr/local/bin/zeroclaw',
-      '/usr/bin/zeroclaw',
-    ];
-    for (const cand of candidates) {
-      if (nodeFs.existsSync(cand)) {
-        zeroclawCmd = cand;
-        break;
-      }
-    }
-  }
-
-  const child = spawn(zeroclawCmd, ['--config-dir', agentDir, 'gateway', 'start'], {
-    cwd: agentDir,
-    detached: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env },
-  });
+  const launcherScript = path.join(root, 'scripts', 'start-agent.sh');
+  const owner = await resolveProjectOwner(root);
+  const shouldDropPrivileges = typeof process.getuid === 'function' && process.getuid() === 0 && owner && owner !== 'root';
+  const child = shouldDropPrivileges
+    ? spawn('runuser', ['-u', owner, '--', 'bash', launcherScript, agentSlug], {
+        cwd: root,
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env },
+      })
+    : spawn('bash', [launcherScript, agentSlug], {
+        cwd: root,
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env },
+      });
   child.on('error', (err) => {
-    console.error(`Failed to spawn zeroclaw for ${agentSlug}:`, err);
+    console.error(`Failed to launch gateway start script for ${agentSlug}:`, err);
   });
-
-  if (child.pid) {
-    await fs.writeFile(pidFile, String(child.pid), 'utf8');
-  }
-  const logStream = nodeFs.createWriteStream(logFile, { flags: 'a' });
-  child.stdout?.pipe(logStream);
-  child.stderr?.pipe(logStream);
   child.unref();
 }
 
 export const recordCurrentStepSummary = internalAction({
-  args: {},
-  handler: async (ctx): Promise<any> => {
-    return await recordCurrentStepSummaryInternal(ctx);
+  args: {
+    tick: v.optional(v.number()),
+    day: v.optional(v.number()),
+    timeOfDay: v.optional(v.string()),
+  },
+  handler: async (ctx, args): Promise<any> => {
+    return await recordCurrentStepSummaryInternal(ctx, args);
   },
 });
 
-async function recordCurrentStepSummaryInternal(ctx: any): Promise<any> {
-  const summary: any = await ctx.runQuery(api.rocklaw.observe.getStepSummary, {});
+async function recordCurrentStepSummaryInternal(
+  ctx: any,
+  args?: { tick?: number; day?: number; timeOfDay?: string },
+): Promise<any> {
+  const summary: any = await ctx.runQuery(api.rocklaw.observe.getStepSummary, args ?? {});
   await ctx.runMutation(internal.rocklaw.god._recordRunTickSummary, {
     tick: summary.tick,
     day: summary.day,
@@ -383,6 +458,9 @@ type ProviderModelsResult = {
   models: ProviderModel[];
   isLive: boolean;
 };
+
+type CostTraceSource =
+  | { path: string; kind: 'costs' | 'runtime-trace'; fileSize: number };
 
 const ANTHROPIC_MODELS: ProviderModel[] = [
   { id: 'claude-opus-4-6',   name: 'Claude Opus 4.6',   contextLength: 200000 },
@@ -639,29 +717,30 @@ export const readAgentCostsDelta = internalAction({
     const fs = await import('fs/promises');
     const path = await import('path');
 
-    const costsPath = path.resolve(process.cwd(), agent.workspacePath, 'state', 'costs.jsonl');
     const currentOffset = agent.costsFileOffset ?? 0;
+    const stateDir = path.resolve(process.cwd(), agent.workspacePath, 'state');
 
-    let fileSize: number;
-    try {
-      const stat = await fs.stat(costsPath);
-      fileSize = stat.size;
-    } catch {
+    const traceSource = await resolveCostTraceSource(fs, path.join(stateDir, 'costs.jsonl'), path.join(stateDir, 'runtime-trace.jsonl'));
+    if (!traceSource) {
       return;
     }
 
-    if (fileSize <= currentOffset) return;
+    const { path: tracePath, kind: traceKind, fileSize } = traceSource;
 
     let newBytes: Buffer;
     try {
-      const fd = await fs.open(costsPath, 'r');
-      try {
-        const readSize = fileSize - currentOffset;
-        const buf = Buffer.alloc(readSize);
-        await fd.read(buf, 0, readSize, currentOffset);
-        newBytes = buf;
-      } finally {
-        await fd.close();
+      if (fileSize > currentOffset) {
+        const fd = await fs.open(tracePath, 'r');
+        try {
+          const readSize = fileSize - currentOffset;
+          const buf = Buffer.alloc(readSize);
+          await fd.read(buf, 0, readSize, currentOffset);
+          newBytes = buf;
+        } finally {
+          await fd.close();
+        }
+      } else {
+        newBytes = Buffer.alloc(0);
       }
     } catch {
       return;
@@ -672,32 +751,52 @@ export const readAgentCostsDelta = internalAction({
     let deltaOutputTokens = 0;
     let deltaCostUsd = 0;
 
-    const promptPrice = agent.currentModelPromptPrice ?? null;
-    const completionPrice = agent.currentModelCompletionPrice ?? null;
+    const configDefaults = await readAgentConfigDefaults(agent, agentName);
+    const inferredPricing = lookupKnownModelPricing(
+      agent.providerOverride ?? configDefaults.defaultProvider,
+      agent.modelOverride ?? configDefaults.defaultModel,
+    );
+    const promptPrice = agent.currentModelPromptPrice ?? inferredPricing?.promptPriceUsd ?? null;
+    const completionPrice = agent.currentModelCompletionPrice ?? inferredPricing?.completionPriceUsd ?? null;
+
+    let totalCostUsdFromTrace = 0;
+    try {
+      const fullText = await fs.readFile(tracePath, 'utf8');
+      const fullLines = fullText.split('\n').filter((l) => l.trim().length > 0);
+      for (const line of fullLines) {
+        const parsed = parseCostTraceLine(line, traceKind);
+        if (!parsed) continue;
+        const { inputTokens, outputTokens, costUsd } = parsed;
+        if (promptPrice !== null && completionPrice !== null) {
+          totalCostUsdFromTrace += inputTokens * promptPrice + outputTokens * completionPrice;
+        } else {
+          totalCostUsdFromTrace += costUsd;
+        }
+      }
+    } catch {
+      totalCostUsdFromTrace = agent.lifetimeCostUsd ?? 0;
+    }
 
     for (const line of lines) {
-      let record: any;
-      try {
-        record = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const usage = record?.usage;
-      if (!usage) continue;
+      const parsed = parseCostTraceLine(line, traceKind);
+      if (!parsed) continue;
 
-      const inputTokens = Number(usage.input_tokens ?? 0);
-      const outputTokens = Number(usage.output_tokens ?? 0);
+      const { inputTokens, outputTokens, costUsd } = parsed;
       deltaInputTokens += inputTokens;
       deltaOutputTokens += outputTokens;
 
       if (promptPrice !== null && completionPrice !== null) {
         deltaCostUsd += inputTokens * promptPrice + outputTokens * completionPrice;
       } else {
-        deltaCostUsd += Number(usage.cost_usd ?? 0);
+        deltaCostUsd += costUsd;
       }
     }
 
-    if (deltaInputTokens === 0 && deltaOutputTokens === 0) return;
+    if (totalCostUsdFromTrace > (agent.lifetimeCostUsd ?? 0)) {
+      deltaCostUsd = totalCostUsdFromTrace - (agent.lifetimeCostUsd ?? 0);
+    }
+
+    if (deltaInputTokens === 0 && deltaOutputTokens === 0 && deltaCostUsd === 0) return;
 
     await ctx.runMutation(internal.rocklaw.god._patchAgentCosts, {
       agentName,
@@ -721,20 +820,69 @@ export const clearCostStats = action({
     for (const agentName of agentNames) {
       const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
       if (!agent) continue;
-      const costsPath = path.resolve(process.cwd(), agent.workspacePath, 'state', 'costs.jsonl');
-      let fileSize = 0;
-      try {
-        const stat = await fs.stat(costsPath);
-        fileSize = stat.size;
-      } catch {
-        // File doesn't exist — offset 0 is fine
-      }
+      const stateDir = path.resolve(process.cwd(), agent.workspacePath, 'state');
+      const traceSource = await resolveCostTraceSource(fs, path.join(stateDir, 'costs.jsonl'), path.join(stateDir, 'runtime-trace.jsonl'));
+      const fileSize = traceSource?.fileSize ?? 0;
       agentUpdates.push({ agentName, costsFileOffset: fileSize });
     }
 
     await ctx.runMutation(internal.rocklaw.god._clearAgentCosts, { agentUpdates });
   },
 });
+
+async function resolveCostTraceSource(
+  fs: typeof import('fs/promises'),
+  costsPath: string,
+  runtimeTracePath: string,
+): Promise<CostTraceSource | null> {
+  try {
+    const stat = await fs.stat(costsPath);
+    return { path: costsPath, kind: 'costs', fileSize: stat.size };
+  } catch {
+    // Fall through to runtime trace fallback.
+  }
+
+  try {
+    const stat = await fs.stat(runtimeTracePath);
+    return { path: runtimeTracePath, kind: 'runtime-trace', fileSize: stat.size };
+  } catch {
+    return null;
+  }
+}
+
+function parseCostTraceLine(
+  line: string,
+  kind: CostTraceSource['kind'],
+): { inputTokens: number; outputTokens: number; costUsd: number } | null {
+  let record: any;
+  try {
+    record = JSON.parse(line);
+  } catch {
+    return null;
+  }
+
+  if (kind === 'costs') {
+    const usage = record?.usage;
+    if (!usage) return null;
+    return {
+      inputTokens: Number(usage.input_tokens ?? 0),
+      outputTokens: Number(usage.output_tokens ?? 0),
+      costUsd: Number(usage.cost_usd ?? 0),
+    };
+  }
+
+  if (record?.event_type !== 'llm_response' || record?.success !== true) {
+    return null;
+  }
+
+  const payload = record?.payload;
+  if (!payload) return null;
+  return {
+    inputTokens: Number(payload.input_tokens ?? 0),
+    outputTokens: Number(payload.output_tokens ?? 0),
+    costUsd: Number(payload.cost_usd ?? 0),
+  };
+}
 
 export const testModel = action({
   args: {
@@ -772,6 +920,10 @@ export const prepareRunConsole = action({
     if (selectedAgentSlugs.length === 0) {
       throw new Error('Select at least one agent.');
     }
+    const currentAgent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, {
+      agentName: AGENT_NAME_BY_SLUG[selectedAgentSlugs[0]],
+    });
+    const projectRoot = await resolveProjectRoot(currentAgent?.workspacePath ?? null);
 
     await ctx.runMutation(api.rocklaw.god.stopRunAuto, {});
     await ctx.runMutation(api.rocklaw.god.stopSim, {});
@@ -789,7 +941,7 @@ export const prepareRunConsole = action({
     });
 
     try {
-      await stopAllAgentProcesses();
+      await stopAllAgentProcesses(projectRoot);
       if (args.mode === 'fresh') {
         await ctx.runMutation(api.rocklaw.init.initRocklaw, {
           force: true,
@@ -801,14 +953,14 @@ export const prepareRunConsole = action({
 
       await ctx.runMutation(api.rocklaw.init.setAllAgentsBlankProfile, { blankSelf: false });
       for (const slug of selectedAgentSlugs) {
-        await resetAgentSession(slug, args.profile);
+        await resetAgentSession(slug, args.profile, projectRoot);
         await ctx.runMutation(api.rocklaw.init.setAgentBlankProfile, {
           agentName: AGENT_NAME_BY_SLUG[slug],
           blankSelf: args.profile === 'blank-self',
         });
       }
 
-      await ctx.runMutation(api.rocklaw.init.setWorkspaceRoot, { rootPath: process.cwd() });
+      await ctx.runMutation(api.rocklaw.init.setWorkspaceRoot, { rootPath: projectRoot });
       await ctx.runMutation(internal.rocklaw.god._setRunAgentSelection, {
         selectedAgentNames: selectedAgentSlugs.map((slug) => AGENT_NAME_BY_SLUG[slug]),
       });
@@ -845,7 +997,7 @@ export const prepareRunConsole = action({
       }
 
       for (const slug of selectedAgentSlugs) {
-        await startAgentGateway(slug);
+        await startAgentGateway(slug, projectRoot);
       }
 
       await ctx.runMutation(internal.rocklaw.god._clearRunTickSummaries, {});

@@ -11,6 +11,7 @@ import { RECIPE_CATALOGUE, ROLE_ECONOMIC_ACTIONS, ROLE_TRADE_PROFILES, SERVICE_C
 import { describeBusyStatus } from './actionTiming';
 import { timeOfDayForTick } from './dayCycle';
 import { derivePlaceQuote } from './placeMarkets';
+import { getPlaceLayout } from './mapLayout';
 
 type EconomicSurfaceEntry = {
   action: string;
@@ -680,9 +681,10 @@ export const getWorldSnapshot = internalQuery({
         ...other,
         ...getBusySnapshot(other),
       }));
+    const reachableSet = new Set(getPlaceLayout(agent.location).neighbors);
     const reachableLocations = allLocations
       .map((entry) => entry.name)
-      .filter((name) => name !== agent.location)
+      .filter((name) => reachableSet.has(name))
       .sort((a, b) => a.localeCompare(b));
 
     const priceByItem = new Map(prices.map((price: any) => [price.item, price.price]));

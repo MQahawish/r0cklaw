@@ -64,10 +64,8 @@ function formatTokenCount(n: number): string {
   return String(n);
 }
 
-function formatCostUsd(usd: number): string {
-  if (usd === 0) return '$0.000';
-  if (usd < 0.001) return `$${usd.toFixed(5)}`;
-  return `$${usd.toFixed(3)}`;
+function hasUsageData(inputTokens: number, outputTokens: number): boolean {
+  return inputTokens > 0 || outputTokens > 0;
 }
 
 function repColour(score: number): string {
@@ -80,6 +78,9 @@ function repColour(score: number): string {
 function AgentCard({ agent, repScore }: { agent: any; repScore?: number }) {
   const [expanded, setExpanded] = useState(false);
   const inv = JSON.parse(agent.inventory ?? '{}') as Record<string, number>;
+  const inputTokens = agent.lifetimeInputTokens ?? 0;
+  const outputTokens = agent.lifetimeOutputTokens ?? 0;
+  const usageAvailable = hasUsageData(inputTokens, outputTokens);
 
   return (
     <div
@@ -151,16 +152,17 @@ function AgentCard({ agent, repScore }: { agent: any; repScore?: number }) {
           <span style={{ marginLeft: 8, color: '#a78bfa' }}>busy until tick {agent.busyUntilTick}</span>
         )}
       </div>
-      {((agent.lifetimeInputTokens ?? 0) > 0 || (agent.lifetimeOutputTokens ?? 0) > 0) && (
-        <div style={{ marginTop: 4, fontSize: 11, color: '#6b7280', fontFamily: 'ui-monospace, monospace' }}>
-          {formatTokenCount(agent.lifetimeInputTokens ?? 0)} in
-          {' / '}
-          {formatTokenCount(agent.lifetimeOutputTokens ?? 0)} out
-          {(agent.lifetimeCostUsd ?? 0) > 0 && (
-            <span style={{ color: '#fde68a', marginLeft: 8 }}>{formatCostUsd(agent.lifetimeCostUsd ?? 0)}</span>
-          )}
-        </div>
-      )}
+      <div style={{ marginTop: 4, fontSize: 11, color: '#6b7280', fontFamily: 'ui-monospace, monospace' }}>
+        {usageAvailable ? (
+          <>
+            {formatTokenCount(inputTokens)} in
+            {' / '}
+            {formatTokenCount(outputTokens)} out
+          </>
+        ) : (
+          <span>tokens: no data yet</span>
+        )}
+      </div>
       {expanded && (
         <div style={{ marginTop: 8, borderTop: '1px solid #374151', paddingTop: 8 }}>
           <div style={{ fontSize: 11, color: '#9ca3af' }}>
@@ -188,11 +190,10 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
 
 // ── Main dashboard ────────────────────────────────────────────────────────────
 
-type Tab = 'overview' | 'live' | 'run' | 'economy' | 'systems' | 'agents';
+type Tab = 'overview' | 'run' | 'economy' | 'systems' | 'agents';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'overview',  label: 'Overview'  },
-  { id: 'live',      label: 'Live'      },
   { id: 'run',       label: 'Run'       },
   { id: 'economy',   label: 'Economy'   },
   { id: 'systems',   label: 'Systems'   },
@@ -207,6 +208,7 @@ export default function GodDashboard({ onClose }: { onClose?: () => void }) {
 
   const [activeTab, setActiveTab] = useState<Tab>('overview');
   const [selectedAgentName, setSelectedAgentName] = useState<string | null>(null);
+  const [isOverviewLiveExpanded, setIsOverviewLiveExpanded] = useState(false);
 
   if (!dashboard) {
     return (
@@ -223,6 +225,9 @@ export default function GodDashboard({ onClose }: { onClose?: () => void }) {
   const effectiveSelectedAgent = agents.some((agent: any) => agent.name === selectedAgentName)
     ? selectedAgentName
     : agents[0]?.name ?? null;
+  const totalInputTokens = agents.reduce((sum: number, agent: any) => sum + (agent.lifetimeInputTokens ?? 0), 0);
+  const totalOutputTokens = agents.reduce((sum: number, agent: any) => sum + (agent.lifetimeOutputTokens ?? 0), 0);
+  const totalUsageAvailable = hasUsageData(totalInputTokens, totalOutputTokens);
 
   const shortages = prices.filter((p: any) => p.shortageLevel !== 'none');
   const isRunning = worldState?.isRunning ?? false;
@@ -241,7 +246,7 @@ export default function GodDashboard({ onClose }: { onClose?: () => void }) {
               Day {worldState?.day ?? '?'}, {worldState?.timeOfDay ?? '?'} — Tick {worldState?.tick ?? '?'}
             </span>
             <div style={{ marginTop: 4, fontSize: 12, color: '#64748b' }}>
-              Analytical dashboard first. Open the Live tab when you want the town view.
+              Analytical dashboard first. The live town view is now embedded in Overview.
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -330,9 +335,6 @@ export default function GodDashboard({ onClose }: { onClose?: () => void }) {
         {/* ── Tab: Run ── */}
         {activeTab === 'run' && <RunConsolePanel />}
 
-        {/* ── Tab: Live ── */}
-        {activeTab === 'live' && <LiveSimulationFrame />}
-
         {/* ── Tab: Economy ── */}
         {activeTab === 'economy' && <EconomyPanel />}
 
@@ -352,6 +354,30 @@ export default function GodDashboard({ onClose }: { onClose?: () => void }) {
 
           {/* ── Column 2: World log + Economy + Prayers ── */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto', maxHeight: 540, paddingRight: 10 }}>
+
+            <div>
+              <SectionHeader>Usage</SectionHeader>
+              <div style={{ background: '#0f1923', border: '1px solid #1f2937', borderRadius: 6, padding: '8px 10px', fontSize: 12, fontFamily: 'ui-monospace, monospace' }}>
+                {totalUsageAvailable ? (
+                  <div style={{ color: '#9ca3af' }}>
+                    <span>{formatTokenCount(totalInputTokens)} in</span>
+                    <span style={{ margin: '0 8px' }}>·</span>
+                    <span>{formatTokenCount(totalOutputTokens)} out</span>
+                  </div>
+                ) : (
+                  <div style={{ color: '#6b7280' }}>Tokens: no data yet</div>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <SectionHeader>Live Scene</SectionHeader>
+              <LiveSimulationFrame
+                mode="compact"
+                isExpanded={isOverviewLiveExpanded}
+                onToggleExpanded={() => setIsOverviewLiveExpanded((value) => !value)}
+              />
+            </div>
 
             {/* World log */}
             <div>

@@ -1,4 +1,5 @@
 export type RocklawPlaceType =
+  | 'residence'
   | 'industry'
   | 'trade'
   | 'hospitality'
@@ -45,10 +46,14 @@ export type RocklawLiveMoveState = {
 };
 
 export type RocklawLiveActionState = {
+  agentName?: string | null;
   action: string;
   target: string | null;
   location: string | null;
+  fromLocationId?: string | null;
+  toLocationId?: string | null;
   message: string | null;
+  tick?: number | null;
   outcome: string | null;
   outcomeNote: string | null;
 };

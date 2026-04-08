@@ -550,7 +550,7 @@ for agent in "${SELECTED_AGENTS[@]}"; do
   gateway_port="$(sed -n 's/^port[[:space:]]*=[[:space:]]*\([0-9][0-9]*\)$/\1/p' "$config_path" | head -n1)"
 
   cd "$agent_dir"
-  nohup zeroclaw --config-dir "$agent_dir" gateway start > "$log_path" 2>&1 < /dev/null &
+  ZEROCLAW_DISABLE_PROVIDER_STREAMING=1 nohup zeroclaw --config-dir "$agent_dir" gateway start > "$log_path" 2>&1 < /dev/null &
   echo $! > "$pid_path"
   wait_for_url "http://127.0.0.1:${gateway_port}/health" 30 1
 done
