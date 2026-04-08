@@ -183,7 +183,7 @@ export const startRocklaw = mutation({
     await ctx.db.patch(state._id, { isRunning: true });
 
     // Record initial Tick 0 summary so first actions have a home in the UI
-    await ctx.runAction(internal.rocklaw.godNode.recordCurrentStepSummary, {});
+    await ctx.scheduler.runAfter(0, internal.rocklaw.godNode.recordCurrentStepSummary, {});
 
     // Start the world clock after one interval (so it doesn't jump to Tick 1 immediately)
     await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.engine.runRocklawTick, {});

@@ -582,52 +582,85 @@ export const getStepSummary = query({
       }));
 
     const actionsByAgent = new Map<string, any[]>();
-    for (const action of actions.sort((a, b) => a._creationTime - b._creationTime)) {
+    // Sort by creation time to preserve the real sequence of events
+    const sortedActions = [...actions].sort((a, b) => a._creationTime - b._creationTime);
+    
+    for (const action of sortedActions) {
       if (!actionsByAgent.has(action.agentName)) actionsByAgent.set(action.agentName, []);
       actionsByAgent.get(action.agentName)!.push(action);
     }
 
     const currentTickActions = [];
     for (const [agentName, agentActions] of actionsByAgent.entries()) {
+      const latest = agentActions[agentActions.length - 1];
+      
       if (agentActions.length === 1) {
-        const a = agentActions[0];
-        currentTickActions.push({
-          agentName: a.agentName,
-          action: a.action,
-          target: a.target ?? null,
-          location: a.location ?? null,
-          message: a.message ?? null,
-          outcome: a.outcome,
-          outcomeNote: a.outcomeNote ?? null,
-        });
-      } else {
-        // Merge multiple actions (usually a 'Finished' and a 'Started')
-        const finish = agentActions.find(a => a.outcomeNote?.startsWith('Finished'));
-        const start = agentActions.find(a => a.outcomeNote?.startsWith('Started') || !a.outcomeNote?.startsWith('Finished'));
-        
-        const latest = agentActions[agentActions.length - 1];
-        let mergedNote = latest.outcomeNote ?? '';
-        
-        if (finish && start && finish.outcomeNote && start.outcomeNote) {
-          const finishedPart = finish.outcomeNote.replace('Finished ', '');
-          const startedPart = start.outcomeNote.startsWith('Started') 
-            ? start.outcomeNote.toLowerCase() 
-            : `started ${start.action}${start.target ? ' ' + start.target : ''}`;
-          mergedNote = `Finished ${finishedPart} and ${startedPart}`;
-        } else if (agentActions.length > 1) {
-          mergedNote = agentActions.map(a => a.outcomeNote).filter(Boolean).join(' · ');
-        }
-
         currentTickActions.push({
           agentName: latest.agentName,
           action: latest.action,
           target: latest.target ?? null,
           location: latest.location ?? null,
-          message: latest.message ?? (finish?.message || null),
+          message: latest.message ?? null,
           outcome: latest.outcome,
-          outcomeNote: mergedNote || null,
+          outcomeNote: latest.outcomeNote ?? null,
         });
+        continue;
       }
+
+      // We have multiple actions for this agent in this tick. Merge them.
+      let mergedAction = latest.action;
+      let mergedTarget = latest.target ?? null;
+      let mergedMessage = agentActions.find(a => a.message)?.message ?? null;
+      
+      const parts: string[] = [];
+      const finished = agentActions.find(a => a.outcomeNote?.startsWith('Finished'));
+      const started = agentActions.find(a => a.outcomeNote?.startsWith('Started'));
+      const dialogue = agentActions.find(a => a.action === 'say' || a.action === 'chat');
+
+      if (finished) {
+        parts.push(finished.outcomeNote!);
+      }
+      
+      if (dialogue && dialogue !== finished && dialogue !== started) {
+        const verb = dialogue.action === 'say' ? 'said' : 'chatted';
+        parts.push(verb + (dialogue.target ? ` with ${dialogue.target}` : ''));
+      }
+
+      if (started) {
+        // If we finished and started the same thing, simplify
+        if (finished && finished.action === started.action && finished.target === started.target) {
+          parts.push(`started again ${started.outcomeNote!.replace('Started ', '').toLowerCase()}`);
+        } else {
+          parts.push(started.outcomeNote!.toLowerCase());
+        }
+      }
+
+      // If we couldn't find specific started/finished patterns, just join everything unique
+      let mergedNote = '';
+      if (parts.length > 0) {
+        // Capitalize first, join with commas and 'and'
+        const sentence = parts.join(', ');
+        const lastComma = sentence.lastIndexOf(', ');
+        mergedNote = lastComma !== -1 
+          ? sentence.substring(0, lastComma) + ' and ' + sentence.substring(lastComma + 2)
+          : sentence;
+      } else {
+        mergedNote = agentActions
+          .map(a => a.outcomeNote)
+          .filter(Boolean)
+          .filter((v, i, a) => a.indexOf(v) === i) // Unique
+          .join(' · ');
+      }
+
+      currentTickActions.push({
+        agentName,
+        action: mergedAction,
+        target: mergedTarget,
+        location: latest.location ?? null,
+        message: mergedMessage,
+        outcome: latest.outcome,
+        outcomeNote: mergedNote || null,
+      });
     }
 
     const interruptLines: string[] = [];
@@ -665,7 +698,7 @@ export const getStepSummary = query({
         busy: agent.busy,
         busyUntilTick: agent.busyUntilTick ?? null,
         busyLabel: agent.busy
-          ? describeBusyStatus(pendingAction, agent.busyUntilTick)
+          ? describeBusyStatus(pendingAction, agent.busyUntilTick, tick)
           : null,
         provider: agent.providerOverride ?? null,
         model: agent.modelOverride ?? null,

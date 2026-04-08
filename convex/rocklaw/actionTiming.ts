@@ -54,9 +54,12 @@ export function describeActionForHumans(action: ActionLike | null | undefined): 
   }
 }
 
-export function describeBusyStatus(action: ActionLike | null | undefined, busyUntilTick: number | null | undefined): string {
+export function describeBusyStatus(action: ActionLike | null | undefined, busyUntilTick: number | null | undefined, currentTick?: number): string {
   const actionLabel = describeActionForHumans(action);
   if (typeof busyUntilTick === 'number') {
+    if (typeof currentTick === 'number' && currentTick >= busyUntilTick) {
+      return `finishing ${actionLabel}...`;
+    }
     return `${actionLabel} until tick ${busyUntilTick}`;
   }
   return actionLabel;
