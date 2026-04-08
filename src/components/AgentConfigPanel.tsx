@@ -17,7 +17,6 @@ const PROVIDER_OPTIONS = [
   { value: 'openai', label: 'OpenAI' },
   { value: 'anthropic', label: 'Anthropic' },
   { value: 'google', label: 'Google' },
-  { value: 'custom', label: 'Custom provider' },
 ];
 
 const MODEL_OPTIONS_BY_PROVIDER: Record<string, { value: string; label: string }[]> = {
@@ -52,6 +51,7 @@ const MODEL_OPTIONS_BY_PROVIDER: Record<string, { value: string; label: string }
 };
 
 type ProviderModel = { id: string; name: string; contextLength: number; pricing?: { prompt: string; completion: string } };
+type ProviderModelsResult = { models: ProviderModel[]; isLive: boolean };
 
 function formatPricing(pricing: { prompt: string; completion: string }): string {
   const pIn = parseFloat(pricing.prompt);
@@ -62,9 +62,30 @@ function formatPricing(pricing: { prompt: string; completion: string }): string 
 }
 
 function formatModelLabel(m: { id: string; name: string; contextLength: number; pricing?: { prompt: string; completion: string } }): string {
-  const ctx = m.contextLength > 0 ? ` (${(m.contextLength / 1000).toFixed(0)}k ctx)` : '';
+  const formatMillions = (value: number) => {
+    const rounded = (value / 1_000_000).toFixed(value % 1_000_000 === 0 ? 0 : 1);
+    return rounded.endsWith('.0') ? rounded.slice(0, -2) : rounded;
+  };
+  const ctx =
+    m.contextLength >= 1_000_000
+      ? ` (${formatMillions(m.contextLength)}M ctx)`
+      : m.contextLength > 0
+        ? ` (${(m.contextLength / 1000).toFixed(0)}k ctx)`
+        : '';
   const price = m.pricing ? ` · ${formatPricing(m.pricing)}` : '';
   return `${m.name}${ctx}${price}`;
+}
+
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function formatCostUsd(usd: number): string {
+  if (usd === 0) return '$0.000';
+  if (usd < 0.001) return `$${usd.toFixed(5)}`;
+  return `$${usd.toFixed(3)}`;
 }
 
 function repColour(score: number): string {
@@ -196,26 +217,45 @@ function AgentRow({
 
 function AgentDetail({
   agentName,
-  repByAgent,
+  allAgentNames,
 }: {
   agentName: string;
-  repByAgent: Record<string, number>;
+  allAgentNames: string[];
 }) {
   const detail = useQuery(api.rocklaw.god.getAgentDetail, { agentName });
   const setAgentModel = useAction(api.rocklaw.godNode.setAgentModel);
   const getAgentConfigDefaults = useAction(api.rocklaw.godNode.getAgentConfigDefaults);
   const listProviderModels = useAction(api.rocklaw.godNode.listProviderModels);
   const testModel = useAction(api.rocklaw.godNode.testModel);
+  const clearCostStats = useAction(api.rocklaw.godNode.clearCostStats);
+  const [clearingStats, setClearingStats] = useState(false);
 
   const [providerInput, setProviderInput] = useState('openrouter');
   const [modelChoice, setModelChoice] = useState('');
-  const [customProviderInput, setCustomProviderInput] = useState('');
   const [customModelInput, setCustomModelInput] = useState('');
   const [saving, setSaving] = useState(false);
+  const [applyingAll, setApplyingAll] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; reply?: string; latencyMs: number; error?: string } | null>(null);
   const [testing, setTesting] = useState(false);
   const [configDefaults, setConfigDefaults] = useState<{ defaultProvider: string | null; defaultModel: string | null } | null>(null);
   const [allProviderModels, setAllProviderModels] = useState<Record<string, ProviderModel[]>>({});
+  const [providerAvailability, setProviderAvailability] = useState<Record<string, boolean>>({});
+
+  const providerOptions = useMemo(() => {
+    const currentProvider = detail?.agent.providerOverride ?? configDefaults?.defaultProvider ?? null;
+    const hasKnownProvider = currentProvider ? PROVIDER_OPTIONS.some((option) => option.value === currentProvider) : true;
+    const options = PROVIDER_OPTIONS.map((option) => {
+      const offline = providerAvailability[option.value] === false && (option.value === 'openai' || option.value === 'google');
+      return {
+        value: option.value,
+        label: offline ? `${option.label} (offline - add API key)` : option.label,
+      };
+    });
+    if (currentProvider && !hasKnownProvider) {
+      options.push({ value: currentProvider, label: `${currentProvider} (current)` });
+    }
+    return options;
+  }, [configDefaults?.defaultProvider, detail?.agent.providerOverride, providerAvailability]);
 
   const modelOptions = useMemo(() => {
     const fetched = allProviderModels[providerInput] ?? [];
@@ -246,16 +286,19 @@ function AgentDetail({
     void Promise.all(
       providers.map((p) =>
         listProviderModels({ provider: p })
-          .then((res) => ({ provider: p, models: res.models }))
-          .catch(() => ({ provider: p, models: [] as ProviderModel[] })),
+          .then((res: ProviderModelsResult) => ({ provider: p, models: res.models, isLive: res.isLive }))
+          .catch(() => ({ provider: p, models: [] as ProviderModel[], isLive: false })),
       ),
     ).then((results) => {
       if (cancelled) return;
       const map: Record<string, ProviderModel[]> = {};
-      for (const { provider, models } of results) {
+      const availability: Record<string, boolean> = {};
+      for (const { provider, models, isLive } of results) {
         map[provider] = models;
+        availability[provider] = isLive;
       }
       setAllProviderModels(map);
+      setProviderAvailability(availability);
     });
     return () => { cancelled = true; };
   }, [listProviderModels]);
@@ -264,22 +307,21 @@ function AgentDetail({
     if (!detail) return;
     const { agent } = detail;
     const currentProvider = agent.providerOverride ?? configDefaults?.defaultProvider ?? 'openrouter';
-    const providerOptionExists = PROVIDER_OPTIONS.some((option) => option.value === currentProvider);
-    const nextProvider = providerOptionExists ? currentProvider : 'custom';
+    const providerOptionExists = providerOptions.some((option) => option.value === currentProvider);
+    const nextProvider = providerOptionExists ? currentProvider : 'openrouter';
     const currentModel = agent.modelOverride ?? configDefaults?.defaultModel ?? '';
     const currentOptions =
-      nextProvider === 'openrouter' && (allProviderModels.openrouter?.length ?? 0) > 0
+      (allProviderModels[nextProvider]?.length ?? 0) > 0
         ? [
-            ...(allProviderModels.openrouter ?? []).map((m: ProviderModel) => ({ value: m.id, label: formatModelLabel(m) })),
+            ...(allProviderModels[nextProvider] ?? []).map((m: ProviderModel) => ({ value: m.id, label: formatModelLabel(m) })),
             { value: 'custom', label: 'Custom model id' },
           ]
         : MODEL_OPTIONS_BY_PROVIDER[nextProvider] ?? MODEL_OPTIONS_BY_PROVIDER.custom;
     const modelOptionExists = currentOptions.some((option) => option.value === currentModel);
 
     setProviderInput(nextProvider);
-    setCustomProviderInput(providerOptionExists ? '' : currentProvider);
     if (!currentModel) {
-      setModelChoice('');
+      setModelChoice(currentOptions[0]?.value ?? '');
       setCustomModelInput('');
       return;
     }
@@ -290,7 +332,7 @@ function AgentDetail({
       setModelChoice('custom');
       setCustomModelInput(currentModel);
     }
-  }, [detail, configDefaults, allProviderModels]);
+  }, [detail, configDefaults, allProviderModels, providerOptions]);
 
   if (!detail) {
     return <div style={{ color: '#6b7280', fontSize: 12 }}>Loading...</div>;
@@ -305,24 +347,62 @@ function AgentDetail({
   const providerSource = agent.providerOverride ? 'override' : 'config';
   const modelSource = agent.modelOverride ? 'override' : 'config';
 
-  const resolvedProvider = providerInput === 'custom' ? customProviderInput.trim() : providerInput;
+  const resolvedProvider = providerInput.trim();
   const resolvedModel = modelChoice === 'custom' ? customModelInput.trim() : modelChoice;
 
   const handleSaveModel = async () => {
     if (!resolvedModel) return;
     setSaving(true);
     try {
+      const orModels = allProviderModels.openrouter ?? [];
+      const orModel = orModels.find((m: ProviderModel) => m.id === resolvedModel);
+      const promptPriceUsd = resolvedProvider === 'openrouter' && orModel?.pricing
+        ? parseFloat(orModel.pricing.prompt)
+        : undefined;
+      const completionPriceUsd = resolvedProvider === 'openrouter' && orModel?.pricing
+        ? parseFloat(orModel.pricing.completion)
+        : undefined;
       await setAgentModel({
         agentName,
         modelOverride: resolvedModel,
         providerOverride: resolvedProvider || undefined,
+        promptPriceUsd,
+        completionPriceUsd,
       });
-      setModelChoice('');
+      const openRouterOptions = (allProviderModels.openrouter?.length ?? 0) > 0
+        ? allProviderModels.openrouter.map((m: ProviderModel) => ({ value: m.id, label: formatModelLabel(m) }))
+        : MODEL_OPTIONS_BY_PROVIDER.openrouter;
+      setModelChoice(openRouterOptions[0]?.value ?? '');
       setCustomModelInput('');
-      setCustomProviderInput('');
       setProviderInput('openrouter');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleApplyAll = async () => {
+    if (!resolvedModel) return;
+    setApplyingAll(true);
+    try {
+      const orModels = allProviderModels.openrouter ?? [];
+      const orModel = orModels.find((m: ProviderModel) => m.id === resolvedModel);
+      const promptPriceUsd = resolvedProvider === 'openrouter' && orModel?.pricing
+        ? parseFloat(orModel.pricing.prompt)
+        : undefined;
+      const completionPriceUsd = resolvedProvider === 'openrouter' && orModel?.pricing
+        ? parseFloat(orModel.pricing.completion)
+        : undefined;
+      for (const name of allAgentNames) {
+        await setAgentModel({
+          agentName: name,
+          modelOverride: resolvedModel,
+          providerOverride: resolvedProvider || undefined,
+          promptPriceUsd,
+          completionPriceUsd,
+        });
+      }
+    } finally {
+      setApplyingAll(false);
     }
   };
 
@@ -347,6 +427,21 @@ function AgentDetail({
           <span style={{ fontSize: 15, fontWeight: 700, color: '#f9fafb' }}>{agent.name}</span>
           <span style={{ fontSize: 12, color: '#6b7280', marginLeft: 8 }}>{agent.role}</span>
         </div>
+        {((agent.lifetimeCostUsd ?? 0) > 0 || (agent.lifetimeInputTokens ?? 0) > 0) && (
+          <button
+            onClick={async () => {
+              setClearingStats(true);
+              try { await clearCostStats({}); } finally { setClearingStats(false); }
+            }}
+            disabled={clearingStats}
+            style={{
+              fontSize: 11, padding: '3px 8px', borderRadius: 4, cursor: clearingStats ? 'default' : 'pointer',
+              background: '#1f2937', color: '#6b7280', border: '1px solid #374151',
+            }}
+          >
+            {clearingStats ? '...' : 'Clear stats'}
+          </button>
+        )}
       </div>
 
       {/* Config fields */}
@@ -369,18 +464,22 @@ function AgentDetail({
           </span>
         </div>
         <div style={{ display: 'grid', gap: 8, marginTop: 4 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '130px minmax(0, 1fr) auto auto', gap: 6 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '130px minmax(0, 1fr) auto auto auto', gap: 6 }}>
             <select
               value={providerInput}
               onChange={(e) => {
-                setProviderInput(e.target.value);
-                setModelChoice('');
+                const nextProvider = e.target.value;
+                setProviderInput(nextProvider);
+                const nextOptions = (allProviderModels[nextProvider]?.length ?? 0) > 0
+                  ? (allProviderModels[nextProvider] ?? []).map((m: ProviderModel) => ({ value: m.id, label: formatModelLabel(m) }))
+                  : MODEL_OPTIONS_BY_PROVIDER[nextProvider] ?? MODEL_OPTIONS_BY_PROVIDER.custom;
+                setModelChoice(nextOptions[0]?.value ?? '');
                 setCustomModelInput('');
                 setTestResult(null);
               }}
               style={INPUT_STYLE}
             >
-              {PROVIDER_OPTIONS.map((option) => (
+              {providerOptions.map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>
               ))}
             </select>
@@ -392,7 +491,6 @@ function AgentDetail({
               }}
               style={INPUT_STYLE}
             >
-              <option value="">Choose model</option>
               {modelOptions.map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>
               ))}
@@ -408,6 +506,20 @@ function AgentDetail({
               }}
             >
               {saving ? '...' : 'Save'}
+            </button>
+            <button
+              onClick={handleApplyAll}
+              disabled={!resolvedModel || applyingAll || saving}
+              title="Apply this provider + model to all agents"
+              style={{
+                fontSize: 11, padding: '4px 10px', borderRadius: 4,
+                cursor: resolvedModel && !applyingAll ? 'pointer' : 'default',
+                background: resolvedModel && !applyingAll ? '#78350f' : '#1f2937',
+                color: resolvedModel && !applyingAll ? '#fde68a' : '#4b5563',
+                border: 'none', flexShrink: 0,
+              }}
+            >
+              {applyingAll ? '...' : 'All'}
             </button>
             <button
               onClick={handleTest}
@@ -438,14 +550,6 @@ function AgentDetail({
                 : `✗ ${testResult.error} · ${testResult.latencyMs}ms`}
             </div>
           )}
-          {providerInput === 'custom' && (
-            <input
-              value={customProviderInput}
-              onChange={(e) => setCustomProviderInput(e.target.value)}
-              placeholder="Custom provider id"
-              style={INPUT_STYLE}
-            />
-          )}
           {modelChoice === 'custom' && (
             <input
               value={customModelInput}
@@ -459,6 +563,25 @@ function AgentDetail({
           </div>
         </div>
       </div>
+
+      {/* Cost & Token Stats */}
+      {((agent.lifetimeInputTokens ?? 0) > 0 || (agent.lifetimeOutputTokens ?? 0) > 0) && (
+        <div style={{ background: '#1f2937', borderRadius: 5, padding: '8px 10px' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 6 }}>
+            Usage (lifetime)
+          </div>
+          <div style={{ fontSize: 12, color: '#9ca3af', fontFamily: 'ui-monospace, monospace' }}>
+            {'↑ '}
+            <span style={{ color: '#e5e7eb' }}>{formatTokenCount(agent.lifetimeInputTokens ?? 0)}</span>
+            {' in · '}
+            <span style={{ color: '#e5e7eb' }}>{formatTokenCount(agent.lifetimeOutputTokens ?? 0)}</span>
+            {' out'}
+            {(agent.lifetimeCostUsd ?? 0) > 0 && (
+              <span style={{ color: '#fde68a', marginLeft: 8 }}>{formatCostUsd(agent.lifetimeCostUsd ?? 0)}</span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Reputation */}
       <div style={{ background: '#1f2937', borderRadius: 5, padding: 10 }}>
@@ -560,7 +683,7 @@ export default function AgentConfigPanel({ agents, repByAgent, selectedAgentName
       {/* Right: detail */}
       <div style={{ overflowY: 'auto', minWidth: 0, paddingRight: 6 }}>
         {selected ? (
-          <AgentDetail agentName={selected} repByAgent={repByAgent} />
+          <AgentDetail agentName={selected} allAgentNames={agents.map((a: any) => a.name)} />
         ) : (
           <div style={{ color: '#4b5563', fontSize: 12, fontStyle: 'italic' }}>Select an agent.</div>
         )}
