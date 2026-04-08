@@ -411,10 +411,12 @@ export const tickAgent = internalAction({
         line: summariseFailure(day, timeOfDay, 'agent turn failed before a final action', failureMessage),
       });
       await handleOpenRouterFreeFailure(ctx, agentName, 'transport_failed', failureMessage);
+      await ctx.runMutation(internal.rocklaw.engine.pauseForAgentFailure, {
+        agentName,
+        tick,
+        description: failureMessage,
+      });
       await appendTickDebug(agent.workspacePath, debugRecord);
-      if (!_manual) {
-        await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.bridgeNode.tickAgent, { agentName });
-      }
       return;
     }
 
@@ -533,6 +535,13 @@ export const tickAgent = internalAction({
     console.log(
       `[bridge] ${agentName} tick ${tick}: ${action.action} → ${action.target ?? 'null'} [${result?.outcome ?? 'success'}] next in ${nextMs}ms`,
     );
+
+    // Non-fatal cost tracking — runs after every tick that got a ZeroClaw response
+    try {
+      await ctx.runAction(internal.rocklaw.godNode.readAgentCostsDelta, { agentName });
+    } catch (costErr) {
+      console.warn(`[bridge] Cost tracking failed for ${agentName}:`, costErr);
+    }
 
     if (!_manual) {
       await ctx.scheduler.runAfter(nextMs, internal.rocklaw.bridgeNode.tickAgent, { agentName });
