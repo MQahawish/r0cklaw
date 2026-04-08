@@ -36,6 +36,11 @@ services:
       - DATABASE_URL=${DATABASE_URL:-}
       - ZEROCLAW_GATEWAY_HOST=${ZEROCLAW_GATEWAY_HOST:-host.docker.internal}
       - ROCKLAW_PROJECT_ROOT=${PWD}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
     healthcheck:
       test: curl -f http://localhost:3210/version
       interval: 5s

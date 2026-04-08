@@ -4,12 +4,12 @@ set -euo pipefail
 
 provider_from_config() {
   local config_path=$1
-  sed -n 's/^default_provider[[:space:]]*=[[:space:]]*"\(.*\)"$/\1/p' "$config_path" | head -n1
+  sed -n 's/^default_provider[[:space:]]*=[[:space:]]*"\(.*\)"[[:space:]]*\(#.*\)\?$/\1/p' "$config_path" | head -n1
 }
 
 model_from_config() {
   local config_path=$1
-  sed -n 's/^default_model[[:space:]]*=[[:space:]]*"\(.*\)"$/\1/p' "$config_path" | head -n1
+  sed -n 's/^default_model[[:space:]]*=[[:space:]]*"\(.*\)"[[:space:]]*\(#.*\)\?$/\1/p' "$config_path" | head -n1
 }
 
 config_has_explicit_api_key() {

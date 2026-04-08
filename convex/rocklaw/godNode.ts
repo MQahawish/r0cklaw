@@ -70,9 +70,9 @@ async function applyAgentModelSwitch(
 
   let toml = await fs.readFile(configPath, 'utf8');
   if (/^default_model\s*=/m.test(toml)) {
-    toml = toml.replace(/^default_model\s*=\s*.+$/m, `default_model = "${modelOverride}"`);
+    toml = toml.replace(/^default_model\s*=\s*.+$/m, `default_model = "${modelOverride}" # pinned`);
   } else {
-    toml = `default_model = "${modelOverride}"\n${toml}`;
+    toml = `default_model = "${modelOverride}" # pinned\n${toml}`;
   }
 
   const provider = providerOverride ?? 'openrouter';
@@ -89,14 +89,36 @@ async function applyAgentModelSwitch(
   const logFile = `/tmp/zeroclaw-${agentSlug}.log`;
 
   try {
-    const pid = (await fs.readFile(pidFile, 'utf8')).trim();
-    execSync(`kill ${pid} 2>/dev/null || true`);
+    const pidString = (await fs.readFile(pidFile, 'utf8')).trim();
+    if (pidString) {
+      execSync(`kill ${pidString} 2>/dev/null || true`);
+    }
   } catch {
     // already stopped or no pid file
   }
 
+  // Robust ZeroClaw path discovery
+  let zeroclawCmd = 'zeroclaw';
+  try {
+    execSync('which zeroclaw 2>/dev/null');
+  } catch {
+    const home = process.env.HOME || '/home/mahmoudqahawish';
+    const candidates = [
+      path.join(home, '.cargo/bin/zeroclaw'),
+      path.join(home, '.local/bin/zeroclaw'),
+      '/usr/local/bin/zeroclaw',
+      '/usr/bin/zeroclaw',
+    ];
+    for (const cand of candidates) {
+      if (nodeFs.existsSync(cand)) {
+        zeroclawCmd = cand;
+        break;
+      }
+    }
+  }
+
   const child = spawn(
-    'zeroclaw',
+    zeroclawCmd,
     ['--config-dir', agentDir, 'gateway', 'start'],
     {
       cwd: agentDir,
@@ -105,12 +127,21 @@ async function applyAgentModelSwitch(
       env: { ...process.env },
     },
   );
-  await fs.writeFile(pidFile, String(child.pid), 'utf8');
+  child.on('error', (err) => {
+    console.error(`Failed to spawn zeroclaw for ${agentName}:`, err);
+  });
+
+  if (child.pid) {
+    await fs.writeFile(pidFile, String(child.pid), 'utf8');
+  }
 
   const logStream = nodeFs.createWriteStream(logFile, { flags: 'a' });
   child.stdout?.pipe(logStream);
   child.stderr?.pipe(logStream);
   child.unref();
+
+  // Force a UI refresh after model change
+  await recordCurrentStepSummaryInternal(ctx);
 }
 
 function parseConfigValue(toml: string, key: string): string | null {
@@ -224,27 +255,59 @@ async function startAgentGateway(agentSlug: string) {
   const fs = await import('fs/promises');
   const nodeFs = await import('fs');
   const path = await import('path');
-  const { spawn } = await import('child_process');
+  const { execSync, spawn } = await import('child_process');
   const root = process.cwd();
   const agentDir = path.join(root, 'agents', agentSlug);
   const logFile = `/tmp/zeroclaw-${agentSlug}.log`;
   const pidFile = `/tmp/zeroclaw-${agentSlug}.pid`;
 
-  const child = spawn('zeroclaw', ['--config-dir', agentDir, 'gateway', 'start'], {
+  // Robust ZeroClaw path discovery
+  let zeroclawCmd = 'zeroclaw';
+  try {
+    execSync('which zeroclaw 2>/dev/null');
+  } catch {
+    const home = process.env.HOME || '/home/mahmoudqahawish';
+    const candidates = [
+      path.join(home, '.cargo/bin/zeroclaw'),
+      path.join(home, '.local/bin/zeroclaw'),
+      '/usr/local/bin/zeroclaw',
+      '/usr/bin/zeroclaw',
+    ];
+    for (const cand of candidates) {
+      if (nodeFs.existsSync(cand)) {
+        zeroclawCmd = cand;
+        break;
+      }
+    }
+  }
+
+  const child = spawn(zeroclawCmd, ['--config-dir', agentDir, 'gateway', 'start'], {
     cwd: agentDir,
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env },
   });
+  child.on('error', (err) => {
+    console.error(`Failed to spawn zeroclaw for ${agentSlug}:`, err);
+  });
 
-  await fs.writeFile(pidFile, String(child.pid), 'utf8');
+  if (child.pid) {
+    await fs.writeFile(pidFile, String(child.pid), 'utf8');
+  }
   const logStream = nodeFs.createWriteStream(logFile, { flags: 'a' });
   child.stdout?.pipe(logStream);
   child.stderr?.pipe(logStream);
   child.unref();
 }
 
-async function recordCurrentStepSummary(ctx: any): Promise<any> {
+export const recordCurrentStepSummary = internalAction({
+  args: {},
+  handler: async (ctx): Promise<any> => {
+    return await recordCurrentStepSummaryInternal(ctx);
+  },
+});
+
+async function recordCurrentStepSummaryInternal(ctx: any): Promise<any> {
   const summary: any = await ctx.runQuery(api.rocklaw.observe.getStepSummary, {});
   await ctx.runMutation(internal.rocklaw.god._recordRunTickSummary, {
     tick: summary.tick,
@@ -825,7 +888,7 @@ export const stepRunConsole = action({
 
     try {
       await ctx.runAction(api.rocklaw.engine.manualTick, {});
-      const summary: any = await recordCurrentStepSummary(ctx);
+      const summary: any = await recordCurrentStepSummaryInternal(ctx);
       await ctx.runMutation(internal.rocklaw.god._upsertRunConsoleState, {
         stepInProgress: false,
         controlStatus: 'ready',
@@ -865,7 +928,7 @@ export const runConsoleAutoLoop = internalAction({
         const latest = await ctx.runQuery(api.rocklaw.god.getRunConsole, {});
         if (!latest.state.autoRunning || latest.state.loopToken !== loopToken) break;
         await ctx.runAction(api.rocklaw.engine.manualTick, {});
-        await recordCurrentStepSummary(ctx);
+        await recordCurrentStepSummaryInternal(ctx);
       }
 
       const latest = await ctx.runQuery(api.rocklaw.god.getRunConsole, {});

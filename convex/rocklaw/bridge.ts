@@ -2624,6 +2624,20 @@ async function startBusyAction(
   },
 ) {
   const { agentName, action, tick, day, durationTicks } = args;
+
+  // Record that the action has started immediately for UI visibility
+  await ctx.db.insert('rl_actions_log', {
+    agentName,
+    action: action.action,
+    target: action.target ?? action.location ?? action.item ?? undefined,
+    location: agentDoc.location,
+    message: action.text ?? action.message,
+    tick,
+    day,
+    outcome: 'success',
+    outcomeNote: `Started ${describeActionForHumans(action)} (completes at tick ${tick + durationTicks})`,
+  });
+
   await ctx.db.patch(agentDoc._id, {
     busy: true,
     busyUntilTick: tick + durationTicks,

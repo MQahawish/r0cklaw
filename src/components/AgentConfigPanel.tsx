@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useAction } from 'convex/react';
 import { api } from '../../convex/_generated/api';
+import { toast } from 'react-toastify';
 
 const PROVIDER_OPTIONS = [
   { value: 'openrouter', label: 'OpenRouter' },
@@ -383,6 +384,10 @@ function AgentDetail({
   const handleApplyAll = async () => {
     if (!resolvedModel) return;
     setApplyingAll(true);
+    const toastId = toast.loading(`Applying ${resolvedModel} to all agents...`);
+    let successCount = 0;
+    let failCount = 0;
+
     try {
       const orModels = allProviderModels.openrouter ?? [];
       const orModel = orModels.find((m: ProviderModel) => m.id === resolvedModel);
@@ -392,15 +397,30 @@ function AgentDetail({
       const completionPriceUsd = resolvedProvider === 'openrouter' && orModel?.pricing
         ? parseFloat(orModel.pricing.completion)
         : undefined;
+
       for (const name of allAgentNames) {
-        await setAgentModel({
-          agentName: name,
-          modelOverride: resolvedModel,
-          providerOverride: resolvedProvider || undefined,
-          promptPriceUsd,
-          completionPriceUsd,
-        });
+        try {
+          await setAgentModel({
+            agentName: name,
+            modelOverride: resolvedModel,
+            providerOverride: resolvedProvider || undefined,
+            promptPriceUsd,
+            completionPriceUsd,
+          });
+          successCount++;
+        } catch (err: any) {
+          console.error(`Failed to set model for ${name}:`, err);
+          failCount++;
+        }
       }
+
+      if (failCount === 0) {
+        toast.update(toastId, { render: `Applied to all ${successCount} agents!`, type: 'success', isLoading: false, autoClose: 2000 });
+      } else {
+        toast.update(toastId, { render: `Done: ${successCount} OK, ${failCount} failed.`, type: 'warning', isLoading: false, autoClose: 3000 });
+      }
+    } catch (err: any) {
+      toast.update(toastId, { render: `Failed: ${err.message}`, type: 'error', isLoading: false, autoClose: 3000 });
     } finally {
       setApplyingAll(false);
     }

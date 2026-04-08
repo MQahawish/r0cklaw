@@ -550,6 +550,13 @@ export const tickAgent = internalAction({
       console.warn(`[bridge] Cost tracking failed for ${agentName}:`, costErr);
     }
 
+    // Refresh UI summary so this action appears immediately
+    try {
+      await ctx.runAction(internal.rocklaw.godNode.recordCurrentStepSummary, {});
+    } catch (uiErr) {
+      console.warn(`[bridge] UI summary refresh failed for ${agentName}:`, uiErr);
+    }
+
     if (!_manual) {
       await ctx.scheduler.runAfter(nextMs, internal.rocklaw.bridgeNode.tickAgent, { agentName });
     }

@@ -18,7 +18,7 @@ export const getAgentFiles = action({
   args: { agentName: v.string() },
   handler: async (ctx, { agentName }): Promise<{ files: AgentFileEntry[] }> => {
     const agents = await ctx.runQuery(api.rocklaw.observe.getAgentWorkspacePaths);
-    const agent = agents.find((entry) => entry.name === agentName);
+    const agent = agents.find((entry: { name: string; workspacePath: string }) => entry.name === agentName);
     if (!agent) return { files: [] };
 
     const workspacePath = resolveWorkspacePath(agent.workspacePath);

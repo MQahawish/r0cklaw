@@ -1,8 +1,8 @@
-import { Container, Graphics, Sprite, Text, useApp } from '@pixi/react';
+import { Container, Graphics, Text, useApp } from '@pixi/react';
+import { Stage } from '@pixi/react';
 import * as PIXI from 'pixi.js';
 import { useEffect, useMemo, useState } from 'react';
 import { useElementSize } from 'usehooks-ts';
-import { Stage } from '@pixi/react';
 import PixiViewport from './PixiViewport.tsx';
 import {
   RocklawAgentVisualState,
@@ -13,22 +13,37 @@ import {
   ROCKLAW_ACTION_ICONS,
   ROCKLAW_AGENT_COLORS,
 } from '../../convex/rocklaw/liveScene';
-import exteriorsUrl from '../assets/rocklaw-live/exteriors/Modern_Exteriors_Complete_Tileset_32x32.png';
-import interiorsUrl from '../assets/rocklaw-live/interiors/Room_Builder_32x32.png';
-import officeUrl from '../assets/rocklaw-live/office/Room_Builder_Office_32x32.png';
-import uiStyle1Url from '../assets/rocklaw-live/ui/Modern_UI_Style_1.png';
-import uiStyle2Url from '../assets/rocklaw-live/ui/Modern_UI_Style_2.png';
-import homeLayer1Url from '../assets/rocklaw-live/home/Generic_Home_1_Layer_1_32x32.png';
-import homeLayer2Url from '../assets/rocklaw-live/home/Generic_Home_1_Layer_2_32x32.png';
-import homePreviewUrl from '../assets/rocklaw-live/home/Generic_Home_1_preview_32x32.png';
 
 const TILE_DIM = 44;
 const WORLD_MARGIN = 120;
+const PANEL_WIDTH = 360;
+
+type Facing = 'left' | 'up' | 'right' | 'down';
 
 type AgentPlacement = {
   agent: RocklawAgentVisualState;
   point: { x: number; y: number };
   location: RocklawLocationNode;
+  facing: Facing;
+  moving: boolean;
+};
+
+type NodeSummary = {
+  location: RocklawLocationNode;
+  agentCount: number;
+  busyCount: number;
+  liveSceneCount: number;
+  movingInCount: number;
+  active: boolean;
+  presentAgents: string[];
+  travelingAgents: string[];
+};
+
+type EdgeUsage = {
+  key: string;
+  a: RocklawLocationNode;
+  b: RocklawLocationNode;
+  activeCount: number;
 };
 
 export default function RocklawLiveScene({ snapshot }: { snapshot: RocklawLiveSnapshot }) {
@@ -36,15 +51,16 @@ export default function RocklawLiveScene({ snapshot }: { snapshot: RocklawLiveSn
   const [frameNow, setFrameNow] = useState(() => Date.now());
   const [tickObservedAt, setTickObservedAt] = useState(() => Date.now());
   const [observedTick, setObservedTick] = useState(snapshot.tick);
-  const [focusedLocationId, setFocusedLocationId] = useState<string | null>(null);
+  const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null);
+  const [showBusy, setShowBusy] = useState(true);
+  const [showTravel, setShowTravel] = useState(true);
+  const [showScenes, setShowScenes] = useState(true);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
       setFrameNow(Date.now());
     }, 100);
-    return () => {
-      window.clearInterval(interval);
-    };
+    return () => window.clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -80,76 +96,137 @@ export default function RocklawLiveScene({ snapshot }: { snapshot: RocklawLiveSn
     () => buildAgentPlacements(snapshot, locationById, frameNow, tickObservedAt),
     [frameNow, locationById, snapshot, tickObservedAt],
   );
-  const focusedLocation = focusedLocationId ? locationById.get(focusedLocationId) ?? null : null;
+
+  const nodeSummaries = useMemo(
+    () => buildNodeSummaries(snapshot, placements),
+    [placements, snapshot],
+  );
+  const edges = useMemo(
+    () => buildEdgeUsage(snapshot, locationById),
+    [locationById, snapshot],
+  );
+
+  const selectedLocation = selectedLocationId ? locationById.get(selectedLocationId) ?? null : null;
+  const selectedAgents = selectedLocation
+    ? placements.filter((placement) => placement.location.id === selectedLocation.id)
+    : [];
+  const selectedScenes = selectedLocation
+    ? snapshot.liveScenes.filter((scene) => scene.location === selectedLocation.id)
+    : [];
+  const selectedRecentActions = selectedLocation
+    ? snapshot.recentActions.filter((action) => matchesLocationAction(action, selectedLocation))
+    : [];
 
   const activeChats = snapshot.liveScenes.length;
   const busyAgents = snapshot.agents.filter((agent) => agent.busy).length;
+  const movingAgents = snapshot.agents.filter((agent) => agent.moveState).length;
+  const visiblePlacements = placements.filter((placement) => {
+    if (placement.moving) return showTravel;
+    if (placement.agent.scenePartner) return showScenes;
+    if (placement.agent.busy) return showBusy;
+    return true;
+  });
+  const visibleEdgeCounts = buildVisibleEdgeCounts(visiblePlacements);
 
   return (
     <div style={LIVE_FRAME_STYLE}>
       <div style={LIVE_FRAME_HEADER_STYLE}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <span style={HEADER_LABEL_STYLE}>Live Simulation</span>
-          <span style={HEADER_NOTE_STYLE}>
-            {focusedLocation
-              ? `Focused on ${focusedLocation.label}. Use Back To Map to return to the town graph.`
-              : 'Rocklaw-native scene. Drag to pan, scroll to zoom, and click a location to inspect it full-screen.'}
-          </span>
+        <div style={HEADER_TITLE_GROUP_STYLE}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={HEADER_LABEL_STYLE}>Live Simulation</span>
+            <span style={HEADER_NOTE_STYLE}>
+              Full-map graph view. Click a location node to inspect exactly what is happening there.
+            </span>
+          </div>
+          <div style={HEADER_TOGGLES_STYLE}>
+            <ToggleChip label="Busy" active={showBusy} onClick={() => setShowBusy((value) => !value)} />
+            <ToggleChip
+              label="Travel"
+              active={showTravel}
+              onClick={() => setShowTravel((value) => !value)}
+            />
+            <ToggleChip
+              label="Scenes"
+              active={showScenes}
+              onClick={() => setShowScenes((value) => !value)}
+            />
+          </div>
         </div>
         <div style={HEADER_CHIPS_STYLE}>
-          {focusedLocation ? (
-            <button style={BACK_BUTTON_STYLE} onClick={() => setFocusedLocationId(null)}>
-              Back To Map
-            </button>
-          ) : null}
           <HeaderChip label="Tick" value={`${snapshot.day}.${snapshot.tick}`} />
           <HeaderChip label="Time" value={snapshot.timeOfDay} />
           <HeaderChip label="Busy" value={String(busyAgents)} />
+          <HeaderChip label="Traveling" value={String(movingAgents)} />
           <HeaderChip label="Live scenes" value={String(activeChats)} />
         </div>
       </div>
-      <div style={LIVE_STAGE_WRAPPER_STYLE} ref={wrapperRef}>
-        {focusedLocation ? (
-          <FocusedLocationView
-            location={focusedLocation}
-            placements={placements.filter((placement) => placement.location.id === focusedLocation.id)}
-            liveScenes={snapshot.liveScenes.filter((scene) => scene.location === focusedLocation.id)}
-          />
-        ) : width > 0 && height > 0 ? (
-          <div style={{ position: 'absolute', inset: 0 }}>
-            <Stage width={width} height={height} options={{ backgroundColor: 0x0f172a, antialias: true }}>
-              <RocklawLiveCanvas
-                snapshot={snapshot}
-                placements={placements}
-                width={width}
-                height={height}
-                worldWidth={worldWidth}
-                worldHeight={worldHeight}
-                onSelectLocation={setFocusedLocationId}
-              />
-            </Stage>
+      <div style={LIVE_CONTENT_STYLE}>
+        <div style={LIVE_GRAPH_STYLE} ref={wrapperRef}>
+          <div style={LEGEND_STYLE}>
+            <LegendItem color="#38bdf8" label="Travel route" />
+            <LegendItem color="#f59e0b" label="Live scene node" />
+            <LegendItem color="#94a3b8" label="Idle route" />
+            <LegendItem color="#f8fafc" label="Selected node" />
           </div>
-        ) : null}
+          {width > 0 && height > 0 ? (
+            <div style={{ position: 'absolute', inset: 0 }}>
+              <Stage width={width} height={height} options={{ backgroundColor: 0x0f172a, antialias: true }}>
+                <RocklawGraphCanvas
+                  snapshot={snapshot}
+                  width={width}
+                  height={height}
+                  worldWidth={worldWidth}
+                  worldHeight={worldHeight}
+                  frameNow={frameNow}
+                  placements={visiblePlacements}
+                  nodeSummaries={nodeSummaries}
+                  edges={edges}
+                  visibleEdgeCounts={visibleEdgeCounts}
+                  selectedLocationId={selectedLocationId}
+                  onSelectLocation={setSelectedLocationId}
+                />
+              </Stage>
+            </div>
+          ) : null}
+        </div>
+        <div style={LIVE_PANEL_STYLE}>
+          <LocationPanel
+            location={selectedLocation}
+            agents={selectedAgents}
+            scenes={selectedScenes}
+            recentActions={selectedRecentActions}
+          />
+        </div>
       </div>
     </div>
   );
 }
 
-function RocklawLiveCanvas({
+function RocklawGraphCanvas({
   snapshot,
-  placements,
   width,
   height,
   worldWidth,
   worldHeight,
+  frameNow,
+  placements,
+  nodeSummaries,
+  edges,
+  visibleEdgeCounts,
+  selectedLocationId,
   onSelectLocation,
 }: {
   snapshot: RocklawLiveSnapshot;
-  placements: AgentPlacement[];
   width: number;
   height: number;
   worldWidth: number;
   worldHeight: number;
+  frameNow: number;
+  placements: AgentPlacement[];
+  nodeSummaries: NodeSummary[];
+  edges: EdgeUsage[];
+  visibleEdgeCounts: Map<string, number>;
+  selectedLocationId: string | null;
   onSelectLocation: (locationId: string) => void;
 }) {
   const app = useApp();
@@ -162,42 +239,54 @@ function RocklawLiveCanvas({
       worldWidth={worldWidth}
       worldHeight={worldHeight}
     >
-      <Backdrop worldWidth={worldWidth} worldHeight={worldHeight} />
-      <RoadNetwork locations={snapshot.locations} />
-      {snapshot.locations.map((location) => (
-        <PlaceNode
-          key={location.id}
-          location={location}
-          isActive={snapshot.liveScenes.some((scene) => scene.location === location.id)}
+      <GraphBackdrop worldWidth={worldWidth} worldHeight={worldHeight} timeOfDay={snapshot.timeOfDay} />
+      {edges.map((edge) => (
+        <GraphEdge
+          key={edge.key}
+          edge={edge}
+          frameNow={frameNow}
+          visibleActiveCount={visibleEdgeCounts.get(edge.key) ?? 0}
+        />
+      ))}
+      {nodeSummaries.map((summary) => (
+        <LocationNode
+          key={summary.location.id}
+          summary={summary}
+          selected={summary.location.id === selectedLocationId}
           onSelect={onSelectLocation}
         />
       ))}
-      {snapshot.liveScenes.map((scene) => (
-        <SceneLink key={scene.sceneId} scene={scene} locations={snapshot.locations} />
-      ))}
       {placements.map((placement) => (
-        <AgentMarker key={placement.agent.name} placement={placement} />
+        <AgentMarker key={placement.agent.name} placement={placement} frameNow={frameNow} />
       ))}
     </PixiViewport>
   );
 }
 
-function Backdrop({ worldWidth, worldHeight }: { worldWidth: number; worldHeight: number }) {
-  const texture = useMemo(() => PIXI.Texture.from(exteriorsUrl), []);
+function GraphBackdrop({
+  worldWidth,
+  worldHeight,
+  timeOfDay,
+}: {
+  worldWidth: number;
+  worldHeight: number;
+  timeOfDay: string;
+}) {
+  const { tint, alpha } = getTimePalette(timeOfDay);
   return (
     <Container>
       <Graphics
         draw={(g) => {
           g.clear();
-          g.beginFill(0x132235, 1);
+          g.beginFill(0x0b1120, 1);
           g.drawRect(0, 0, worldWidth, worldHeight);
           g.endFill();
 
-          g.beginFill(0x17304a, 1);
-          g.drawRoundedRect(36, 36, worldWidth - 72, worldHeight - 72, 28);
+          g.beginFill(0x101a2b, 1);
+          g.drawRoundedRect(24, 24, worldWidth - 48, worldHeight - 48, 20);
           g.endFill();
 
-          g.lineStyle(1, 0x2d4966, 0.16);
+          g.lineStyle(1, 0x203047, 0.3);
           for (let x = 0; x < worldWidth; x += TILE_DIM) {
             g.moveTo(x, 0);
             g.lineTo(x, worldHeight);
@@ -206,146 +295,128 @@ function Backdrop({ worldWidth, worldHeight }: { worldWidth: number; worldHeight
             g.moveTo(0, y);
             g.lineTo(worldWidth, y);
           }
+
+          g.beginFill(tint, alpha);
+          g.drawRect(0, 0, worldWidth, worldHeight);
+          g.endFill();
         }}
       />
-      <Sprite texture={texture} x={60} y={44} width={worldWidth - 120} height={worldHeight - 88} alpha={0.08} tint={0x9fb9d1} />
     </Container>
   );
 }
 
-function RoadNetwork({ locations }: { locations: RocklawLocationNode[] }) {
-  const edges = useMemo(() => {
-    const seen = new Set<string>();
-    const pairs: Array<{ a: RocklawLocationNode; b: RocklawLocationNode }> = [];
-    const byId = new Map(locations.map((location) => [location.id, location]));
-    for (const location of locations) {
-      for (const neighborId of location.neighbors) {
-        const neighbor = byId.get(neighborId);
-        if (!neighbor) continue;
-        const key = [location.id, neighbor.id].sort().join('::');
-        if (seen.has(key)) continue;
-        seen.add(key);
-        pairs.push({ a: location, b: neighbor });
-      }
-    }
-    return pairs;
-  }, [locations]);
+function GraphEdge({
+  edge,
+  frameNow,
+  visibleActiveCount,
+}: {
+  edge: EdgeUsage;
+  frameNow: number;
+  visibleActiveCount: number;
+}) {
+  const activeCount = visibleActiveCount;
+  const pulse = activeCount > 0 ? 0.55 + Math.sin(frameNow / 260) * 0.18 : 0.18;
 
   return (
-    <Container>
-      {edges.map((edge) => (
-        <RoadEdge key={`${edge.a.id}-${edge.b.id}`} from={edge.a.center} to={edge.b.center} />
-      ))}
-    </Container>
+    <Graphics
+      draw={(g) => {
+        const startX = toPx(edge.a.center.x);
+        const startY = toPx(edge.a.center.y);
+        const endX = toPx(edge.b.center.x);
+        const endY = toPx(edge.b.center.y);
+        const bend = Math.abs(startX - endX) > Math.abs(startY - endY)
+          ? { x: startX + (endX - startX) * 0.5, y: startY }
+          : { x: startX, y: startY + (endY - startY) * 0.5 };
+
+        g.clear();
+        g.lineStyle(14, 0x18263a, 0.92);
+        g.moveTo(startX, startY);
+        g.lineTo(bend.x, bend.y);
+        g.lineTo(endX, endY);
+
+        g.lineStyle(activeCount > 0 ? 5 : 3, activeCount > 0 ? 0x7dd3fc : 0x475569, pulse);
+        g.moveTo(startX, startY);
+        g.lineTo(bend.x, bend.y);
+        g.lineTo(endX, endY);
+
+        if (activeCount > 1) {
+          g.beginFill(0x7dd3fc, 0.96);
+          g.drawCircle(bend.x, bend.y, 9);
+          g.endFill();
+        }
+      }}
+    />
   );
 }
 
-function RoadEdge({ from, to }: { from: { x: number; y: number }; to: { x: number; y: number } }) {
-  const draw = (g: PIXI.Graphics) => {
-    g.clear();
-    g.lineStyle(18, 0x24384f, 0.9);
-    g.moveTo(toPx(from.x), toPx(from.y));
-    g.lineTo(toPx(to.x), toPx(to.y));
-    g.lineStyle(4, 0xbfd6e8, 0.25);
-    g.moveTo(toPx(from.x), toPx(from.y));
-    g.lineTo(toPx(to.x), toPx(to.y));
-  };
-  return <Graphics draw={draw} />;
-}
-
-function PlaceNode({
-  location,
-  isActive,
+function LocationNode({
+  summary,
+  selected,
   onSelect,
 }: {
-  location: RocklawLocationNode;
-  isActive: boolean;
+  summary: NodeSummary;
+  selected: boolean;
   onSelect: (locationId: string) => void;
 }) {
-  const art = getPlaceArt(location.spriteKey);
-  const hitArea = new PIXI.Rectangle(
-    location.region.x * TILE_DIM,
-    location.region.y * TILE_DIM,
-    location.region.width * TILE_DIM,
-    location.region.height * TILE_DIM,
-  );
-  const draw = (g: PIXI.Graphics) => {
-    const left = location.region.x * TILE_DIM;
-    const top = location.region.y * TILE_DIM;
-    const width = location.region.width * TILE_DIM;
-    const height = location.region.height * TILE_DIM;
-
-    g.clear();
-    g.lineStyle(2, isActive ? 0xf8e6a8 : 0xffffff, isActive ? 0.35 : 0.14);
-    g.beginFill(location.color, isActive ? 0.18 : 0.12);
-    g.drawRoundedRect(left, top, width, height, 18);
-    g.endFill();
-
-    g.beginFill(lightenColor(location.color, 0.18), 0.95);
-    g.drawRoundedRect(left + 18, top + 22, width - 36, height - 34, 12);
-    g.endFill();
-
-    g.beginFill(lightenColor(location.color, 0.3), 0.9);
-    g.moveTo(left + 12, top + 34);
-    g.lineTo(left + width / 2, top + 10);
-    g.lineTo(left + width - 12, top + 34);
-    g.lineTo(left + width - 18, top + 38);
-    g.lineTo(left + 18, top + 38);
-    g.endFill();
-
-    g.beginFill(0x0f172a, 0.15);
-    g.drawRoundedRect(left + width * 0.4, top + height * 0.45, width * 0.2, height * 0.28, 8);
-    g.endFill();
-  };
+  const { location } = summary;
+  const x = toPx(location.center.x);
+  const y = toPx(location.center.y);
+  const activePulse = summary.active ? 0.5 + 0.2 * Math.sin(Date.now() / 400) : 0;
+  const nodeWidth = 156;
+  const nodeHeight = 88;
+  const hitArea = new PIXI.Rectangle(x - nodeWidth / 2, y - nodeHeight / 2, nodeWidth, nodeHeight);
 
   return (
-    <Container
-      interactive
-      cursor="pointer"
-      pointertap={() => onSelect(location.id)}
-      hitArea={hitArea}
-    >
-      <Graphics draw={draw} />
-      {art.layers.map((layer, index) => (
-        <Sprite
-          key={`${location.id}-art-${index}`}
-          texture={layer.texture}
-          x={location.region.x * TILE_DIM + 14 + layer.offsetX}
-          y={location.region.y * TILE_DIM + 18 + layer.offsetY}
-          width={location.region.width * TILE_DIM - 28}
-          height={location.region.height * TILE_DIM - 32}
-          alpha={layer.alpha}
-          tint={layer.tint}
-        />
-      ))}
+    <Container interactive cursor="pointer" pointertap={() => onSelect(location.id)} hitArea={hitArea}>
+      <Graphics
+        draw={(g) => {
+          g.clear();
+          if (summary.active) {
+            g.lineStyle(0);
+            g.beginFill(summary.liveSceneCount > 0 ? 0xf59e0b : 0x38bdf8, 0.18 + activePulse * 0.18);
+            g.drawRoundedRect(x - 82, y - 52, 164, 104, 24);
+            g.endFill();
+          }
+
+          if (selected) {
+            g.lineStyle(0);
+            g.beginFill(0xf8fafc, 0.12);
+            g.drawRoundedRect(x - 88, y - 58, 176, 116, 28);
+            g.endFill();
+          }
+
+          g.lineStyle(selected ? 3 : 2, selected ? 0xf8fafc : summary.active ? 0xf8e6a8 : 0x64748b, selected ? 0.95 : 0.55);
+          g.beginFill(selected ? 0x1e293b : 0x0f172a, 0.96);
+          g.drawRoundedRect(x - 78, y - 44, 156, 88, 18);
+          g.endFill();
+        }}
+      />
       <Text
-        x={toPx(location.center.x + location.labelOffset.x)}
-        y={toPx(location.center.y + location.labelOffset.y)}
+        x={x}
+        y={y - 18}
         anchor={{ x: 0.5, y: 0.5 }}
         text={location.label}
         style={
           new PIXI.TextStyle({
-            fill: isActive ? '#fff7d0' : '#f8fafc',
-            fontSize: 14,
+            fill: selected ? '#ffffff' : '#e2e8f0',
+            fontSize: selected ? 14 : 13,
             fontWeight: '700',
-            letterSpacing: 0.7,
-            stroke: '#0b1120',
-            strokeThickness: 4,
+            align: 'center',
+            wordWrap: true,
+            wordWrapWidth: 132,
           })
         }
       />
       <Text
-        x={toPx(location.center.x)}
-        y={toPx(location.center.y) + 6}
+        x={x}
+        y={y + 26}
         anchor={{ x: 0.5, y: 0.5 }}
-        text={location.type}
+        text={buildNodeCaption(summary)}
         style={
           new PIXI.TextStyle({
-            fill: '#cbd5e1',
-            fontSize: 10,
-            fontStyle: 'italic',
-            stroke: '#0b1120',
-            strokeThickness: 3,
+            fill: '#94a3b8',
+            fontSize: 9,
+            align: 'center',
           })
         }
       />
@@ -353,295 +424,278 @@ function PlaceNode({
   );
 }
 
-function FocusedLocationView({
-  location,
-  placements,
-  liveScenes,
-}: {
-  location: RocklawLocationNode;
-  placements: AgentPlacement[];
-  liveScenes: RocklawLiveSceneEntry[];
-}) {
-  const artSources = getPlaceArtSources(location.spriteKey);
-  const primaryScene = liveScenes[0] ?? null;
+function AgentMarker({ placement, frameNow }: { placement: AgentPlacement; frameNow: number }) {
+  const x = toPx(placement.point.x);
+  const y = toPx(placement.point.y);
+  const color = ROCKLAW_AGENT_COLORS[placement.agent.name] ?? placement.location.color;
+  const initials = getInitials(placement.agent.name);
+  const movingPulse = placement.moving ? 0.72 + Math.sin(frameNow / 180) * 0.12 : 0;
+
   return (
-    <div style={FOCUSED_VIEW_STYLE}>
-      <div style={FOCUSED_HERO_STYLE}>
-        <div style={FOCUSED_ART_STACK_STYLE}>
-          {artSources.map((layer, index) => (
-            <img
-              key={`${location.id}-focus-art-${index}`}
-              src={layer.url}
-              alt={location.label}
-              style={{
-                ...FOCUSED_ART_LAYER_STYLE,
-                opacity: layer.alpha,
-                filter: layer.tint ? `drop-shadow(0 0 10px rgba(15, 23, 42, 0.45))` : undefined,
-                transform: `translate(${layer.offsetX}px, ${layer.offsetY}px)`,
-              }}
-            />
-          ))}
+    <Container>
+      <Graphics
+        draw={(g) => {
+          g.clear();
+          if (placement.moving) {
+            g.beginFill(color, movingPulse);
+            g.drawCircle(x, y, 11);
+            g.endFill();
+          }
+          g.lineStyle(2, 0xf8fafc, 0.8);
+          g.beginFill(color, 0.96);
+          g.drawCircle(x, y, 8);
+          g.endFill();
+        }}
+      />
+      <Text
+        x={x}
+        y={y}
+        anchor={{ x: 0.5, y: 0.5 }}
+        text={initials}
+        style={
+          new PIXI.TextStyle({
+            fill: '#f8fafc',
+            fontSize: 8,
+            fontWeight: '800',
+          })
+        }
+      />
+    </Container>
+  );
+}
+
+function LocationPanel({
+  location,
+  agents,
+  scenes,
+  recentActions,
+}: {
+  location: RocklawLocationNode | null;
+  agents: AgentPlacement[];
+  scenes: RocklawLiveSceneEntry[];
+  recentActions: RocklawLiveActionState[];
+}) {
+  if (!location) {
+    return (
+      <div style={PANEL_PLACEHOLDER_STYLE}>
+        <div style={PANEL_TITLE_STYLE}>Location Detail</div>
+        <div style={PANEL_PLACEHOLDER_TEXT_STYLE}>
+          Click a node on the map to inspect that location without losing the full graph.
         </div>
-        <div style={FOCUSED_HERO_COPY_STYLE}>
-          <div style={FOCUSED_LOCATION_KICKER_STYLE}>{location.type}</div>
-          <div style={FOCUSED_LOCATION_TITLE_STYLE}>{location.label}</div>
-          <div style={FOCUSED_LOCATION_META_STYLE}>
-            {placements.length} agent{placements.length === 1 ? '' : 's'} present
-            {primaryScene ? ` · live scene between ${primaryScene.left} and ${primaryScene.right}` : ''}
-          </div>
+        <div style={PANEL_HINT_GRID_STYLE}>
+          <HintTile label="Agents" text="See who is currently there." />
+          <HintTile label="Actions" text="See what each agent is doing right now." />
+          <HintTile label="Live Scenes" text="See active conversations and recent messages." />
+          <HintTile label="Recent Activity" text="See the latest location-specific actions as the sim advances." />
         </div>
       </div>
-      <div style={FOCUSED_GRID_STYLE}>
-        <div style={FOCUSED_PANEL_STYLE}>
-          <div style={FOCUSED_PANEL_TITLE_STYLE}>Agents Here</div>
-          {placements.length === 0 ? (
-            <div style={FOCUSED_EMPTY_STYLE}>No agents here right now.</div>
-          ) : (
-            <div style={FOCUSED_AGENT_LIST_STYLE}>
-              {placements.map((placement) => (
-                <div key={placement.agent.name} style={FOCUSED_AGENT_CARD_STYLE}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                    <div>
-                      <div style={{ color: '#f8fafc', fontSize: 14, fontWeight: 700 }}>{placement.agent.name}</div>
-                      <div style={{ color: '#94a3b8', fontSize: 12 }}>{placement.agent.role}</div>
-                    </div>
-                    <div style={{ color: '#cbd5e1', fontSize: 12, textAlign: 'right' }}>
-                      {placement.agent.currentAction ? describeAction(placement.agent.currentAction) : placement.agent.busyLabel ?? 'idle'}
-                    </div>
-                  </div>
-                  <div style={FOCUSED_AGENT_STATS_STYLE}>
-                    <span>E {Math.round(placement.agent.energy)}</span>
-                    <span>H {Math.round(placement.agent.health)}</span>
-                    <span>U {Math.round(placement.agent.hunger)}</span>
-                    <span>{placement.agent.coin}c</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+    );
+  }
+
+  return (
+    <div style={PANEL_STYLE}>
+      <div style={PANEL_SECTION_STYLE}>
+        <div style={PANEL_KICKER_STYLE}>{location.type}</div>
+        <div style={PANEL_TITLE_STYLE}>{location.label}</div>
+        <div style={PANEL_META_STYLE}>
+          {agents.length} agent{agents.length === 1 ? '' : 's'} here · {scenes.length} live scene{scenes.length === 1 ? '' : 's'}
         </div>
-        <div style={FOCUSED_PANEL_STYLE}>
-          <div style={FOCUSED_PANEL_TITLE_STYLE}>Live Activity</div>
-          {liveScenes.length === 0 ? (
-            <div style={FOCUSED_EMPTY_STYLE}>No live scene in this location.</div>
-          ) : (
-            <div style={{ display: 'grid', gap: 10 }}>
-              {liveScenes.map((scene) => (
-                <div key={scene.sceneId} style={FOCUSED_SCENE_CARD_STYLE}>
-                  <div style={{ color: '#fef3c7', fontSize: 13, fontWeight: 700 }}>
-                    {scene.left} and {scene.right}
+      </div>
+
+      <div style={PANEL_SECTION_STYLE}>
+        <div style={PANEL_SECTION_TITLE_STYLE}>Agents Here</div>
+        {agents.length === 0 ? (
+          <div style={PANEL_EMPTY_STYLE}>No agents are in this location right now.</div>
+        ) : (
+          <div style={PANEL_LIST_STYLE}>
+            {agents.map(({ agent, moving }) => (
+              <div key={agent.name} style={PANEL_CARD_STYLE}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+                  <div>
+                    <div style={PANEL_CARD_TITLE_STYLE}>{agent.name}</div>
+                    <div style={PANEL_CARD_SUBTITLE_STYLE}>{agent.role}</div>
                   </div>
-                  <div style={{ color: '#94a3b8', fontSize: 12 }}>Next speaker: {scene.nextSpeaker}</div>
-                  {scene.recentMessages.length > 0 ? (
-                    <div style={{ display: 'grid', gap: 6, marginTop: 8 }}>
-                      {scene.recentMessages.map((message, index) => (
-                        <div key={`${scene.sceneId}-msg-${index}`} style={FOCUSED_MESSAGE_STYLE}>
-                          <span style={{ color: '#e2e8f0', fontWeight: 700 }}>{message.fromAgent}:</span>{' '}
-                          <span style={{ color: '#cbd5e1' }}>{message.text}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div style={FOCUSED_EMPTY_STYLE}>No recent messages.</div>
-                  )}
+                  <div style={PANEL_BADGE_STYLE}>{moving ? 'traveling' : deriveStatusLabel(agent)}</div>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
+                <div style={PANEL_CARD_BODY_STYLE}>
+                  {agent.currentAction ? describeAction(agent.currentAction) : agent.busyLabel ?? 'idle'}
+                </div>
+                <div style={PANEL_STATS_STYLE}>
+                  <span>E {Math.round(agent.energy)}</span>
+                  <span>H {Math.round(agent.health)}</span>
+                  <span>U {Math.round(agent.hunger)}</span>
+                  <span>{agent.coin}c</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={PANEL_SECTION_STYLE}>
+        <div style={PANEL_SECTION_TITLE_STYLE}>Live Scenes</div>
+        {scenes.length === 0 ? (
+          <div style={PANEL_EMPTY_STYLE}>No live conversation is active here.</div>
+        ) : (
+          <div style={PANEL_LIST_STYLE}>
+            {scenes.map((scene) => (
+              <div key={scene.sceneId} style={PANEL_CARD_STYLE}>
+                <div style={PANEL_CARD_TITLE_STYLE}>
+                  {scene.left} and {scene.right}
+                </div>
+                <div style={PANEL_CARD_SUBTITLE_STYLE}>Next speaker: {scene.nextSpeaker}</div>
+                {scene.recentMessages.length > 0 ? (
+                  <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
+                    {scene.recentMessages.map((message, index) => (
+                      <div key={`${scene.sceneId}-${index}`} style={PANEL_MESSAGE_STYLE}>
+                        <span style={{ color: '#e2e8f0', fontWeight: 700 }}>{message.fromAgent}:</span>{' '}
+                        <span style={{ color: '#cbd5e1' }}>{message.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={PANEL_EMPTY_STYLE}>No recent messages.</div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={PANEL_SECTION_STYLE}>
+        <div style={PANEL_SECTION_TITLE_STYLE}>Recent Activity</div>
+        {recentActions.length === 0 ? (
+          <div style={PANEL_EMPTY_STYLE}>No recent actions were attributed to this location.</div>
+        ) : (
+          <div style={PANEL_LIST_STYLE}>
+            {recentActions.slice(0, 6).map((action, index) => (
+              <div key={`${action.action}-${index}`} style={PANEL_CARD_STYLE}>
+                <div style={PANEL_CARD_TITLE_STYLE}>{describeAction(action)}</div>
+                <div style={PANEL_CARD_BODY_STYLE}>
+                  {action.outcomeNote ?? action.outcome ?? action.message ?? 'Action completed without a note.'}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function SceneLink({
-  scene,
-  locations,
-}: {
-  scene: RocklawLiveSceneEntry;
-  locations: RocklawLocationNode[];
-}) {
-  const location = locations.find((entry) => entry.id === scene.location);
-  if (!location) return null;
-  const [left, right] = location.sceneSlots;
-  if (!left || !right) return null;
-
-  const draw = (g: PIXI.Graphics) => {
-    g.clear();
-    g.lineStyle(3, 0xf8e6a8, 0.9);
-    g.moveTo(toPx(left.x), toPx(left.y));
-    g.lineTo(toPx(right.x), toPx(right.y));
-  };
-
-  return <Graphics draw={draw} />;
-}
-
-function AgentMarker({ placement }: { placement: AgentPlacement }) {
-  const { agent, point, location } = placement;
-  const color = ROCKLAW_AGENT_COLORS[agent.name] ?? location.color;
-  const actionLabel = agent.currentAction ? describeAction(agent.currentAction) : null;
-  const bubbleText = actionLabel ?? agent.busyLabel;
-
-  const draw = (g: PIXI.Graphics) => {
-    g.clear();
-    g.beginFill(0x08101d, 0.25);
-    g.drawEllipse(toPx(point.x), toPx(point.y) + 18, 18, 8);
-    g.endFill();
-
-    g.lineStyle(2, 0xf8fafc, 0.7);
-    g.beginFill(color, 0.95);
-    g.drawCircle(toPx(point.x), toPx(point.y), 14);
-    g.endFill();
-
-    if (agent.scenePartner) {
-      g.lineStyle(3, 0xfacc15, 0.95);
-      g.drawCircle(toPx(point.x), toPx(point.y), 18);
-    } else if (agent.busy) {
-      g.lineStyle(2, 0xa78bfa, 0.85);
-      g.drawCircle(toPx(point.x), toPx(point.y), 18);
-    }
-  };
-
+function HintTile({ label, text }: { label: string; text: string }) {
   return (
-    <Container>
-      <Graphics draw={draw} />
-      <Text
-        x={toPx(point.x)}
-        y={toPx(point.y)}
-        anchor={{ x: 0.5, y: 0.5 }}
-        text={getInitials(agent.name)}
-        style={
-          new PIXI.TextStyle({
-            fill: '#f8fafc',
-            fontSize: 10,
-            fontWeight: '700',
-          })
-        }
-      />
-      <Text
-        x={toPx(point.x)}
-        y={toPx(point.y) + 26}
-        anchor={{ x: 0.5, y: 0.5 }}
-        text={agent.name}
-        style={
-          new PIXI.TextStyle({
-            fill: '#e2e8f0',
-            fontSize: 11,
-            stroke: '#0b1120',
-            strokeThickness: 3,
-          })
-        }
-      />
-      {bubbleText ? (
-        <ActionBubble x={toPx(point.x)} y={toPx(point.y) - 40} text={bubbleText} tone={agent.currentAction?.action === 'move' ? 'move' : agent.scenePartner ? 'chat' : 'busy'} />
-      ) : null}
-      <StatusPips x={toPx(point.x)} y={toPx(point.y) + 38} agent={agent} />
-    </Container>
+    <div style={HINT_TILE_STYLE}>
+      <div style={HINT_TILE_LABEL_STYLE}>{label}</div>
+      <div style={HINT_TILE_TEXT_STYLE}>{text}</div>
+    </div>
   );
 }
 
-function ActionBubble({
-  x,
-  y,
-  text,
-  tone,
-}: {
-  x: number;
-  y: number;
-  text: string;
-  tone: 'move' | 'chat' | 'busy';
-}) {
-  const bubbleWidth = Math.max(72, Math.min(220, text.length * 6.5 + 24));
-  const bubbleColor = tone === 'chat' ? 0x1d4ed8 : tone === 'move' ? 0x0369a1 : 0x5b21b6;
-
-  const draw = (g: PIXI.Graphics) => {
-    g.clear();
-    g.lineStyle(1.5, 0xf8fafc, 0.45);
-    g.beginFill(bubbleColor, 0.88);
-    g.drawRoundedRect(x - bubbleWidth / 2, y - 16, bubbleWidth, 24, 10);
-    g.endFill();
-    g.beginFill(bubbleColor, 0.88);
-    g.moveTo(x - 8, y + 8);
-    g.lineTo(x, y + 18);
-    g.lineTo(x + 8, y + 8);
-    g.endFill();
-  };
-
+function LegendItem({ color, label }: { color: string; label: string }) {
   return (
-    <Container>
-      <Graphics draw={draw} />
-      <Text
-        x={x}
-        y={y - 4}
-        anchor={{ x: 0.5, y: 0.5 }}
-        text={text}
-        style={
-          new PIXI.TextStyle({
-            fill: '#eff6ff',
-            fontSize: 11,
-            fontWeight: '600',
-            wordWrap: false,
-          })
-        }
-      />
-    </Container>
-  );
-}
-
-function StatusPips({ x, y, agent }: { x: number; y: number; agent: RocklawAgentVisualState }) {
-  const pips = [
-    {
-      label: `E${Math.round(agent.energy)}`,
-      color: agent.energy < 30 ? 0xef4444 : 0x22c55e,
-    },
-    {
-      label: `H${Math.round(agent.health)}`,
-      color: agent.health < 45 ? 0xef4444 : 0x38bdf8,
-    },
-    {
-      label: `U${Math.round(agent.hunger)}`,
-      color: agent.hunger > 70 ? 0xf97316 : 0xfacc15,
-    },
-  ];
-
-  return (
-    <Container>
-      {pips.map((pip, index) => (
-        <Container key={pip.label} x={x - 30 + index * 30} y={y}>
-          <Graphics
-            draw={(g) => {
-              g.clear();
-              g.beginFill(0x0b1120, 0.7);
-              g.drawRoundedRect(-12, -8, 24, 16, 6);
-              g.endFill();
-              g.lineStyle(1, pip.color, 0.7);
-              g.drawRoundedRect(-12, -8, 24, 16, 6);
-            }}
-          />
-          <Text
-            anchor={{ x: 0.5, y: 0.5 }}
-            text={pip.label}
-            style={
-              new PIXI.TextStyle({
-                fill: '#e2e8f0',
-                fontSize: 8,
-                fontWeight: '700',
-              })
-            }
-          />
-        </Container>
-      ))}
-    </Container>
+    <div style={LEGEND_ITEM_STYLE}>
+      <span style={{ ...LEGEND_SWATCH_STYLE, background: color }} />
+      <span>{label}</span>
+    </div>
   );
 }
 
 function HeaderChip({ label, value }: { label: string; value: string }) {
   return (
     <div style={HEADER_CHIP_STYLE}>
-      <span style={{ color: '#94a3b8', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</span>
-      <span style={{ color: '#f8fafc', fontSize: 13, fontWeight: 700 }}>{value}</span>
+      <span style={HEADER_CHIP_LABEL_STYLE}>{label}</span>
+      <span style={HEADER_CHIP_VALUE_STYLE}>{value}</span>
     </div>
   );
+}
+
+function ToggleChip({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        ...TOGGLE_CHIP_STYLE,
+        ...(active ? TOGGLE_CHIP_ACTIVE_STYLE : TOGGLE_CHIP_INACTIVE_STYLE),
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+function buildNodeSummaries(snapshot: RocklawLiveSnapshot, placements: AgentPlacement[]): NodeSummary[] {
+  return snapshot.locations.map((location) => {
+    const here = placements.filter((placement) => placement.location.id === location.id);
+    const liveSceneCount = snapshot.liveScenes.filter((scene) => scene.location === location.id).length;
+    const busyCount = here.filter((placement) => placement.agent.busy).length;
+    const movingInCount = here.filter((placement) => placement.moving).length;
+    const presentAgents = here.map((placement) => getInitials(placement.agent.name)).slice(0, 3);
+    const travelingAgents = here
+      .filter((placement) => placement.moving)
+      .map((placement) => placement.agent.name);
+    return {
+      location,
+      agentCount: here.length,
+      busyCount,
+      liveSceneCount,
+      movingInCount,
+      active: liveSceneCount > 0 || busyCount > 0 || movingInCount > 0,
+      presentAgents,
+      travelingAgents,
+    };
+  });
+}
+
+function buildEdgeUsage(
+  snapshot: RocklawLiveSnapshot,
+  locationById: Map<string, RocklawLocationNode>,
+): EdgeUsage[] {
+  const activeCounts = new Map<string, number>();
+  for (const agent of snapshot.agents) {
+    if (!agent.moveState) continue;
+    const key = [agent.moveState.fromLocationId, agent.moveState.toLocationId].sort().join('::');
+    activeCounts.set(key, (activeCounts.get(key) ?? 0) + 1);
+  }
+
+  const seen = new Set<string>();
+  const edges: EdgeUsage[] = [];
+  for (const location of snapshot.locations) {
+    for (const neighborId of location.neighbors) {
+      const neighbor = locationById.get(neighborId);
+      if (!neighbor) continue;
+      const key = [location.id, neighbor.id].sort().join('::');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({
+        key,
+        a: location,
+        b: neighbor,
+        activeCount: activeCounts.get(key) ?? 0,
+      });
+    }
+  }
+  return edges;
+}
+
+function buildVisibleEdgeCounts(placements: AgentPlacement[]) {
+  const counts = new Map<string, number>();
+  for (const placement of placements) {
+    const moveState = placement.agent.moveState;
+    if (!moveState) continue;
+    const key = [moveState.fromLocationId, moveState.toLocationId].sort().join('::');
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
 }
 
 function buildAgentPlacements(
@@ -652,9 +706,9 @@ function buildAgentPlacements(
 ): AgentPlacement[] {
   const sceneMembersByLocation = new Map<string, string[]>();
   for (const scene of snapshot.liveScenes) {
-    const existing = sceneMembersByLocation.get(scene.location) ?? [];
-    existing.push(scene.left, scene.right);
-    sceneMembersByLocation.set(scene.location, existing);
+    const members = sceneMembersByLocation.get(scene.location) ?? [];
+    members.push(scene.left, scene.right);
+    sceneMembersByLocation.set(scene.location, members);
   }
 
   return snapshot.agents.map((agent) => {
@@ -666,20 +720,55 @@ function buildAgentPlacements(
       .sort((a, b) => a.localeCompare(b));
 
     let basePoint = location.center;
+    let facing: Facing = 'down';
     if (sceneMembers.has(agent.name)) {
       const scene = snapshot.liveScenes.find(
         (entry) => entry.location === location.id && (entry.left === agent.name || entry.right === agent.name),
       );
       const sceneIndex = scene ? (scene.left === agent.name ? 0 : 1) : 0;
-      basePoint = location.sceneSlots[sceneIndex] ?? location.center;
+      basePoint = getGraphSceneSlot(location, sceneIndex);
+      facing = sceneIndex === 0 ? 'right' : 'left';
     } else {
       const slotIndex = Math.max(0, colocated.indexOf(agent.name));
-      basePoint = location.standingSlots[slotIndex % location.standingSlots.length] ?? location.center;
+      basePoint = getGraphStandingSlot(location, slotIndex);
     }
 
-    const point = interpolatePoint(agent, basePoint, locationById, snapshot, frameNow, tickObservedAt);
-    return { agent, point, location };
+    return {
+      agent,
+      point: interpolatePoint(agent, basePoint, locationById, snapshot, frameNow, tickObservedAt),
+      location,
+      facing: deriveFacing(agent, facing, locationById),
+      moving: Boolean(agent.moveState),
+    };
   });
+}
+
+function getGraphStandingSlot(location: RocklawLocationNode, slotIndex: number) {
+  const offsets = [
+    { x: -0.56, y: 0.02 },
+    { x: -0.28, y: 0.02 },
+    { x: 0, y: 0.02 },
+    { x: 0.28, y: 0.02 },
+    { x: 0.56, y: 0.02 },
+  ];
+  const offset = offsets[slotIndex % offsets.length] ?? offsets[0];
+  return {
+    x: location.center.x + offset.x,
+    y: location.center.y + offset.y,
+  };
+}
+
+function getGraphSceneSlot(location: RocklawLocationNode, slotIndex: number) {
+  const offsets = [
+    { x: -0.34, y: 0.02 },
+    { x: 0.34, y: 0.02 },
+    { x: 0, y: 0.18 },
+  ];
+  const offset = offsets[slotIndex % offsets.length] ?? offsets[0];
+  return {
+    x: location.center.x + offset.x,
+    y: location.center.y + offset.y,
+  };
 }
 
 function interpolatePoint(
@@ -707,15 +796,52 @@ function interpolatePoint(
   };
 }
 
+function deriveFacing(
+  agent: RocklawAgentVisualState,
+  fallback: Facing,
+  locationById: Map<string, RocklawLocationNode>,
+): Facing {
+  if (!agent.moveState) return fallback;
+  const from = locationById.get(agent.moveState.fromLocationId);
+  const to = locationById.get(agent.moveState.toLocationId);
+  if (!from || !to) return fallback;
+  const dx = to.center.x - from.center.x;
+  const dy = to.center.y - from.center.y;
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? 'right' : 'left';
+  return dy >= 0 ? 'down' : 'up';
+}
+
 function describeAction(action: RocklawLiveActionState) {
   const icon = ROCKLAW_ACTION_ICONS[action.action] ?? action.action;
   const subject = action.target ?? action.location ?? action.message ?? action.action;
   return `${icon} ${trimLabel(subject)}`;
 }
 
+function deriveStatusLabel(agent: RocklawAgentVisualState) {
+  if (agent.scenePartner) return 'in scene';
+  if (agent.busy) return 'busy';
+  return 'idle';
+}
+
+function matchesLocationAction(action: RocklawLiveActionState, location: RocklawLocationNode) {
+  if (action.location === location.id) return true;
+  if (action.location?.toLowerCase() === location.label.toLowerCase()) return true;
+  if (action.target?.toLowerCase() === location.label.toLowerCase()) return true;
+  return false;
+}
+
+function buildNodeCaption(summary: NodeSummary) {
+  const parts: string[] = [];
+  parts.push(`${summary.agentCount} here`);
+  if (summary.liveSceneCount > 0) parts.push(`${summary.liveSceneCount} live`);
+  if (summary.busyCount > 0) parts.push(`${summary.busyCount} busy`);
+  if (summary.movingInCount > 0) parts.push(`${summary.movingInCount} moving`);
+  return parts.join(' · ');
+}
+
 function trimLabel(value: string | null) {
   if (!value) return '';
-  return value.length > 26 ? `${value.slice(0, 23)}...` : value;
+  return value.length > 48 ? `${value.slice(0, 45)}...` : value;
 }
 
 function getInitials(name: string) {
@@ -731,63 +857,18 @@ function toPx(value: number) {
   return value * TILE_DIM;
 }
 
-function lightenColor(color: number, amount: number) {
-  const r = Math.min(255, ((color >> 16) & 0xff) + 255 * amount);
-  const g = Math.min(255, ((color >> 8) & 0xff) + 255 * amount);
-  const b = Math.min(255, (color & 0xff) + 255 * amount);
-  return ((r & 0xff) << 16) | ((g & 0xff) << 8) | (b & 0xff);
-}
-
-type PlaceArtLayer = {
-  url: string;
-  texture: PIXI.Texture;
-  alpha: number;
-  tint?: number;
-  offsetX: number;
-  offsetY: number;
-};
-
-function getPlaceArt(spriteKey: string): { layers: PlaceArtLayer[] } {
-  return {
-    layers: getPlaceArtSources(spriteKey).map((layer) => ({
-      ...layer,
-      texture: PIXI.Texture.from(layer.url),
-    })),
-  };
-}
-
-function getPlaceArtSources(spriteKey: string): Array<Omit<PlaceArtLayer, 'texture'>> {
-  const make = (url: string, alpha: number, tint?: number, offsetX = 0, offsetY = 0) => ({
-    url,
-    alpha,
-    tint,
-    offsetX,
-    offsetY,
-  });
-
-  switch (spriteKey) {
-    case 'forge':
-      return [make(officeUrl, 0.42, 0xffd699)];
-    case 'market':
-      return [make(exteriorsUrl, 0.28, 0xffefb0)];
-    case 'inn':
-      return [make(homePreviewUrl, 0.92), make(homeLayer2Url, 0.28, 0xfff4d0, 0, -4)];
-    case 'farm':
-      return [make(homeLayer1Url, 0.68, 0xd9f99d), make(homeLayer2Url, 0.34, 0xbbf7d0)];
-    case 'shrine':
-      return [make(uiStyle1Url, 0.18, 0xd8b4fe)];
-    case 'gate':
-      return [make(exteriorsUrl, 0.24, 0xdbeafe)];
-    case 'square':
-      return [make(uiStyle2Url, 0.18, 0xfef3c7)];
-    case 'mine':
-      return [make(exteriorsUrl, 0.22, 0xd1d5db)];
-    case 'bakery':
-      return [make(interiorsUrl, 0.24, 0xfdba74)];
-    case 'warehouse':
-      return [make(officeUrl, 0.28, 0xbfdbfe)];
+function getTimePalette(timeOfDay: string) {
+  switch (timeOfDay) {
+    case 'morning':
+      return { tint: 0xfde68a, alpha: 0.08 };
+    case 'afternoon':
+      return { tint: 0xffffff, alpha: 0.02 };
+    case 'evening':
+      return { tint: 0xfb923c, alpha: 0.1 };
+    case 'night':
+      return { tint: 0x1e293b, alpha: 0.22 };
     default:
-      return [make(exteriorsUrl, 0.16, 0xe2e8f0)];
+      return { tint: 0xffffff, alpha: 0.04 };
   }
 }
 
@@ -805,11 +886,16 @@ const LIVE_FRAME_STYLE: React.CSSProperties = {
 const LIVE_FRAME_HEADER_STYLE: React.CSSProperties = {
   display: 'flex',
   justifyContent: 'space-between',
-  alignItems: 'center',
+  alignItems: 'flex-start',
   gap: 16,
   padding: '12px 14px',
   borderBottom: '1px solid #1f2937',
   background: '#0f172a',
+};
+
+const HEADER_TITLE_GROUP_STYLE: React.CSSProperties = {
+  display: 'grid',
+  gap: 10,
 };
 
 const HEADER_LABEL_STYLE: React.CSSProperties = {
@@ -825,22 +911,18 @@ const HEADER_NOTE_STYLE: React.CSSProperties = {
   color: '#9ca3af',
 };
 
+const HEADER_TOGGLES_STYLE: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  flexWrap: 'wrap',
+};
+
 const HEADER_CHIPS_STYLE: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   gap: 10,
   flexWrap: 'wrap',
-};
-
-const BACK_BUTTON_STYLE: React.CSSProperties = {
-  padding: '8px 12px',
-  borderRadius: 8,
-  border: '1px solid #334155',
-  background: '#111827',
-  color: '#f8fafc',
-  fontSize: 12,
-  fontWeight: 700,
-  cursor: 'pointer',
 };
 
 const HEADER_CHIP_STYLE: React.CSSProperties = {
@@ -851,114 +933,213 @@ const HEADER_CHIP_STYLE: React.CSSProperties = {
   borderRadius: 8,
   background: '#111827',
   border: '1px solid #1f2937',
-  minWidth: 66,
+  minWidth: 76,
 };
 
-const LIVE_STAGE_WRAPPER_STYLE: React.CSSProperties = {
-  position: 'relative',
-  overflow: 'hidden',
-  background: '#0b1120',
+const TOGGLE_CHIP_STYLE: React.CSSProperties = {
+  appearance: 'none',
+  borderRadius: 999,
+  padding: '6px 10px',
+  fontSize: 12,
+  fontWeight: 700,
+  border: '1px solid #334155',
+  cursor: 'pointer',
+  transition: 'background 120ms ease, border-color 120ms ease, color 120ms ease',
+};
+
+const TOGGLE_CHIP_ACTIVE_STYLE: React.CSSProperties = {
+  background: '#132236',
+  borderColor: '#38bdf8',
+  color: '#e0f2fe',
+};
+
+const TOGGLE_CHIP_INACTIVE_STYLE: React.CSSProperties = {
+  background: '#111827',
+  borderColor: '#1f2937',
+  color: '#94a3b8',
+};
+
+const HEADER_CHIP_LABEL_STYLE: React.CSSProperties = {
+  color: '#94a3b8',
+  fontSize: 11,
+  textTransform: 'uppercase',
+  letterSpacing: '0.08em',
+};
+
+const HEADER_CHIP_VALUE_STYLE: React.CSSProperties = {
+  color: '#f8fafc',
+  fontSize: 13,
+  fontWeight: 700,
+};
+
+const LIVE_CONTENT_STYLE: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: `minmax(0, 1fr) ${PANEL_WIDTH}px`,
   minHeight: 0,
 };
 
-const FOCUSED_VIEW_STYLE: React.CSSProperties = {
-  position: 'absolute',
-  inset: 0,
-  overflow: 'auto',
-  background: 'linear-gradient(180deg, #0b1120 0%, #111827 100%)',
-  padding: 20,
-  display: 'grid',
-  gap: 18,
-};
-
-const FOCUSED_HERO_STYLE: React.CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: 'minmax(280px, 420px) 1fr',
-  gap: 20,
-  alignItems: 'stretch',
-};
-
-const FOCUSED_ART_STACK_STYLE: React.CSSProperties = {
+const LIVE_GRAPH_STYLE: React.CSSProperties = {
   position: 'relative',
-  minHeight: 260,
-  borderRadius: 16,
   overflow: 'hidden',
-  border: '1px solid #334155',
-  background: 'radial-gradient(circle at top, #1e293b 0%, #0f172a 70%)',
+  minHeight: 0,
+  background: '#0b1120',
+  borderRight: '1px solid #1f2937',
 };
 
-const FOCUSED_ART_LAYER_STYLE: React.CSSProperties = {
+const LEGEND_STYLE: React.CSSProperties = {
   position: 'absolute',
-  inset: 0,
-  width: '100%',
-  height: '100%',
-  objectFit: 'contain',
-};
-
-const FOCUSED_HERO_COPY_STYLE: React.CSSProperties = {
+  top: 12,
+  left: 12,
+  zIndex: 2,
   display: 'flex',
-  flexDirection: 'column',
-  justifyContent: 'center',
+  flexWrap: 'wrap',
   gap: 8,
-  padding: '12px 8px',
-};
-
-const FOCUSED_LOCATION_KICKER_STYLE: React.CSSProperties = {
-  color: '#94a3b8',
-  fontSize: 12,
-  textTransform: 'uppercase',
-  letterSpacing: '0.12em',
-};
-
-const FOCUSED_LOCATION_TITLE_STYLE: React.CSSProperties = {
-  color: '#f8fafc',
-  fontSize: 36,
-  fontWeight: 800,
-  lineHeight: 1,
-};
-
-const FOCUSED_LOCATION_META_STYLE: React.CSSProperties = {
-  color: '#cbd5e1',
-  fontSize: 14,
-};
-
-const FOCUSED_GRID_STYLE: React.CSSProperties = {
-  display: 'grid',
-  gridTemplateColumns: '1fr 1fr',
-  gap: 18,
-};
-
-const FOCUSED_PANEL_STYLE: React.CSSProperties = {
-  borderRadius: 14,
+  padding: '8px 10px',
+  borderRadius: 10,
+  background: 'rgba(15, 23, 42, 0.82)',
   border: '1px solid #1f2937',
+  color: '#cbd5e1',
+  fontSize: 11,
+  backdropFilter: 'blur(8px)',
+};
+
+const LEGEND_ITEM_STYLE: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+};
+
+const LEGEND_SWATCH_STYLE: React.CSSProperties = {
+  display: 'inline-block',
+  width: 10,
+  height: 10,
+  borderRadius: 999,
+};
+
+const LIVE_PANEL_STYLE: React.CSSProperties = {
+  overflow: 'auto',
   background: '#0f172a',
+};
+
+const PANEL_STYLE: React.CSSProperties = {
   padding: 16,
   display: 'grid',
-  gap: 12,
+  gap: 18,
 };
 
-const FOCUSED_PANEL_TITLE_STYLE: React.CSSProperties = {
-  color: '#f8fafc',
+const PANEL_PLACEHOLDER_STYLE: React.CSSProperties = {
+  padding: 16,
+  display: 'grid',
+  gap: 16,
+};
+
+const PANEL_PLACEHOLDER_TEXT_STYLE: React.CSSProperties = {
+  color: '#cbd5e1',
   fontSize: 14,
-  fontWeight: 800,
-  letterSpacing: '0.04em',
+  lineHeight: 1.5,
 };
 
-const FOCUSED_AGENT_LIST_STYLE: React.CSSProperties = {
+const PANEL_HINT_GRID_STYLE: React.CSSProperties = {
   display: 'grid',
   gap: 10,
 };
 
-const FOCUSED_AGENT_CARD_STYLE: React.CSSProperties = {
+const HINT_TILE_STYLE: React.CSSProperties = {
+  padding: 12,
   borderRadius: 12,
   border: '1px solid #334155',
   background: '#111827',
+  display: 'grid',
+  gap: 6,
+};
+
+const HINT_TILE_LABEL_STYLE: React.CSSProperties = {
+  color: '#f8fafc',
+  fontWeight: 700,
+  fontSize: 13,
+};
+
+const HINT_TILE_TEXT_STYLE: React.CSSProperties = {
+  color: '#94a3b8',
+  fontSize: 12,
+  lineHeight: 1.45,
+};
+
+const PANEL_SECTION_STYLE: React.CSSProperties = {
+  display: 'grid',
+  gap: 10,
+};
+
+const PANEL_KICKER_STYLE: React.CSSProperties = {
+  color: '#94a3b8',
+  fontSize: 12,
+  textTransform: 'uppercase',
+  letterSpacing: '0.1em',
+};
+
+const PANEL_TITLE_STYLE: React.CSSProperties = {
+  color: '#f8fafc',
+  fontSize: 22,
+  fontWeight: 800,
+  lineHeight: 1.1,
+};
+
+const PANEL_META_STYLE: React.CSSProperties = {
+  color: '#cbd5e1',
+  fontSize: 13,
+};
+
+const PANEL_SECTION_TITLE_STYLE: React.CSSProperties = {
+  color: '#f8fafc',
+  fontSize: 13,
+  fontWeight: 800,
+  letterSpacing: '0.04em',
+  textTransform: 'uppercase',
+};
+
+const PANEL_LIST_STYLE: React.CSSProperties = {
+  display: 'grid',
+  gap: 10,
+};
+
+const PANEL_CARD_STYLE: React.CSSProperties = {
   padding: 12,
+  borderRadius: 12,
+  border: '1px solid #334155',
+  background: '#111827',
   display: 'grid',
   gap: 8,
 };
 
-const FOCUSED_AGENT_STATS_STYLE: React.CSSProperties = {
+const PANEL_CARD_TITLE_STYLE: React.CSSProperties = {
+  color: '#f8fafc',
+  fontSize: 14,
+  fontWeight: 700,
+};
+
+const PANEL_CARD_SUBTITLE_STYLE: React.CSSProperties = {
+  color: '#94a3b8',
+  fontSize: 12,
+};
+
+const PANEL_CARD_BODY_STYLE: React.CSSProperties = {
+  color: '#cbd5e1',
+  fontSize: 12,
+  lineHeight: 1.45,
+};
+
+const PANEL_BADGE_STYLE: React.CSSProperties = {
+  padding: '4px 8px',
+  borderRadius: 999,
+  background: '#1e293b',
+  border: '1px solid #334155',
+  color: '#e2e8f0',
+  fontSize: 11,
+  fontWeight: 700,
+  textTransform: 'uppercase',
+};
+
+const PANEL_STATS_STYLE: React.CSSProperties = {
   display: 'flex',
   flexWrap: 'wrap',
   gap: 10,
@@ -966,19 +1147,12 @@ const FOCUSED_AGENT_STATS_STYLE: React.CSSProperties = {
   fontSize: 12,
 };
 
-const FOCUSED_SCENE_CARD_STYLE: React.CSSProperties = {
-  borderRadius: 12,
-  border: '1px solid #334155',
-  background: '#111827',
-  padding: 12,
+const PANEL_MESSAGE_STYLE: React.CSSProperties = {
+  fontSize: 12,
+  lineHeight: 1.5,
 };
 
-const FOCUSED_MESSAGE_STYLE: React.CSSProperties = {
-  fontSize: 13,
-  lineHeight: 1.45,
-};
-
-const FOCUSED_EMPTY_STYLE: React.CSSProperties = {
+const PANEL_EMPTY_STYLE: React.CSSProperties = {
   color: '#94a3b8',
-  fontSize: 13,
+  fontSize: 12,
 };

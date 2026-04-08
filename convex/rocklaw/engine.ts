@@ -52,6 +52,31 @@ export const setRunning = internalMutation({
   },
 });
 
+export const pauseForAgentFailure = internalMutation({
+  args: {
+    agentName: v.string(),
+    tick: v.number(),
+    description: v.string(),
+  },
+  handler: async (ctx, { agentName, tick, description }) => {
+    const state = await ctx.db.query('rl_world_state').unique();
+    if (!state) throw new Error('[engine] rl_world_state not found — run initRocklaw first');
+
+    if (state.isRunning) {
+      await ctx.db.patch(state._id, { isRunning: false });
+    }
+
+    await ctx.db.insert('rl_world_events', {
+      type: 'simulation_paused',
+      description: `Simulation paused after ${agentName} failed to complete a tick. ${description}`,
+      severity: 'high',
+      active: true,
+      source: 'simulation',
+      createdAtTick: tick,
+    });
+  },
+});
+
 // ── World clock loop ─────────────────────────────────────────────────────────
 
 /**
@@ -99,6 +124,9 @@ export const runRocklawTick = internalAction({
       console.log(`[engine] tick ${tick}: triggering compaction`);
       await ctx.runAction(internal.rocklaw.compactNode.runCompaction, {});
     }
+
+    // Update UI summary
+    await ctx.runAction(internal.rocklaw.godNode.recordCurrentStepSummary, {});
 
     // Reschedule the clock
     await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.engine.runRocklawTick, {});
