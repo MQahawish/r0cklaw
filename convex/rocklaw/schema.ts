@@ -41,6 +41,14 @@ export const rocklawTables = {
     openrouterFreeFallbackActivated: v.optional(v.boolean()),
     openrouterFreeFallbackModel: v.optional(v.string()),
     openrouterFreeFallbackProvider: v.optional(v.string()),
+    // Cost & token tracking (cumulative, cleared by user via clearCostStats)
+    lifetimeCostUsd: v.optional(v.number()),
+    lifetimeInputTokens: v.optional(v.number()),
+    lifetimeOutputTokens: v.optional(v.number()),
+    costsFileOffset: v.optional(v.number()),
+    // Pricing for the currently-configured OpenRouter model (USD per token, not per million)
+    currentModelPromptPrice: v.optional(v.number()),
+    currentModelCompletionPrice: v.optional(v.number()),
   })
     .index('name', ['name'])
     .index('location', ['location']),
@@ -381,6 +389,7 @@ export const rocklawTables = {
     lastSummaryTick: v.optional(v.number()),
     lastError: v.optional(v.string()),
     updatedAt: v.number(),
+    sessionCostUsd: v.optional(v.number()),
   }).index('singletonKey', ['singletonKey']),
 
   rl_run_tick_summaries: defineTable({
