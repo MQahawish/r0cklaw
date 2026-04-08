@@ -3,6 +3,7 @@
 import { v } from 'convex/values';
 import { action, internalAction } from '../_generated/server';
 import { api, internal } from '../_generated/api';
+import { Doc } from '../_generated/dataModel';
 
 const AGENT_NAME_BY_SLUG: Record<string, string> = {
   elena: 'Elena Voss',
@@ -42,11 +43,15 @@ async function applyAgentModelSwitch(
   agentName: string,
   modelOverride: string,
   providerOverride?: string,
+  promptPriceUsd?: number,
+  completionPriceUsd?: number,
 ) {
   await ctx.runMutation(internal.rocklaw.god._patchAgentModel, {
     agentName,
     modelOverride,
     providerOverride,
+    currentModelPromptPrice: promptPriceUsd,
+    currentModelCompletionPrice: completionPriceUsd,
   });
 
   const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
@@ -111,6 +116,28 @@ async function applyAgentModelSwitch(
 function parseConfigValue(toml: string, key: string): string | null {
   const match = toml.match(new RegExp(`^${key}\\s*=\\s*"([^"]+)"`, 'm'));
   return match ? match[1] : null;
+}
+
+async function readAgentConfigDefaults(agent: { workspacePath: string }, agentName: string) {
+  const fs = await import('fs/promises');
+  const path = await import('path');
+  const workspacePath = path.resolve(process.cwd(), agent.workspacePath);
+  const agentDir = path.dirname(workspacePath);
+  const configPath = path.join(agentDir, 'config.toml');
+  const fallback = FALLBACK_AGENT_CONFIG_DEFAULTS[agentName] ?? null;
+
+  try {
+    const toml = await fs.readFile(configPath, 'utf8');
+    return {
+      defaultProvider: parseConfigValue(toml, 'default_provider') ?? fallback?.defaultProvider ?? null,
+      defaultModel: parseConfigValue(toml, 'default_model') ?? fallback?.defaultModel ?? null,
+    };
+  } catch {
+    return {
+      defaultProvider: fallback?.defaultProvider ?? null,
+      defaultModel: fallback?.defaultModel ?? null,
+    };
+  }
 }
 
 async function fetchOpenRouterFreeSelection(topN = 8) {
@@ -247,9 +274,11 @@ export const setAgentModel = action({
     agentName: v.string(),
     modelOverride: v.string(),
     providerOverride: v.optional(v.string()),
+    promptPriceUsd: v.optional(v.number()),
+    completionPriceUsd: v.optional(v.number()),
   },
-  handler: async (ctx, { agentName, modelOverride, providerOverride }) => {
-    await applyAgentModelSwitch(ctx, agentName, modelOverride, providerOverride);
+  handler: async (ctx, { agentName, modelOverride, providerOverride, promptPriceUsd, completionPriceUsd }) => {
+    await applyAgentModelSwitch(ctx, agentName, modelOverride, providerOverride, promptPriceUsd, completionPriceUsd);
   },
 });
 
@@ -257,32 +286,15 @@ export const getAgentConfigDefaults = action({
   args: {
     agentName: v.string(),
   },
-  handler: async (ctx, { agentName }) => {
-    const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
+  handler: async (
+    ctx,
+    { agentName },
+  ): Promise<{ defaultProvider: string | null; defaultModel: string | null }> => {
+    const agent: { workspacePath: string } | null = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
     if (!agent) {
       throw new Error(`Agent not found: ${agentName}`);
     }
-
-    const fs = await import('fs/promises');
-    const path = await import('path');
-    const workspacePath = path.resolve(process.cwd(), agent.workspacePath);
-    const agentDir = path.dirname(workspacePath);
-    const configPath = path.join(agentDir, 'config.toml');
-    const fallback = FALLBACK_AGENT_CONFIG_DEFAULTS[agentName] ?? null;
-
-    try {
-      const toml = await fs.readFile(configPath, 'utf8');
-
-      return {
-        defaultProvider: parseConfigValue(toml, 'default_provider') ?? fallback?.defaultProvider ?? null,
-        defaultModel: parseConfigValue(toml, 'default_model') ?? fallback?.defaultModel ?? null,
-      };
-    } catch {
-      return {
-        defaultProvider: fallback?.defaultProvider ?? null,
-        defaultModel: fallback?.defaultModel ?? null,
-      };
-    }
+    return await readAgentConfigDefaults(agent, agentName);
   },
 });
 
@@ -302,6 +314,11 @@ type ProviderModel = {
   name: string;
   contextLength: number;
   pricing?: { prompt: string; completion: string };
+};
+
+type ProviderModelsResult = {
+  models: ProviderModel[];
+  isLive: boolean;
 };
 
 const ANTHROPIC_MODELS: ProviderModel[] = [
@@ -328,9 +345,15 @@ async function fetchAllOpenRouterModels(topN = 80): Promise<ProviderModel[]> {
   const payload = await response.json() as any;
   const models: any[] = Array.isArray(payload?.data) ? payload.data : [];
   return models
-    .filter((m) =>
-      Array.isArray(m?.supported_parameters) &&
-      m.supported_parameters.includes('tools'))
+    .filter((m) => {
+      const prompt = parseFloat(m?.pricing?.prompt ?? '0');
+      const completion = parseFloat(m?.pricing?.completion ?? '0');
+      return (
+        Array.isArray(m?.supported_parameters) &&
+        m.supported_parameters.includes('tools') &&
+        prompt >= 0 && completion >= 0
+      );
+    })
     .map((m) => ({
       id: String(m.id),
       name: String(m.name ?? m.id),
@@ -350,46 +373,67 @@ async function fetchAllOpenRouterModels(topN = 80): Promise<ProviderModel[]> {
     .slice(0, topN);
 }
 
-async function fetchOpenAIModels(): Promise<ProviderModel[]> {
+async function fetchOpenAIModels(): Promise<ProviderModelsResult> {
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return OPENAI_FALLBACK_MODELS;
+  if (!apiKey) return { models: OPENAI_FALLBACK_MODELS, isLive: false };
   const response = await fetch('https://api.openai.com/v1/models', {
     headers: { Authorization: `Bearer ${apiKey}` },
   });
-  if (!response.ok) return OPENAI_FALLBACK_MODELS;
+  if (!response.ok) return { models: OPENAI_FALLBACK_MODELS, isLive: false };
   const payload = await response.json() as any;
   const models: any[] = Array.isArray(payload?.data) ? payload.data : [];
   const CHAT_PREFIXES = ['gpt-4', 'gpt-3.5-turbo', 'o1', 'o3', 'o4'];
-  const SKIP = ['instruct', 'audio', 'realtime', 'search', 'transcribe', 'tts', 'whisper', 'dall-e', 'embedding', 'babbage', 'davinci', 'ada', 'curie'];
-  return models
-    .filter((m) => {
-      const id = String(m.id);
-      return CHAT_PREFIXES.some((p) => id.startsWith(p)) && !SKIP.some((s) => id.includes(s));
-    })
-    .map((m) => ({ id: String(m.id), name: String(m.id), contextLength: 0 }))
-    .sort((a, b) => b.id.localeCompare(a.id));
+  const SKIP = ['instruct', 'audio', 'realtime', 'search', 'transcribe', 'tts', 'whisper', 'dall-e', 'embedding', 'diarize', 'deep-research'];
+  const DATED = /-\d{4}(-\d{2}-\d{2})?$/; // matches -2024-05-13 or legacy -0125 / -0613
+  const CTX: Record<string, number> = {
+    'gpt-4.1': 1047576, 'gpt-4.1-mini': 1047576, 'gpt-4.1-nano': 1047576,
+    'gpt-4o': 128000, 'gpt-4o-mini': 128000,
+    'gpt-4-turbo': 128000, 'gpt-4': 8192,
+    'gpt-3.5-turbo': 16385, 'gpt-3.5-turbo-16k': 16385,
+    'o1': 200000, 'o1-pro': 200000,
+    'o3': 200000, 'o3-mini': 200000, 'o4-mini': 200000,
+  };
+  return {
+    models: models
+      .filter((m) => {
+        const id = String(m.id);
+        return CHAT_PREFIXES.some((p) => id.startsWith(p)) && !SKIP.some((s) => id.includes(s)) && !DATED.test(id);
+      })
+      .map((m) => ({ id: String(m.id), name: String(m.id), contextLength: CTX[String(m.id)] ?? 0 }))
+      .sort((a, b) => b.id.localeCompare(a.id)),
+    isLive: true,
+  };
 }
 
-async function fetchGoogleModels(): Promise<ProviderModel[]> {
+async function fetchGoogleModels(): Promise<ProviderModelsResult> {
   const apiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY;
-  if (!apiKey) return GOOGLE_FALLBACK_MODELS;
+  if (!apiKey) return { models: GOOGLE_FALLBACK_MODELS, isLive: false };
   const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
     headers: { 'x-goog-api-key': apiKey },
   });
-  if (!response.ok) return GOOGLE_FALLBACK_MODELS;
+  if (!response.ok) return { models: GOOGLE_FALLBACK_MODELS, isLive: false };
   const payload = await response.json() as any;
   const models: any[] = Array.isArray(payload?.models) ? payload.models : [];
-  return models
-    .filter((m) =>
-      Array.isArray(m?.supportedGenerationMethods) &&
-      m.supportedGenerationMethods.includes('generateContent') &&
-      String(m.name).includes('gemini'))
-    .map((m) => ({
-      id: String(m.name).replace('models/', ''),
-      name: String(m.displayName ?? m.name),
-      contextLength: (m?.inputTokenLimit ?? 0) as number,
-    }))
-    .sort((a, b) => b.contextLength - a.contextLength || a.id.localeCompare(b.id));
+  return {
+    models: models
+      .filter((m) => {
+        const name = String(m.name);
+        const SKIP = ['tts', 'image', 'native-audio', 'robotics', 'computer-use'];
+        return (
+          name.startsWith('models/gemini-') &&
+          Array.isArray(m?.supportedGenerationMethods) &&
+          m.supportedGenerationMethods.includes('generateContent') &&
+          !SKIP.some((s) => name.includes(s))
+        );
+      })
+      .map((m) => ({
+        id: String(m.name).replace('models/', ''),
+        name: String(m.displayName ?? m.name),
+        contextLength: (m?.inputTokenLimit ?? 0) as number,
+      }))
+      .sort((a, b) => b.contextLength - a.contextLength || a.id.localeCompare(b.id)),
+    isLive: true,
+  };
 }
 
 export const listProviderModels = action({
@@ -397,19 +441,56 @@ export const listProviderModels = action({
     provider: v.string(),
     topN: v.optional(v.number()),
   },
-  handler: async (_ctx, { provider, topN }): Promise<{ models: ProviderModel[] }> => {
+  handler: async (_ctx, { provider, topN }): Promise<ProviderModelsResult> => {
     switch (provider) {
       case 'openrouter':
-        return { models: await fetchAllOpenRouterModels(topN ?? 80) };
+        return { models: await fetchAllOpenRouterModels(topN ?? 80), isLive: true };
       case 'openai':
-        return { models: await fetchOpenAIModels() };
+        return await fetchOpenAIModels();
       case 'google':
-        return { models: await fetchGoogleModels() };
+        return await fetchGoogleModels();
       case 'anthropic':
-        return { models: ANTHROPIC_MODELS };
+        return { models: ANTHROPIC_MODELS, isLive: true };
       default:
-        return { models: [] };
+        return { models: [], isLive: false };
     }
+  },
+});
+
+export const getRunAgentConfigs = action({
+  args: {
+    selectedAgentSlugs: v.array(v.string()),
+  },
+  handler: async (ctx, { selectedAgentSlugs }): Promise<Array<{
+    slug: string;
+    agentName: string;
+    effectiveProvider: string;
+    effectiveModel: string;
+    providerSource: 'override' | 'config';
+    modelSource: 'override' | 'config';
+  }>> => {
+    const slugs = Array.from(new Set(selectedAgentSlugs))
+      .filter((slug) => ALL_AGENT_SLUGS.includes(slug));
+
+    return await Promise.all(
+      slugs.map(async (slug) => {
+        const agentName = AGENT_NAME_BY_SLUG[slug];
+        const agent: Doc<'rl_agents'> | null = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
+        const defaultsFromConfig = agent ? await readAgentConfigDefaults(agent, agentName) : {
+          defaultProvider: FALLBACK_AGENT_CONFIG_DEFAULTS[agentName]?.defaultProvider ?? null,
+          defaultModel: FALLBACK_AGENT_CONFIG_DEFAULTS[agentName]?.defaultModel ?? null,
+        };
+
+        return {
+          slug,
+          agentName,
+          effectiveProvider: agent?.providerOverride ?? defaultsFromConfig.defaultProvider ?? 'openrouter',
+          effectiveModel: agent?.modelOverride ?? defaultsFromConfig.defaultModel ?? 'unknown',
+          providerSource: agent?.providerOverride ? 'override' : 'config',
+          modelSource: agent?.modelOverride ? 'override' : 'config',
+        };
+      }),
+    );
   },
 });
 
@@ -432,10 +513,12 @@ async function callModelTest(provider: string, modelId: string): Promise<string>
   if (provider === 'openai') {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error('OPENAI_API_KEY not set');
+    const isOSeries = /^o\d/.test(modelId);
+    const tokenParam = isOSeries ? { max_completion_tokens: 32 } : { max_tokens: 32 };
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: modelId, messages, max_tokens: 32 }),
+      body: JSON.stringify({ model: modelId, messages, ...tokenParam }),
     });
     if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
     const data = await res.json() as any;
@@ -483,6 +566,112 @@ async function callModelTest(provider: string, modelId: string): Promise<string>
 
   throw new Error(`Unknown provider: ${provider}`);
 }
+
+export const readAgentCostsDelta = internalAction({
+  args: { agentName: v.string() },
+  handler: async (ctx, { agentName }): Promise<void> => {
+    const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
+    if (!agent) return;
+
+    const fs = await import('fs/promises');
+    const path = await import('path');
+
+    const costsPath = path.resolve(process.cwd(), agent.workspacePath, 'state', 'costs.jsonl');
+    const currentOffset = agent.costsFileOffset ?? 0;
+
+    let fileSize: number;
+    try {
+      const stat = await fs.stat(costsPath);
+      fileSize = stat.size;
+    } catch {
+      return;
+    }
+
+    if (fileSize <= currentOffset) return;
+
+    let newBytes: Buffer;
+    try {
+      const fd = await fs.open(costsPath, 'r');
+      try {
+        const readSize = fileSize - currentOffset;
+        const buf = Buffer.alloc(readSize);
+        await fd.read(buf, 0, readSize, currentOffset);
+        newBytes = buf;
+      } finally {
+        await fd.close();
+      }
+    } catch {
+      return;
+    }
+
+    const lines = newBytes.toString('utf8').split('\n').filter((l) => l.trim().length > 0);
+    let deltaInputTokens = 0;
+    let deltaOutputTokens = 0;
+    let deltaCostUsd = 0;
+
+    const promptPrice = agent.currentModelPromptPrice ?? null;
+    const completionPrice = agent.currentModelCompletionPrice ?? null;
+
+    for (const line of lines) {
+      let record: any;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const usage = record?.usage;
+      if (!usage) continue;
+
+      const inputTokens = Number(usage.input_tokens ?? 0);
+      const outputTokens = Number(usage.output_tokens ?? 0);
+      deltaInputTokens += inputTokens;
+      deltaOutputTokens += outputTokens;
+
+      if (promptPrice !== null && completionPrice !== null) {
+        deltaCostUsd += inputTokens * promptPrice + outputTokens * completionPrice;
+      } else {
+        deltaCostUsd += Number(usage.cost_usd ?? 0);
+      }
+    }
+
+    if (deltaInputTokens === 0 && deltaOutputTokens === 0) return;
+
+    await ctx.runMutation(internal.rocklaw.god._patchAgentCosts, {
+      agentName,
+      deltaCostUsd,
+      deltaInputTokens,
+      deltaOutputTokens,
+      newOffset: fileSize,
+    });
+  },
+});
+
+export const clearCostStats = action({
+  args: {},
+  handler: async (ctx): Promise<void> => {
+    const fs = await import('fs/promises');
+    const path = await import('path');
+
+    const agentNames = Object.values(AGENT_NAME_BY_SLUG);
+    const agentUpdates: Array<{ agentName: string; costsFileOffset: number }> = [];
+
+    for (const agentName of agentNames) {
+      const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
+      if (!agent) continue;
+      const costsPath = path.resolve(process.cwd(), agent.workspacePath, 'state', 'costs.jsonl');
+      let fileSize = 0;
+      try {
+        const stat = await fs.stat(costsPath);
+        fileSize = stat.size;
+      } catch {
+        // File doesn't exist — offset 0 is fine
+      }
+      agentUpdates.push({ agentName, costsFileOffset: fileSize });
+    }
+
+    await ctx.runMutation(internal.rocklaw.god._clearAgentCosts, { agentUpdates });
+  },
+});
 
 export const testModel = action({
   args: {
