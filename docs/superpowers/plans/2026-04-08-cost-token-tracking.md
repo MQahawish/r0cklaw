@@ -1,6 +1,6 @@
 # Cost & Token Tracking Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Track real token usage and cost per agent, display live stats in the Agents tab, Run tab, and Overview tab.
 
@@ -38,7 +38,7 @@
 - Modify: `agents/marcus/config.toml`
 - Modify: `agents/sera/config.toml`
 
-- [ ] **Step 1: Update all five agent config.toml files**
+- [x] **Step 1: Update all five agent config.toml files**
 
 Each file currently has `[cost]\nenabled = false`. Change to `enabled = true` in all five.
 
@@ -72,7 +72,7 @@ enabled = true
 enabled = true
 ```
 
-- [ ] **Step 2: Verify**
+- [x] **Step 2: Verify**
 
 Run: `grep -A1 '\[cost\]' agents/*/config.toml`
 
@@ -85,7 +85,7 @@ agents/marcus/config.toml-enabled = true
 agents/sera/config.toml-enabled = true
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add agents/elena/config.toml agents/finn/config.toml agents/lena/config.toml agents/marcus/config.toml agents/sera/config.toml
@@ -101,7 +101,7 @@ git commit -m "feat: enable zeroclaw cost tracking in all agent configs"
 
 ZeroClaw writes `costs.jsonl` records with `input_tokens`, `output_tokens`, `cost_usd`. We store running totals on each agent plus a session total on `rl_run_console_state`.
 
-- [ ] **Step 1: Add fields to `rl_agents` in schema.ts**
+- [x] **Step 1: Add fields to `rl_agents` in schema.ts**
 
 In `convex/rocklaw/schema.ts`, inside the `rl_agents` `defineTable({...})` call, add these optional fields after the existing `openrouterFreeFallbackProvider` field:
 
@@ -116,7 +116,7 @@ In `convex/rocklaw/schema.ts`, inside the `rl_agents` `defineTable({...})` call,
     currentModelCompletionPrice: v.optional(v.number()),
 ```
 
-- [ ] **Step 2: Add `sessionCostUsd` to `rl_run_console_state`**
+- [x] **Step 2: Add `sessionCostUsd` to `rl_run_console_state`**
 
 In the same file, inside `rl_run_console_state` `defineTable({...})`, add after `updatedAt`:
 
@@ -124,13 +124,13 @@ In the same file, inside `rl_run_console_state` `defineTable({...})`, add after 
     sessionCostUsd: v.optional(v.number()),
 ```
 
-- [ ] **Step 3: Verify schema compiles**
+- [x] **Step 3: Verify schema compiles**
 
 Run: `npx convex dev --once 2>&1 | head -20`
 
 Expected: no schema validation errors (may show function push output).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add convex/rocklaw/schema.ts
@@ -144,7 +144,7 @@ git commit -m "feat: add cost and token tracking fields to schema"
 **Files:**
 - Modify: `convex/rocklaw/god.ts`
 
-- [ ] **Step 1: Add `_patchAgentCosts` internal mutation to god.ts**
+- [x] **Step 1: Add `_patchAgentCosts` internal mutation to god.ts**
 
 Add after `_clearRunTickSummaries` (around line 340):
 
@@ -184,7 +184,7 @@ export const _patchAgentCosts = internalMutation({
 });
 ```
 
-- [ ] **Step 2: Add `_clearAgentCosts` internal mutation to god.ts**
+- [x] **Step 2: Add `_clearAgentCosts` internal mutation to god.ts**
 
 Add directly after `_patchAgentCosts`:
 
@@ -221,7 +221,7 @@ export const _clearAgentCosts = internalMutation({
 });
 ```
 
-- [ ] **Step 3: Update `_patchAgentModel` to accept and store pricing fields**
+- [x] **Step 3: Update `_patchAgentModel` to accept and store pricing fields**
 
 Find `_patchAgentModel` (around line 619). Replace it with:
 
@@ -251,7 +251,7 @@ export const _patchAgentModel = internalMutation({
 });
 ```
 
-- [ ] **Step 4: Update `getRunConsole` query to return `sessionCostUsd`**
+- [x] **Step 4: Update `getRunConsole` query to return `sessionCostUsd`**
 
 Find the `getRunConsole` query (around line 133). In the returned `state` object (inside the `stateDoc ? { ... } : defaults` block), add `sessionCostUsd` at the end:
 
@@ -266,13 +266,13 @@ In `defaultRunConsoleState()` function, after `lastError: undefined as string | 
     sessionCostUsd: 0,
 ```
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run: `npx convex dev --once 2>&1 | head -30`
 
 Expected: no TypeScript errors.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add convex/rocklaw/god.ts
@@ -290,7 +290,7 @@ git commit -m "feat: add _patchAgentCosts, _clearAgentCosts mutations and pricin
 
 `clearCostStats` reads current file sizes and zeroes all lifetime counters, setting offsets to current file size so old records aren't re-read.
 
-- [ ] **Step 1: Add `readAgentCostsDelta` internal action at the end of godNode.ts (before `testModel`)**
+- [x] **Step 1: Add `readAgentCostsDelta` internal action at the end of godNode.ts (before `testModel`)**
 
 Add this action (it must go in godNode.ts since it needs `"use node"` for filesystem access):
 
@@ -377,7 +377,7 @@ export const readAgentCostsDelta = internalAction({
 });
 ```
 
-- [ ] **Step 2: Add `clearCostStats` exported action at end of godNode.ts**
+- [x] **Step 2: Add `clearCostStats` exported action at end of godNode.ts**
 
 ```typescript
 export const clearCostStats = action({
@@ -408,7 +408,7 @@ export const clearCostStats = action({
 });
 ```
 
-- [ ] **Step 3: Update `setAgentModel` to accept and store pricing**
+- [x] **Step 3: Update `setAgentModel` to accept and store pricing**
 
 Find `setAgentModel` (currently around line 268). Replace it with:
 
@@ -427,7 +427,7 @@ export const setAgentModel = action({
 });
 ```
 
-- [ ] **Step 4: Update `applyAgentModelSwitch` to forward pricing to `_patchAgentModel`**
+- [x] **Step 4: Update `applyAgentModelSwitch` to forward pricing to `_patchAgentModel`**
 
 Find `applyAgentModelSwitch` (around line 41). Add pricing params to its signature and pass them through:
 
@@ -450,13 +450,13 @@ async function applyAgentModelSwitch(
   // ... rest of existing function unchanged ...
 ```
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run: `npx convex dev --once 2>&1 | head -30`
 
 Expected: no TypeScript errors.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add convex/rocklaw/godNode.ts
@@ -472,7 +472,7 @@ git commit -m "feat: add readAgentCostsDelta and clearCostStats actions"
 
 Call `readAgentCostsDelta` at the very end of `tickAgent`, after all processing. Wrapped in try/catch so cost tracking failure never kills a tick.
 
-- [ ] **Step 1: Add the call at end of `tickAgent`**
+- [x] **Step 1: Add the call at end of `tickAgent`**
 
 `tickAgent` ends (around line 530–541) with scheduling the next tick:
 
@@ -495,13 +495,13 @@ Insert before `if (!_manual)`:
     }
 ```
 
-- [ ] **Step 2: Verify the tickAgent function still compiles**
+- [x] **Step 2: Verify the tickAgent function still compiles**
 
 Run: `npx convex dev --once 2>&1 | head -30`
 
 Expected: no TypeScript errors.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add convex/rocklaw/bridgeNode.ts
@@ -520,7 +520,7 @@ Three changes:
 2. Add a cost stats line below the model selector
 3. Add "Clear stats" button in the `AgentDetail` header
 
-- [ ] **Step 1: Add `clearCostStats` import and two formatting helpers**
+- [x] **Step 1: Add `clearCostStats` import and two formatting helpers**
 
 At the top of the file, in the imports, `useAction` is already imported. The `api` import already covers `clearCostStats` once it's added. Add two helper functions near the top of the file (after the existing `formatPricing` and `formatModelLabel` functions):
 
@@ -538,7 +538,7 @@ function formatCostUsd(usd: number): string {
 }
 ```
 
-- [ ] **Step 2: Add `clearCostStats` action hook and pricing lookup in `AgentDetail`**
+- [x] **Step 2: Add `clearCostStats` action hook and pricing lookup in `AgentDetail`**
 
 In `AgentDetail`, after the existing `testModel` useAction line, add:
 
@@ -547,7 +547,7 @@ In `AgentDetail`, after the existing `testModel` useAction line, add:
   const [clearingStats, setClearingStats] = useState(false);
 ```
 
-- [ ] **Step 3: Update `handleSaveModel` to pass pricing**
+- [x] **Step 3: Update `handleSaveModel` to pass pricing**
 
 Replace the existing `handleSaveModel` function with:
 
@@ -583,7 +583,7 @@ Replace the existing `handleSaveModel` function with:
   };
 ```
 
-- [ ] **Step 4: Update `handleApplyAll` to pass pricing**
+- [x] **Step 4: Update `handleApplyAll` to pass pricing**
 
 Replace the existing `handleApplyAll` with:
 
@@ -615,7 +615,7 @@ Replace the existing `handleApplyAll` with:
   };
 ```
 
-- [ ] **Step 5: Add "Clear stats" button to the AgentDetail header**
+- [x] **Step 5: Add "Clear stats" button to the AgentDetail header**
 
 Find the header block in `AgentDetail` (around line 386–392):
 
@@ -656,7 +656,7 @@ Replace with:
       </div>
 ```
 
-- [ ] **Step 6: Add cost stats line below the model selector**
+- [x] **Step 6: Add cost stats line below the model selector**
 
 Find the closing `</div>` of the "ZeroClaw Config" section (after the hint text `Pick a provider first...`). The section ends around:
 
@@ -691,11 +691,11 @@ Add the cost stats line AFTER this closing `</div></div>` block (as a sibling se
       )}
 ```
 
-- [ ] **Step 7: Verify the component renders without errors**
+- [x] **Step 7: Verify the component renders without errors**
 
 Run: `npm run dev` and open the Agents tab. Confirm no console errors. The cost stats section should be hidden until the sim runs and produces data.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/components/AgentConfigPanel.tsx
@@ -711,7 +711,7 @@ git commit -m "feat: add cost stats line and clear stats button to Agents tab"
 
 Add a one-line session cost summary in the run console. It appears whenever `sessionCostUsd > 0` or total tokens > 0.
 
-- [ ] **Step 1: Add formatting helpers to RunConsolePanel.tsx**
+- [x] **Step 1: Add formatting helpers to RunConsolePanel.tsx**
 
 Add near the top of `RunConsolePanel.tsx`, after the existing `trimInline` function:
 
@@ -729,7 +729,7 @@ function formatCostUsd(usd: number): string {
 }
 ```
 
-- [ ] **Step 2: Add agents query and compute session token total**
+- [x] **Step 2: Add agents query and compute session token total**
 
 `RunConsolePanel` currently queries `api.rocklaw.god.getRunConsole`. The `sessionCostUsd` field is now included in its return. We also need total tokens — fetch agents from `getDashboard` or add a lighter query.
 
@@ -752,7 +752,7 @@ Then compute session totals in the component body (after the `useMemo` blocks):
   }, [dashboard?.agents]);
 ```
 
-- [ ] **Step 3: Add the cost ticker to the run console render**
+- [x] **Step 3: Add the cost ticker to the run console render**
 
 In the `RunConsolePanel` return JSX, find the `<div style={{ display: 'grid', gap: 14 }}>` opening tag. Inside it, before the first `<div style={PANEL_STYLE}>` (the "New Run Setup" panel), add:
 
@@ -780,11 +780,11 @@ In the `RunConsolePanel` return JSX, find the `<div style={{ display: 'grid', ga
       )}
 ```
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run: `npm run dev` and open the Run tab. Confirm no console errors. The ticker is hidden until there's data.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/components/RunConsolePanel.tsx
@@ -800,7 +800,7 @@ git commit -m "feat: add session cost ticker to Run tab"
 
 `getDashboard` already returns all `rl_agents` rows. The new `lifetimeCostUsd`, `lifetimeInputTokens`, `lifetimeOutputTokens` fields are automatically available on the `agent` object in `AgentCard`.
 
-- [ ] **Step 1: Add formatting helpers to GodDashboard.tsx**
+- [x] **Step 1: Add formatting helpers to GodDashboard.tsx**
 
 Add near the top of `GodDashboard.tsx`, after the existing `repColour` function:
 
@@ -818,7 +818,7 @@ function formatCostUsd(usd: number): string {
 }
 ```
 
-- [ ] **Step 2: Add cost row to AgentCard**
+- [x] **Step 2: Add cost row to AgentCard**
 
 In `AgentCard`, find the closing section that shows coin and busy status (around line 125–130):
 
@@ -846,11 +846,11 @@ Add a cost row AFTER this `</div>`:
       )}
 ```
 
-- [ ] **Step 3: Verify**
+- [x] **Step 3: Verify**
 
 Run: `npm run dev` and open the Overview tab. Confirm `AgentCard` renders correctly with no console errors.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/components/GodDashboard.tsx
