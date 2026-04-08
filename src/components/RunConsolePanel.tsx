@@ -126,7 +126,7 @@ export function TickSummaryCard({
       }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-        <div>
+        <div style={{ cursor: 'pointer', flex: 1 }} onClick={() => setExpanded((value) => !value)}>
           <div style={{ fontSize: 13, color: '#f9fafb', fontWeight: 700 }}>
             Tick {summary.tick} · Day {summary.day} · {summary.timeOfDay}
           </div>
@@ -145,20 +145,39 @@ export function TickSummaryCard({
         )}
       </div>
 
-      <div style={{ display: 'grid', gap: 4 }}>
-        {actionRows.map((entry: any, index: number) => (
-          <div key={`${entry.agentName}-${index}`} style={{ fontSize: 12, color: '#d1d5db' }}>
-            <span style={{ color: '#f3f4f6', fontWeight: 600 }}>{entry.agentName}</span>
-            <span style={{ color: '#6b7280', margin: '0 6px' }}>→</span>
-            <span style={{ color: entry.outcome === 'success' ? '#93c5fd' : '#f87171' }}>{entry.action}</span>
-            {entry.target && <span style={{ color: '#9ca3af' }}> {entry.target}</span>}
-            {entry.outcomeNote && <span style={{ color: '#6b7280' }}> · {trimInline(entry.outcomeNote, 72)}</span>}
+      {expanded && (
+        <div style={{ display: 'grid', gap: 12, borderTop: '1px solid #1f2937', paddingTop: 10 }}>
+          <div>
+            <SectionLabel>Agent Actions</SectionLabel>
+            <div style={{ display: 'grid', gap: 4 }}>
+              {actionRows.length === 0 && (summary.agents ?? []).filter((a: any) => a.busy).length === 0 ? (
+                <div style={{ fontSize: 11, color: '#6b7280', fontStyle: 'italic' }}>No actions recorded this tick.</div>
+              ) : (
+                <>
+                  {actionRows.map((entry: any, index: number) => (
+                    <div key={`${entry.agentName}-${index}`} style={{ fontSize: 12, color: '#d1d5db' }}>
+                      <span style={{ color: '#f3f4f6', fontWeight: 600 }}>{entry.agentName}</span>
+                      <span style={{ color: '#6b7280', margin: '0 6px' }}>→</span>
+                      <span style={{ color: entry.outcome === 'success' ? '#93c5fd' : '#f87171' }}>{entry.action}</span>
+                      {entry.target && <span style={{ color: '#9ca3af' }}> {entry.target}</span>}
+                      {entry.message && <span style={{ color: '#e5e7eb', fontStyle: 'italic' }}> "{trimInline(entry.message, 256)}"</span>}
+                      {entry.outcomeNote && <span style={{ color: '#6b7280', margin: '0 4px' }}> · {trimInline(entry.outcomeNote, 256)}</span>}
+                    </div>
+                  ))}
+                  {/* Show agents who were busy but didn't have an action record this tick */}
+                  {(summary.agents ?? [])
+                    .filter((a: any) => a.busy && !actionRows.some((ar: any) => ar.agentName === a.name))
+                    .map((a: any) => (
+                      <div key={`busy-${a.name}`} style={{ fontSize: 12, color: '#94a3b8' }}>
+                        <span style={{ color: '#94a3af', fontWeight: 600 }}>{a.name}</span>
+                        <span style={{ color: '#4b5563', margin: '0 6px' }}>·</span>
+                        <span style={{ color: '#7c3aed', fontSize: 11, fontStyle: 'italic' }}>{a.busyLabel ?? 'busy'}</span>
+                      </div>
+                    ))}
+                </>
+              )}
+            </div>
           </div>
-        ))}
-      </div>
-
-      {showDetails && expanded && (
-        <div style={{ display: 'grid', gap: 12 }}>
           {suspiciousRows.length > 0 && (
             <div>
               <SectionLabel>Failed / Suspicious</SectionLabel>
@@ -206,7 +225,7 @@ export function TickSummaryCard({
               <div style={{ display: 'grid', gap: 4 }}>
                 {deltaRows.map((entry: any, index: number) => (
                   <div key={`${summary.tick}-delta-${index}`} style={{ fontSize: 12, color: '#d1d5db' }}>
-                    {entry.item}: {entry.currentPrice}c ({entry.deltaPercent > 0 ? '+' : ''}{entry.deltaPercent}%)
+                    {entry.item}: {entry.price}c ({entry.changePct > 0 ? '+' : ''}{Number(entry.changePct).toFixed(entry.changePct % 1 === 0 ? 0 : 1)}%)
                   </div>
                 ))}
               </div>
@@ -511,7 +530,7 @@ export default function RunConsolePanel() {
                 ...actionRows.map((action: any, index: number) => (
                   <CompactLogLine
                     key={`${entry._id}-action-${index}`}
-                    text={`${action.agentName} -> ${action.action}${action.target ? ` ${action.target}` : ''}${action.outcomeNote ? ` · ${trimInline(action.outcomeNote, 68)}` : ''}`}
+                    text={`${action.agentName} -> ${action.action}${action.target ? ` ${action.target}` : ''}${action.message ? ` "${trimInline(action.message, 200)}"` : ''}${action.outcomeNote ? ` · ${trimInline(action.outcomeNote, 200)}` : ''}`}
                   />
                 )),
               ];

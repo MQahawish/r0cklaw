@@ -1343,9 +1343,9 @@ function summariseAction(
 ): string {
   const destination = action.location ?? action.target ?? action.item ?? null;
   const target = destination ? ` → ${destination}` : '';
-  const note = (action.message ?? action.text) ? ` (${(action.message ?? action.text ?? '').slice(0, 60)})` : '';
+  const note = (action.message ?? action.text) ? ` (${(action.message ?? action.text ?? '').slice(0, 200)})` : '';
   const failed = outcome === 'failed' ? ' [FAILED]' : '';
-  const warning = outcomeNote ? ` ⚠ ${outcomeNote.slice(0, 80)}` : '';
+  const warning = outcomeNote ? ` ⚠ ${outcomeNote.slice(0, 200)}` : '';
   return `- Day ${day} ${timeOfDay}: ${action.action}${target}${note}${failed}${warning}`;
 }
 
@@ -1355,7 +1355,7 @@ function summariseFailure(
   summary: string,
   detail?: string | null,
 ): string {
-  const warning = detail ? ` ⚠ ${detail.slice(0, 80)}` : '';
+  const warning = detail ? ` ⚠ ${detail.slice(0, 200)}` : '';
   return `- Day ${day} ${timeOfDay}: ${summary} [FAILED]${warning}`;
 }
 
@@ -1390,8 +1390,8 @@ function summariseRejectedAttempt(
   }
 
   const noteSource = action.message ?? action.text ?? '';
-  const note = noteSource ? ` ("${noteSource.slice(0, 60)}")` : '';
-  const warning = detail ? ` ⚠ ${detail.slice(0, 80)}` : '';
+  const note = noteSource ? ` ("${noteSource.slice(0, 200)}")` : '';
+  const warning = detail ? ` ⚠ ${detail.slice(0, 200)}` : '';
   return `- Day ${day} ${timeOfDay}: You attempted to ${narrative}${note} [FAILED]${warning}`;
 }
 

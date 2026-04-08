@@ -100,7 +100,7 @@ function AgentCard({ agent, repScore }: { agent: any; repScore?: number }) {
           <div style={{ fontWeight: 600, color: '#f9fafb', fontSize: 13, lineHeight: 1.2 }}>{agent.name}</div>
           <div style={{ color: '#9ca3af', fontSize: 11, lineHeight: 1.2, marginTop: 2 }}>{agent.role}</div>
         </div>
-        <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
           {repScore !== undefined && (
             <span style={{
               fontSize: 10, padding: '1px 5px', borderRadius: 3,
@@ -109,14 +109,25 @@ function AgentCard({ agent, repScore }: { agent: any; repScore?: number }) {
               fontWeight: 700,
             }}>★{repScore}</span>
           )}
+          {agent.busy && (
+            <span style={{
+              fontSize: 11,
+              padding: '1px 6px',
+              borderRadius: 3,
+              background: '#7c3aed22',
+              color: '#a78bfa',
+            }}>
+              busy
+            </span>
+          )}
           <span style={{
             fontSize: 11,
             padding: '1px 6px',
             borderRadius: 3,
-            background: agent.busy ? '#7c3aed22' : '#05966922',
-            color: agent.busy ? '#a78bfa' : '#34d399',
+            background: '#05966922',
+            color: '#34d399',
           }}>
-            {agent.busy ? 'busy' : agent.location}
+            {agent.location}
           </span>
         </div>
       </div>
@@ -349,7 +360,7 @@ export default function GodDashboard({ onClose }: { onClose?: () => void }) {
                 {recentTickHistory.length === 0 ? (
                   <div style={{ fontSize: 12, color: '#4b5563', fontStyle: 'italic' }}>No tick history yet.</div>
                 ) : recentTickHistory.map((entry: any) => (
-                  <TickSummaryCard key={entry._id} summary={entry.summary} showDetails={false} />
+                  <TickSummaryCard key={entry._id} summary={entry.summary} showDetails={true} />
                 ))}
               </div>
             </div>

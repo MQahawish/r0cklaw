@@ -541,18 +541,22 @@ export const getStepSummary = query({
 
     const priceDeltas = priceHistory
       .map((row) => {
-        const current = marketPrices.find((price) => price.item === row.item) ?? null;
         const previous = previousPriceByItem.get(row.item) ?? null;
+        let changePct = 0;
+        if (previous && previous.price > 0) {
+          changePct = ((row.price - previous.price) / previous.price) * 100;
+        }
         return {
           item: row.item,
           price: row.price,
-          changePct: current?.changePct ?? 0,
+          changePct,
           shortageLevel: row.shortageLevel,
           previousPrice: previous?.price ?? null,
           previousShortageLevel: previous?.shortageLevel ?? null,
         };
       })
-      .sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct));
+      .sort((a, b) => Math.abs(b.changePct) - Math.abs(a.changePct))
+      .filter((d) => Math.abs(d.changePct) > 0.01);
 
     const transactionDeltas = transactions
       .filter((txn) =>
@@ -577,18 +581,54 @@ export const getStepSummary = query({
         outcomeNote: txn.outcomeNote ?? null,
       }));
 
-    const currentTickActions = actions
-      .slice()
-      .sort((a, b) => b._creationTime - a._creationTime)
-      .map((entry) => ({
-        agentName: entry.agentName,
-        action: entry.action,
-        target: entry.target ?? null,
-        location: entry.location ?? null,
-        message: entry.message ?? null,
-        outcome: entry.outcome,
-        outcomeNote: entry.outcomeNote ?? null,
-      }));
+    const actionsByAgent = new Map<string, any[]>();
+    for (const action of actions.sort((a, b) => a._creationTime - b._creationTime)) {
+      if (!actionsByAgent.has(action.agentName)) actionsByAgent.set(action.agentName, []);
+      actionsByAgent.get(action.agentName)!.push(action);
+    }
+
+    const currentTickActions = [];
+    for (const [agentName, agentActions] of actionsByAgent.entries()) {
+      if (agentActions.length === 1) {
+        const a = agentActions[0];
+        currentTickActions.push({
+          agentName: a.agentName,
+          action: a.action,
+          target: a.target ?? null,
+          location: a.location ?? null,
+          message: a.message ?? null,
+          outcome: a.outcome,
+          outcomeNote: a.outcomeNote ?? null,
+        });
+      } else {
+        // Merge multiple actions (usually a 'Finished' and a 'Started')
+        const finish = agentActions.find(a => a.outcomeNote?.startsWith('Finished'));
+        const start = agentActions.find(a => a.outcomeNote?.startsWith('Started') || !a.outcomeNote?.startsWith('Finished'));
+        
+        const latest = agentActions[agentActions.length - 1];
+        let mergedNote = latest.outcomeNote ?? '';
+        
+        if (finish && start && finish.outcomeNote && start.outcomeNote) {
+          const finishedPart = finish.outcomeNote.replace('Finished ', '');
+          const startedPart = start.outcomeNote.startsWith('Started') 
+            ? start.outcomeNote.toLowerCase() 
+            : `started ${start.action}${start.target ? ' ' + start.target : ''}`;
+          mergedNote = `Finished ${finishedPart} and ${startedPart}`;
+        } else if (agentActions.length > 1) {
+          mergedNote = agentActions.map(a => a.outcomeNote).filter(Boolean).join(' · ');
+        }
+
+        currentTickActions.push({
+          agentName: latest.agentName,
+          action: latest.action,
+          target: latest.target ?? null,
+          location: latest.location ?? null,
+          message: latest.message ?? (finish?.message || null),
+          outcome: latest.outcome,
+          outcomeNote: mergedNote || null,
+        });
+      }
+    }
 
     const interruptLines: string[] = [];
     for (const scene of sceneSummaries) {

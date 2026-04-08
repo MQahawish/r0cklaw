@@ -327,6 +327,7 @@ export const rocklawTables = {
     message: v.optional(v.string()),
     tick: v.number(),
     day: v.number(),
+    timeOfDay: v.optional(v.string()),
     outcome: v.union(v.literal('success'), v.literal('failed'), v.literal('partial')),
     outcomeNote: v.optional(v.string()),
   })

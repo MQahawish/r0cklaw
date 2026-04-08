@@ -2589,6 +2589,7 @@ async function recordFailedAction(
     message: parsed.text ?? parsed.message,
     tick,
     day,
+    timeOfDay: timeOfDayForTick(tick),
     outcome: 'failed',
     outcomeNote: failNote,
   });
@@ -2634,6 +2635,7 @@ async function startBusyAction(
     message: action.text ?? action.message,
     tick,
     day,
+    timeOfDay: timeOfDayForTick(tick),
     outcome: 'success',
     outcomeNote: `Started ${describeActionForHumans(action)} (completes at tick ${tick + durationTicks})`,
   });
@@ -2924,7 +2926,9 @@ async function createTalkInteraction(
       message: text,
       tick,
       day,
+      timeOfDay: timeOfDayForTick(tick),
       outcome: 'success',
+
       outcomeNote: `Deferred behind ${parsed.target}'s same-tick opener in interaction ${reciprocalSameTick.interactionId}.`,
     });
 
@@ -2969,6 +2973,7 @@ async function createTalkInteraction(
     message: text,
     tick,
     day,
+    timeOfDay: timeOfDayForTick(tick),
     outcome: 'success',
     outcomeNote: `Interaction ${interactionId} created.`,
   });
@@ -3017,7 +3022,9 @@ async function sendChatAction(
         message: text,
         tick,
         day,
+        timeOfDay: timeOfDayForTick(tick),
         outcome: 'success',
+
         outcomeNote: `Suppressed deferred follow-up to ${parsed.target} because your live chat just closed on the previous tick.`,
       });
       await ctx.db.patch(agentDoc._id, {
@@ -3060,7 +3067,9 @@ async function sendChatAction(
       message: text,
       tick,
       day,
+      timeOfDay: timeOfDayForTick(tick),
       outcome: 'success',
+
       outcomeNote: suspiciousDealLikeNote
         ? `Live opener sent to ${parsed.target}. ${suspiciousDealLikeNote}`
         : `Live opener sent to ${parsed.target}.`,
@@ -3088,6 +3097,7 @@ async function sendChatAction(
     message: text,
     tick,
     day,
+    timeOfDay: timeOfDayForTick(tick),
     outcome: 'success',
     outcomeNote: suspiciousDealLikeNote
       ? `${deferredReason ?? `Deferred chat sent to ${parsed.target}.`} ${suspiciousDealLikeNote}`
@@ -3196,6 +3206,7 @@ async function createPendingTransaction(
     message: parsed.text ?? parsed.message,
     tick,
     day,
+    timeOfDay: timeOfDayForTick(tick),
     outcome: 'success',
     outcomeNote: `Offer ${txnId} created.`,
   });
@@ -3557,6 +3568,7 @@ async function resolveTransactionResponse(
     message: parsed.message,
     tick,
     day,
+    timeOfDay: timeOfDayForTick(tick),
     outcome: 'success',
     outcomeNote: `Accepted ${txn.kind} offer ${txn.txnId}.`,
   });
@@ -4708,6 +4720,12 @@ async function executeResolvedAction(
     await noteTalkNonResponse(ctx, agentDoc.name, parsed.action, tick, day);
   }
 
+  const isCompletion = activityDurationTicks === 0;
+  const completionNote = isCompletion ? `Finished ${describeActionForHumans(parsed)}` : undefined;
+  const finalOutcomeNote = [outcomeNote, completionNote, (parsed.action === 'chat' || parsed.action === 'say') ? formatSpeechIntentNote(getSpeechIntent(parsed)) : '']
+    .filter((s) => s && s.trim())
+    .join(' · ') || undefined;
+
   await ctx.db.insert('rl_actions_log', {
     agentName,
     action: parsed.action,
@@ -4716,8 +4734,9 @@ async function executeResolvedAction(
     message: parsed.text ?? parsed.message,
     tick,
     day,
+    timeOfDay: timeOfDayForTick(tick),
     outcome: 'success',
-    outcomeNote: `${outcomeNote ?? ''}${(parsed.action === 'chat' || parsed.action === 'say') ? formatSpeechIntentNote(getSpeechIntent(parsed)) : ''}`.trim() || undefined,
+    outcomeNote: finalOutcomeNote,
   });
 
   if (parsed.action === 'sleep' && parsed.journal) {

@@ -182,10 +182,13 @@ export const startRocklaw = mutation({
     }
     await ctx.db.patch(state._id, { isRunning: true });
 
-    // Start the world clock
-    await ctx.scheduler.runAfter(0, internal.rocklaw.engine.runRocklawTick, {});
+    // Record initial Tick 0 summary so first actions have a home in the UI
+    await ctx.runAction(internal.rocklaw.godNode.recordCurrentStepSummary, {});
 
-    // Kick off each agent's individual tick loop
+    // Start the world clock after one interval (so it doesn't jump to Tick 1 immediately)
+    await ctx.scheduler.runAfter(TICK_INTERVAL_MS, internal.rocklaw.engine.runRocklawTick, {});
+
+    // Kick off each agent's individual tick loop immediately
     const agents = await ctx.db.query('rl_agents').collect();
     for (const agent of agents) {
       await ctx.scheduler.runAfter(0, internal.rocklaw.bridgeNode.tickAgent, { agentName: agent.name });

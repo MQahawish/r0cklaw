@@ -170,11 +170,22 @@ function AgentRow({
           <div style={{ fontWeight: 600, fontSize: 13, color: '#f9fafb', lineHeight: 1.2 }}>{agent.name}</div>
           <div style={{ fontSize: 11, color: '#6b7280', lineHeight: 1.2, marginTop: 2 }}>{agent.role}</div>
         </div>
-        <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+        <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <RepBadge score={repScore} />
           {agent.paused && (
             <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: 3, background: '#7c3aed22', color: '#a78bfa' }}>
               excluded
+            </span>
+          )}
+          {agent.busy && (
+            <span style={{
+              fontSize: 11,
+              padding: '1px 6px',
+              borderRadius: 3,
+              background: '#7c3aed22',
+              color: '#a78bfa',
+            }}>
+              busy
             </span>
           )}
           <span
@@ -182,11 +193,11 @@ function AgentRow({
               fontSize: 11,
               padding: '1px 6px',
               borderRadius: 3,
-              background: agent.busy ? '#7c3aed22' : '#05966922',
-              color: agent.busy ? '#a78bfa' : '#34d399',
+              background: '#05966922',
+              color: '#34d399',
             }}
           >
-            {agent.busy ? 'busy' : agent.location}
+            {agent.location}
           </span>
         </div>
       </div>
@@ -641,15 +652,18 @@ function AgentDetail({
         <div style={{ fontSize: 11, fontWeight: 700, color: '#6b7280', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 8 }}>
           Recent Actions
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, maxHeight: 160, overflowY: 'auto' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 240, overflowY: 'auto' }}>
           {recentActions.length === 0 ? (
             <div style={{ fontSize: 12, color: '#4b5563', fontStyle: 'italic' }}>No actions yet.</div>
           ) : recentActions.map((a: any) => (
-            <div key={a._id} style={{ fontSize: 11, color: '#9ca3af', borderBottom: '1px solid #111827', paddingBottom: 2 }}>
-              <span style={{ color: '#6b7280', marginRight: 4 }}>D{a.day}</span>
-              <span style={{ color: a.outcome === 'failed' ? '#f87171' : '#93c5fd' }}>{a.action}</span>
-              {a.target && <span style={{ color: '#6b7280' }}> → {a.target}</span>}
-              {a.outcomeNote && <span style={{ color: '#f97316' }}> · {a.outcomeNote.slice(0, 50)}</span>}
+            <div key={a._id} style={{ fontSize: 11, color: '#9ca3af', borderBottom: '1px solid #111827', paddingBottom: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                <span style={{ color: '#6b7280', whiteSpace: 'nowrap' }}>D{a.day} {a.timeOfDay ?? 't'+a.tick}</span>
+                <span style={{ color: a.outcome === 'failed' ? '#f87171' : '#93c5fd', fontWeight: 600 }}>{a.action}</span>
+                {a.target && <span style={{ color: '#6b7280' }}> → {a.target}</span>}
+              </div>
+              {a.message && <div style={{ color: '#e5e7eb', fontStyle: 'italic', paddingLeft: 10, lineHeight: 1.2 }}>"{a.message.slice(0, 512)}{a.message.length > 512 ? '...' : ''}"</div>}
+              {a.outcomeNote && <div style={{ color: '#f97316', fontSize: 10, paddingLeft: 10 }}>· {a.outcomeNote}</div>}
             </div>
           ))}
         </div>

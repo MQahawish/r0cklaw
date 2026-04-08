@@ -275,6 +275,8 @@ async function clearRocklawTables(ctx: any) {
   await deleteAll(ctx, 'rl_agents');
   await deleteAll(ctx, 'rl_systems_state');
   await deleteAll(ctx, 'rl_world_state');
+  await deleteAll(ctx, 'rl_run_tick_summaries');
+  await deleteAll(ctx, 'rl_run_console_state');
 }
 
 async function deleteAll(ctx: any, table: string) {
