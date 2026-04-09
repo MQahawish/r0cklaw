@@ -70,12 +70,11 @@ These are source templates, not live state.
 ### 3. Runtime workspace files
 
 Refreshed/generated files provide current context:
-- `world/location.md`
-- `world/status.md`
-- `world/inventory.md`
-- `world/market_prices.md`
-- `world/village_news.md`
-- `HEARTBEAT.md`
+- `TURN.md`
+- `AGENTS.md`
+- `TOOLS.md`
+- `chat/<name>/CHAT.md`
+- `skills/*/SKILL.md`
 
 Rocklaw also rewrites runtime `TOOLS.md`, `AGENTS.md`, and `skills/*/SKILL.md` to reflect the current action surface.
 

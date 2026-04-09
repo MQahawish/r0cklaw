@@ -259,6 +259,7 @@ export const ensureCanonicalItemIds = internalMutation({
 
 async function clearRocklawTables(ctx: any) {
   await deleteAll(ctx, 'rl_journal_entries');
+  await deleteAll(ctx, 'rl_activity_notes');
   await deleteAll(ctx, 'rl_agent_profiles');
   await deleteAll(ctx, 'rl_social_knowledge');
   await deleteAll(ctx, 'rl_fields');

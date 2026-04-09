@@ -4,9 +4,8 @@
  * Runs every 10 ticks. For each agent, checks growing files against thresholds
  * and compacts them: either by trimming (no LLM) or by LLM summarisation.
  *
- * Thresholds (from spec):
- *   HEARTBEAT.md          managed inline in appendHeartbeat -- not touched here
- *   JOURNAL.md               > 160 lines  → LLM summary (preserve durable journal memory)
+ * Markdown compaction targets have been removed from Rocklaw. The scheduler
+ * remains in place as a no-op hook in case future runtime docs need pruning.
  */
 
 import { v } from 'convex/values';

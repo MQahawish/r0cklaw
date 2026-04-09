@@ -51,13 +51,13 @@ That boots a fresh local world, warms up a few ticks, then switches to manual st
 Rocklaw currently uses:
 - strict JSON final actions from agents
 - world-owned validation and commitment in Convex
-- per-agent workspaces with generated world files and rolling heartbeat
+- per-agent workspaces with generated runtime files and recent activity surfaced from world state
 - local interaction handling for `chat` (live/deferred) and in-person commerce via chat intents
 - dynamic runtime docs so only currently relevant actions are surfaced
 - `--blank-self` mode for minimal starting self-state and world-driven first contact
 
 ## Notes
 
-- Do not treat runtime files under `agents/*/workspace/world/` or `HEARTBEAT.md` as source docs.
+- Do not treat generated runtime files under `agents/*/workspace/` as source docs.
 - The checked-in workspace files under each agent are the seed templates.
 - `README_AI_TOWN.md` is reference material, not the primary Rocklaw doc.

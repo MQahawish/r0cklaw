@@ -126,7 +126,6 @@ rm -f \
   "$WORKSPACE/state/tick-debug.jsonl" \
   "$WORKSPACE/state/memory_hygiene_state.json" \
   "$WORKSPACE/TURN.md" \
-  "$WORKSPACE/JOURNAL.md" \
   "$WORKSPACE/SELF.md" \
   "$WORKSPACE/world/inventory.md" \
   "$WORKSPACE/world/location.md" \
@@ -155,19 +154,6 @@ if [[ "$PROFILE" == "--seeded" ]]; then
   seed_runtime_doc_from_repo "AGENTS.md"
   seed_runtime_doc_from_repo "TOOLS.md"
 fi
-
-cat > "$WORKSPACE/HEARTBEAT.md" <<EOF
-# HEARTBEAT -- $AGENT_NAME
-
-## Recent Activity
-- Day 1 morning: [awaiting first tick]
-EOF
-
-cat > "$WORKSPACE/JOURNAL.md" <<EOF
-# Journal -- $AGENT_NAME
-
-- No journal entries recorded yet.
-EOF
 
 if [[ "$PROFILE" == "--blank-self" ]]; then
   python3 - <<'PY' "$WORKSPACE" "$AGENT_NAME"
@@ -213,6 +199,3 @@ fi
 
 sanitize_runtime_doc "AGENTS.md" "$WORKSPACE/AGENTS.md"
 sanitize_runtime_doc "TOOLS.md" "$WORKSPACE/TOOLS.md"
-
-chmod 666 "$WORKSPACE/HEARTBEAT.md" 2>/dev/null || true
-chmod 666 "$WORKSPACE/JOURNAL.md" 2>/dev/null || true

@@ -245,8 +245,22 @@ export const rocklawTables = {
     tick: v.number(),
     timeOfDay: v.string(),
     summary: v.string(),
+    memoryKey: v.optional(v.string()),
+    memoryIngestedAt: v.optional(v.number()),
   })
     .index('agent_day_tick', ['agentName', 'day', 'tick'])
+    .index('agentName', ['agentName']),
+
+  rl_activity_notes: defineTable({
+    agentName: v.string(),
+    line: v.string(),
+    tick: v.optional(v.number()),
+    day: v.optional(v.number()),
+    timeOfDay: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index('agent_createdAt', ['agentName', 'createdAt'])
+    .index('agent_tick', ['agentName', 'tick'])
     .index('agentName', ['agentName']),
 
   // Field lifecycle state for grounded farm production.

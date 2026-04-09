@@ -262,9 +262,12 @@ export const manualTick = action({
           day,
         });
         if (completion && 'action' in completion) {
-          await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+          await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
             agentName: name,
             line: summariseManualAction(completion.action, day, timeOfDay, completion.outcome, completion.note),
+            tick,
+            day,
+            timeOfDay,
           });
         }
       }
@@ -282,13 +285,19 @@ export const manualTick = action({
       maxStallTurns: LIVE_CHAT_STALL_LIMIT,
     });
     for (const scene of stalledScenes) {
-      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
         agentName: scene.agentA,
         line: `- Day ${day} ${timeOfDay}: conversation with ${scene.agentB} ended because it stalled without progress.`,
+        tick,
+        day,
+        timeOfDay,
       });
-      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
         agentName: scene.agentB,
         line: `- Day ${day} ${timeOfDay}: conversation with ${scene.agentA} ended because it stalled without progress.`,
+        tick,
+        day,
+        timeOfDay,
       });
     }
 
@@ -393,9 +402,12 @@ export const manualTick = action({
       });
 
       if (speakerPlan.status === 'rejected') {
-        await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
           agentName: speakerPlan.agentName,
-          line: speakerPlan.heartbeatLine,
+          line: speakerPlan.activityLine,
+          tick,
+          day,
+          timeOfDay,
         });
         if (speakerPlan.pendingNote) {
           await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
@@ -416,9 +428,12 @@ export const manualTick = action({
             agentName: speaker,
           });
         }
-        await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
           agentName: speaker,
           line: summariseManualAction(speakerPlan.action, day, timeOfDay, sceneResult?.outcome, sceneResult?.note),
+          tick,
+          day,
+          timeOfDay,
         });
         const speakerDoc = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName: speaker });
         if (speakerDoc) {
@@ -443,9 +458,12 @@ export const manualTick = action({
 
       const partnerScene = await ctx.runQuery(internal.rocklaw.bridge.getLiveChatScene, { agentName: partner });
       if (partnerScene) {
-        await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
           agentName: partner,
           line: `- Day ${day} ${timeOfDay}: chatting with ${partnerScene.partner} (${partnerScene.yourTurn ? 'your turn' : 'waiting'})`,
+          tick,
+          day,
+          timeOfDay,
         });
       }
     }
@@ -472,9 +490,12 @@ export const manualTick = action({
 
     for (const result of plannedResults) {
       if (result.status !== 'rejected') continue;
-      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
         agentName: result.agentName,
-        line: result.heartbeatLine,
+        line: result.activityLine,
+        tick,
+        day,
+        timeOfDay,
       });
       if (result.pendingNote) {
         await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
@@ -632,9 +653,12 @@ export const manualTick = action({
       });
 
       if (interruptResult.status === 'rejected') {
-        await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
           agentName: interruptResult.agentName,
-          line: interruptResult.heartbeatLine,
+          line: interruptResult.activityLine,
+          tick,
+          day,
+          timeOfDay,
         });
         if (interruptResult.pendingNote) {
           await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
@@ -705,9 +729,12 @@ export const manualTick = action({
       const actionDoc = finalActions.get(name);
       if (!actionDoc) continue;
       if (interruptedOpeners.has(name) && actionDoc.action === 'chat') {
-        await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
           agentName: name,
           line: `- Day ${day} ${timeOfDay}: live scene opened with ${actionDoc.target} (your opener was interrupted and saved for context)`,
+          tick,
+          day,
+          timeOfDay,
         });
         const agentDoc = agentByName.get(name);
         if (agentDoc) {
@@ -748,9 +775,12 @@ export const manualTick = action({
             });
           }
         }
-        await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+        await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
           agentName: name,
           line: `- Day ${day} ${timeOfDay}: live opener accepted by ${actionDoc.target}; live scene is pending their reply`,
+          tick,
+          day,
+          timeOfDay,
         });
         const agentDoc = agentByName.get(name);
         if (agentDoc) {
@@ -797,9 +827,12 @@ export const manualTick = action({
             ? deferredChatReasons.get(name)
             : undefined,
       });
-      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
         agentName: name,
         line: summariseManualAction(actionDoc, day, timeOfDay, result?.outcome, result?.note),
+        tick,
+        day,
+        timeOfDay,
       });
       const agentDoc = agentByName.get(name);
       if (agentDoc) {

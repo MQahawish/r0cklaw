@@ -1583,6 +1583,54 @@ async function getLiveChatSceneForAgent(ctx: any, agentName: string) {
   return scenes[0] ?? null;
 }
 
+async function createLiveChatSceneRecord(
+  ctx: any,
+  args: {
+    agentA: string;
+    agentB: string;
+    location: string;
+    nextSpeaker: string;
+    openingSpeaker?: string;
+    openingText?: string;
+    openingOfferRef?: string;
+    openingOfferPayloadJson?: string;
+    interruptedSpeaker?: string;
+    interruptedText?: string;
+    interruptedActionJson?: string;
+    tick: number;
+    day: number;
+  },
+) {
+  const existingA = await getLiveChatSceneForAgent(ctx, args.agentA);
+  if (existingA) return existingA.sceneId;
+  const existingB = await getLiveChatSceneForAgent(ctx, args.agentB);
+  if (existingB) return existingB.sceneId;
+  const sceneId = createChatSceneId(args.agentA, args.agentB, args.tick, args.day);
+  await ctx.db.insert('rl_chat_scenes', {
+    sceneId,
+    agentA: args.agentA,
+    agentB: args.agentB,
+    location: args.location,
+    status: 'live',
+    nextSpeaker: args.nextSpeaker,
+    openedTick: args.tick,
+    openedDay: args.day,
+    lastMessageOrder: 0,
+    lastActiveTick: args.tick,
+    lastActiveDay: args.day,
+    stallTurns: 0,
+    openingSpeaker: args.openingSpeaker,
+    openingText: args.openingText,
+    openingOfferRef: args.openingOfferRef,
+    openingOfferPayloadJson: args.openingOfferPayloadJson,
+    interruptedSpeaker: args.interruptedSpeaker,
+    interruptedText: args.interruptedText,
+    interruptedActionJson: args.interruptedActionJson,
+    interruptedContextPending: Boolean(args.interruptedSpeaker && args.interruptedText),
+  });
+  return sceneId;
+}
+
 function getScenePartner(scene: any, agentName: string) {
   return scene.agentA === agentName ? scene.agentB : scene.agentA;
 }
@@ -1756,6 +1804,77 @@ async function createChatMessage(
     sentDay: args.day,
   });
   return threadKey;
+}
+
+async function getReciprocalSameTickLiveChatMessage(
+  ctx: any,
+  fromAgent: string,
+  toAgent: string,
+  tick: number,
+  day: number,
+) {
+  const threadKey = createChatThreadKey(fromAgent, toAgent);
+  const threadMessages = await ctx.db
+    .query('rl_chat_messages')
+    .withIndex('thread_sent', (q: any) => q.eq('threadKey', threadKey))
+    .collect();
+
+  return threadMessages
+    .filter((message: any) =>
+      message.deliveryMode === 'live'
+      && message.sentTick === tick
+      && message.sentDay === day
+      && !message.sceneId
+      && message.fromAgent === toAgent
+      && message.toAgent === fromAgent,
+    )
+    .sort((a: any, b: any) => a._creationTime - b._creationTime)[0] ?? null;
+}
+
+async function bindUnscopedLiveMessagesToScene(
+  ctx: any,
+  agentA: string,
+  agentB: string,
+  tick: number,
+  day: number,
+  sceneId: string,
+) {
+  const threadKey = createChatThreadKey(agentA, agentB);
+  const threadMessages = await ctx.db
+    .query('rl_chat_messages')
+    .withIndex('thread_sent', (q: any) => q.eq('threadKey', threadKey))
+    .collect();
+
+  const pendingSceneMessages = threadMessages
+    .filter((message: any) =>
+      message.deliveryMode === 'live'
+      && message.sentTick === tick
+      && message.sentDay === day
+      && !message.sceneId
+      && (
+        (message.fromAgent === agentA && message.toAgent === agentB)
+        || (message.fromAgent === agentB && message.toAgent === agentA)
+      ),
+    )
+    .sort((a: any, b: any) => a._creationTime - b._creationTime);
+
+  let order = 1;
+  for (const message of pendingSceneMessages) {
+    await ctx.db.patch(message._id, {
+      sceneId,
+      sceneOrder: order,
+    });
+    order += 1;
+  }
+  const scene = await ctx.db
+    .query('rl_chat_scenes')
+    .withIndex('sceneId', (q: any) => q.eq('sceneId', sceneId))
+    .unique();
+  if (scene) {
+    await ctx.db.patch(scene._id, {
+      lastMessageOrder: pendingSceneMessages.length,
+    });
+  }
 }
 
 async function getLiveChatSceneBetweenAgents(ctx: any, agentA: string, agentB: string) {
@@ -2690,10 +2809,20 @@ async function startBusyAction(
   };
 }
 
-async function appendAgentHeartbeat(ctx: any, agentName: string, line: string) {
-  await ctx.scheduler.runAfter(0, internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+async function appendAgentHeartbeat(
+  ctx: any,
+  agentName: string,
+  line: string,
+  tick: number,
+  day: number,
+  timeOfDay: string,
+) {
+  await ctx.scheduler.runAfter(0, internal.rocklaw.worldRefreshNode.recordActivityNote, {
     agentName,
     line,
+    tick,
+    day,
+    timeOfDay,
   });
 }
 
@@ -2910,6 +3039,9 @@ async function failActiveInteractionsForDeparture(
       ctx,
       otherParty,
       `- Day ${day} ${timeOfDayForTick(tick)}: ${interaction.kind} with ${agentName} ended [FAILED] ⚠ ${note}`,
+      tick,
+      day,
+      timeOfDayForTick(tick),
     );
     await appendPendingNote(ctx, otherParty, note);
   }
@@ -3088,6 +3220,58 @@ async function sendChatAction(
     tick,
     day,
   });
+
+  if (deliveryMode === 'live') {
+    const reciprocal = await getReciprocalSameTickLiveChatMessage(
+      ctx,
+      agentDoc.name,
+      parsed.target!,
+      tick,
+      day,
+    );
+    if (reciprocal) {
+      const sceneId = await createLiveChatSceneRecord(ctx, {
+        agentA: reciprocal.fromAgent,
+        agentB: agentDoc.name,
+        location: agentDoc.location,
+        nextSpeaker: reciprocal.fromAgent,
+        openingSpeaker: reciprocal.fromAgent,
+        openingText: reciprocal.text,
+        interruptedSpeaker: agentDoc.name,
+        interruptedText: text,
+        interruptedActionJson: JSON.stringify(parsed),
+        tick,
+        day,
+      });
+      await bindUnscopedLiveMessagesToScene(ctx, reciprocal.fromAgent, agentDoc.name, tick, day, sceneId);
+
+      await ctx.db.insert('rl_actions_log', {
+        agentName: agentDoc.name,
+        action: parsed.action,
+        target: parsed.target ?? undefined,
+        location: agentDoc.location,
+        message: text,
+        tick,
+        day,
+        timeOfDay: timeOfDayForTick(tick),
+        outcome: 'success',
+        outcomeNote: `Live scene opened with ${parsed.target} (your opener was interrupted and saved for context).`,
+      });
+
+      await ctx.db.patch(agentDoc._id, {
+        energy: newEnergy,
+        health: newHealth,
+        hunger: finalHunger,
+        busy: false,
+        busyUntilTick: undefined,
+      });
+
+      return {
+        note: `Live scene opened with ${parsed.target}; your opener was interrupted and saved for context.`,
+        outcome: 'success',
+      };
+    }
+  }
 
   if (deliveryMode === 'live') {
     await ctx.db.insert('rl_actions_log', {
@@ -3426,6 +3610,9 @@ async function resolveTransactionResponse(
       ctx,
       proposer.name,
       `- Day ${day} ${timeOfDayForTick(tick)}: ${agentDoc.name} rejected your ${txn.kind} offer [FAILED]${parsed.message ? ` ⚠ ${parsed.message}` : ''}`,
+      tick,
+      day,
+      timeOfDayForTick(tick),
     );
     await appendPendingNote(ctx, proposer.name, `${agentDoc.name} rejected your ${txn.kind} offer (${txn.txnId}).`);
     return { outcome: 'success', note: note };
@@ -3445,7 +3632,7 @@ async function resolveTransactionResponse(
       resolvedDay: day,
       outcomeNote: note,
     });
-    await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
+    await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`, tick, day, timeOfDayForTick(tick));
     await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
     return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
   }
@@ -3466,7 +3653,7 @@ async function resolveTransactionResponse(
           resolvedDay: day,
           outcomeNote: note,
         });
-        await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
+        await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`, tick, day, timeOfDayForTick(tick));
         await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
         return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
       }
@@ -3480,7 +3667,7 @@ async function resolveTransactionResponse(
           resolvedDay: day,
           outcomeNote: note,
         });
-        await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
+        await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`, tick, day, timeOfDayForTick(tick));
         await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
         return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
       }
@@ -3493,7 +3680,7 @@ async function resolveTransactionResponse(
         resolvedDay: day,
         outcomeNote: note,
       });
-      await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
+      await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`, tick, day, timeOfDayForTick(tick));
       await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
       return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
     }
@@ -3509,7 +3696,7 @@ async function resolveTransactionResponse(
           resolvedDay: day,
           outcomeNote: note,
         });
-        await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
+        await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`, tick, day, timeOfDayForTick(tick));
         await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
         return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
       }
@@ -3522,7 +3709,7 @@ async function resolveTransactionResponse(
         resolvedDay: day,
         outcomeNote: note,
       });
-      await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`);
+      await appendAgentHeartbeat(ctx, proposer.name, `- Day ${day} ${timeOfDayForTick(tick)}: your ${txn.kind} offer failed [FAILED] ⚠ ${note}`, tick, day, timeOfDayForTick(tick));
       await appendPendingNote(ctx, proposer.name, `Your ${txn.kind} offer (${txn.txnId}) failed: ${note}`);
       return recordFailedAction(ctx, agentDoc, agentDoc.name, parsed, tick, day, note);
     }
@@ -3620,6 +3807,9 @@ async function resolveTransactionResponse(
     ctx,
     proposer.name,
     `- Day ${day} ${timeOfDayForTick(tick)}: ${txn.kind} offer completed with ${agentDoc.name} (${formatTransactionItems(offer)} for ${formatTransactionItems(request)})`,
+    tick,
+    day,
+    timeOfDayForTick(tick),
   );
   await appendPendingNote(ctx, proposer.name, `${agentDoc.name} accepted your ${txn.kind} offer (${txn.txnId}).`);
 
@@ -3727,24 +3917,11 @@ export const createLiveChatScene = internalMutation({
     tick,
     day,
   }) => {
-    const existingA = await getLiveChatSceneForAgent(ctx, agentA);
-    if (existingA) return existingA.sceneId;
-    const existingB = await getLiveChatSceneForAgent(ctx, agentB);
-    if (existingB) return existingB.sceneId;
-    const sceneId = createChatSceneId(agentA, agentB, tick, day);
-    await ctx.db.insert('rl_chat_scenes', {
-      sceneId,
+    return await createLiveChatSceneRecord(ctx, {
       agentA,
       agentB,
       location,
-      status: 'live',
       nextSpeaker,
-      openedTick: tick,
-      openedDay: day,
-      lastMessageOrder: 0,
-      lastActiveTick: tick,
-      lastActiveDay: day,
-      stallTurns: 0,
       openingSpeaker,
       openingText,
       openingOfferRef,
@@ -3752,9 +3929,9 @@ export const createLiveChatScene = internalMutation({
       interruptedSpeaker,
       interruptedText,
       interruptedActionJson,
-      interruptedContextPending: Boolean(interruptedSpeaker && interruptedText),
+      tick,
+      day,
     });
-    return sceneId;
   },
 });
 
@@ -4773,12 +4950,15 @@ async function executeResolvedAction(
   });
 
   if (parsed.action === 'sleep' && parsed.journal) {
-    await ctx.db.insert('rl_journal_entries', {
+    const journalEntryId = await ctx.db.insert('rl_journal_entries', {
       agentName,
       day,
       tick,
       timeOfDay: timeOfDayForTick(tick),
       summary: parsed.journal,
+    });
+    await ctx.scheduler.runAfter(0, (internal as any).rocklaw.godNode.ingestJournalMemory, {
+      journalEntryId,
     });
   }
 

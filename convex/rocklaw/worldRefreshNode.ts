@@ -6,7 +6,6 @@ import { internal } from '../_generated/api';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { canonicalizeItemQuantities, formatItemLabel, formatItemQuantity, healthRestoreFor, isUsable } from './economy';
-import { defaultAgentProfileFor } from './agentProfiles';
 
 async function runRefreshStep<T>(agentName: string, step: string, fn: () => Promise<T>): Promise<T> {
   try {
@@ -39,9 +38,12 @@ export const refreshWorldFiles = internalAction({
       day,
     });
     for (const contact of firstSeenContacts) {
-      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
         agentName,
         line: `- Day ${day} ${timeOfDay}: first saw ${contact.name} (${contact.role}) at ${contact.location}.`,
+        tick,
+        day,
+        timeOfDay,
       });
     }
 
@@ -51,13 +53,19 @@ export const refreshWorldFiles = internalAction({
       day,
     });
     for (const txn of expiredTransactions) {
-      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
         agentName,
         line: `- Day ${day} ${timeOfDay}: ${txn.kind} offer from ${txn.fromAgent} expired [FAILED] ⚠ No response before tick ${tick}.`,
+        tick,
+        day,
+        timeOfDay,
       });
-      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
         agentName: txn.fromAgent,
         line: `- Day ${day} ${timeOfDay}: your ${txn.kind} offer to ${agentName} expired [FAILED] ⚠ No response before tick ${tick}.`,
+        tick,
+        day,
+        timeOfDay,
       });
       await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
         agentName: txn.fromAgent,
@@ -74,13 +82,19 @@ export const refreshWorldFiles = internalAction({
       day,
     });
     for (const interaction of expiredInteractions) {
-      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
         agentName: interaction.fromAgent,
         line: interaction.fromHeartbeatLine,
+        tick,
+        day,
+        timeOfDay,
       });
-      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
         agentName: interaction.toAgent,
         line: interaction.toHeartbeatLine,
+        tick,
+        day,
+        timeOfDay,
       });
       if (interaction.pendingNoteAgent && interaction.pendingNote) {
         await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
@@ -109,8 +123,6 @@ export const refreshWorldFiles = internalAction({
     await runRefreshStep(agentName, 'refreshRuntimeToolsMd', () => refreshRuntimeToolsMd(workspaceRoot, timeOfDay, data));
     await runRefreshStep(agentName, 'write TURN.md', () =>
       writeFile(workspaceRoot, 'TURN.md', buildTurnMd(agentName, day, timeOfDay, data, firstSeenContacts)));
-    await runRefreshStep(agentName, 'write JOURNAL.md', () =>
-      writeFile(workspaceRoot, 'JOURNAL.md', buildJournalMd(agentName, data)));
     await runRefreshStep(agentName, 'writeChatThreads', () => writeChatThreads(workspaceRoot, data));
 
     if (data.agent.pendingNote) {
@@ -119,57 +131,37 @@ export const refreshWorldFiles = internalAction({
   },
 });
 
-export const appendHeartbeat = internalAction({
-  args: { agentName: v.string(), line: v.string() },
-  handler: async (ctx, { agentName, line }) => {
-    const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
-    if (!agent) return;
-
-    const heartbeatPath = path.join(resolveWorkspacePath(agent.workspacePath), 'HEARTBEAT.md');
-
-    let existing = '';
-    try {
-      existing = await fs.readFile(heartbeatPath, 'utf8');
-    } catch {
-      existing = `# HEARTBEAT -- ${agentName}\n\n## Recent Activity\n`;
-    }
-
-    const lines = existing.split('\n');
-    const entries = lines.filter((entry) => entry.startsWith('- Day'));
-    const trimmed = entries.slice(-6);
-
-    const newContent = [
-      `# HEARTBEAT -- ${agentName}`,
-      '',
-      '## Recent Activity',
-      ...trimmed,
+export const recordActivityNote = internalAction({
+  args: {
+    agentName: v.string(),
+    line: v.string(),
+    tick: v.number(),
+    day: v.number(),
+    timeOfDay: v.string(),
+  },
+  handler: async (ctx, { agentName, line, tick, day, timeOfDay }) => {
+    await ctx.runMutation(internal.rocklaw.worldRefresh.appendActivityNote, {
+      agentName,
       line,
-      '',
-    ].join('\n');
-
-    await fs.writeFile(heartbeatPath, newContent, 'utf8');
-    await makeWritable(heartbeatPath, 'file');
+      tick,
+      day,
+      timeOfDay,
+    });
   },
 });
 
-export const getLatestHeartbeatLine = internalAction({
-  args: { agentName: v.string() },
-  handler: async (ctx, { agentName }) => {
-    const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
-    if (!agent) return null;
-
-    const heartbeatPath = path.join(resolveWorkspacePath(agent.workspacePath), 'HEARTBEAT.md');
-
-    try {
-      const existing = await fs.readFile(heartbeatPath, 'utf8');
-      const entries = existing
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => line.startsWith('- Day'));
-      return entries.length > 0 ? entries[entries.length - 1] : null;
-    } catch {
-      return null;
-    }
+export const readRecentActivityNotes: any = internalAction({
+  args: {
+    agentName: v.string(),
+    limit: v.optional(v.number()),
+    tick: v.number(),
+  },
+  handler: async (ctx, { agentName, limit, tick }) => {
+    return await ctx.runQuery(internal.rocklaw.worldRefresh.getRecentActivityNotes, {
+      agentName,
+      limit,
+      upToTick: tick,
+    });
   },
 });
 
@@ -204,12 +196,6 @@ function buildTurnMd(
     '',
     `Current location: ${data.agent.location}`,
     '',
-    '## Profile Summary',
-    buildProfileSummaryMd(agentName, data),
-    '',
-    '## Journal Memory',
-    buildJournalMemoryMd(data),
-    '',
     '## Inventory',
     stripMarkdownTitle(buildInventoryMd(agentName, day, data)),
     '',
@@ -235,55 +221,12 @@ function buildTurnMd(
     stripMarkdownTitle(buildMarketPricesMd(day, data)),
     '',
     '## Optional Deep Reads',
+    '- TURN.md is the authoritative deep local dossier for exact inventory, local place trading rows, offer/thread details, reachable places, and broader market/news context.',
     '- If you need more context with one person, read their thread file under `chat/<name>/CHAT.md`.',
+    '- For older private, social, or strategic context beyond TURN.md, use `memory_recall`.',
     '',
   ];
   return sections.join('\n');
-}
-
-function buildProfileSummaryMd(agentName: string, data: any): string {
-  const profile = data.agentProfile ?? defaultAgentProfileFor(agentName, data.agent.role ?? 'Villager');
-  const sections = [
-    ...Array.isArray(profile.coreNature) ? profile.coreNature : [],
-    ...Array.isArray(profile.whatMattersMost) ? profile.whatMattersMost : [],
-    ...Array.isArray(profile.whenTimesAreGood) ? profile.whenTimesAreGood : [],
-    ...Array.isArray(profile.whenTimesAreTight) ? profile.whenTimesAreTight : [],
-  ].filter((line) => typeof line === 'string' && line.trim().length > 0);
-  return sections.length > 0 ? sections.join('\n') : '- No stable profile summary recorded yet.';
-}
-
-function buildJournalMemoryMd(data: any): string {
-  const entries = Array.isArray(data.journalEntries) ? data.journalEntries : [];
-  if (entries.length === 0) return '- No journal entries recorded yet.';
-
-  const latest = entries.slice(-3);
-  const lines: string[] = latest.map((entry: any) =>
-    `- Day ${entry.day} ${entry.timeOfDay}: ${entry.summary}`,
-  );
-
-  const partner = data.currentChatScene?.partner;
-  if (partner) {
-    const partnerEntry = [...entries].reverse().find((entry: any) =>
-      typeof entry.summary === 'string' && entry.summary.toLowerCase().includes(partner.toLowerCase()),
-    );
-    if (partnerEntry && !latest.some((entry: any) => entry.day === partnerEntry.day && entry.tick === partnerEntry.tick)) {
-      lines.push(`- Latest note mentioning ${partner}: Day ${partnerEntry.day} ${partnerEntry.timeOfDay}: ${partnerEntry.summary}`);
-    }
-  }
-
-  return lines.join('\n');
-}
-
-function buildJournalMd(agentName: string, data: any): string {
-  const entries = Array.isArray(data.journalEntries) ? data.journalEntries : [];
-  return [
-    `# Journal -- ${agentName}`,
-    '',
-    ...(entries.length === 0
-      ? ['- No journal entries recorded yet.']
-      : entries.map((entry: any) => `- Day ${entry.day} ${entry.timeOfDay} (tick ${entry.tick}): ${entry.summary}`)),
-    '',
-  ].join('\n');
 }
 
 function buildItemUtilityMd(data: any): string {
@@ -1023,6 +966,10 @@ async function refreshRuntimeToolsMd(workspaceDir: string, timeOfDay: string, da
     .replace('- `move`: use `location`\n  Example JSON: `{"action":"move","location":"market"}`', moveBlock)
     .replace(/## Economic actions[\s\S]*?## Act in the world\n\n/, `${economicSection}## Act in the world\n\n`);
   content = content
+    .replace(/Start with:\n- `HEARTBEAT\.md` for what you just did\n- `TURN\.md` for your current state, nearby people, offers, and village context\n- `JOURNAL\.md` only if you need older private memory beyond what TURN already surfaced\n- `chat\/<name>\/CHAT\.md` only for one deeper thread or older deferred history when needed/g, 'Start with:\n- the prompt summary for what matters now\n- `TURN.md` only when you need exact local detail about state, trade, offers, threads, or village context\n- `memory_recall` only if you need older private, social, or strategic context\n- `chat/<name>/CHAT.md` only for one deeper thread or older deferred history when needed')
+    .replace(/- `HEARTBEAT\.md` records recent activity\n- `TURN\.md` is your main turn context\n- Stable character and motives are injected into `TURN\.md`; `JOURNAL\.md` holds your private nightly long-term memory\n- `chat\/<name>\/CHAT\.md` is an optional deep read for one person when you need older or deferred thread history/g, '- `TURN.md` is your deep local dossier for exact current state\n- Stable character and motives are injected into `TURN.md`; older private memory should come from `memory_recall`\n- `chat/<name>/CHAT.md` is an optional deep read for one person when you need older or deferred thread history')
+    .replace(/Use `JOURNAL\.md` only for older private memory that still matters\.\n/g, 'Use `memory_recall` when older private memory still matters.\n')
+    .replace(/Do not edit `JOURNAL\.md` directly\.\nUpdate long-term private memory through the required `journal` field on `sleep`\.\n/g, 'Update long-term private memory through the required `journal` field on `sleep`; the world ingests it for later recall.\n')
     .replace(/`talk`/g, '`chat`')
     .replace(/`message`/g, '`chat`')
     .replace(/ talk /g, ' chat ')
@@ -1115,12 +1062,12 @@ async function refreshRuntimeAgentsMd(workspaceDir: string, data: any): Promise<
     .replace(/self\/secrets\.md\s+-- what you know that others don't\n/g, '')
     .replace(/self\/social\/\*\/public\.md\s+-- how you behave toward each person\n/g, '')
     .replace(/self\/social\/\*\/private\.md\s+-- how you actually feel \(yours alone\)\n/g, '')
-    .replace(/self\/messages\/\s+-- your correspondence\n/g, 'TURN.md                       -- your primary turn context, state, offers, and market/news summary\nchat/<name>/CHAT.md           -- optional deep read for one specific contact when you need older or deferred thread history\n');
+    .replace(/self\/messages\/\s+-- your correspondence\n/g, 'TURN.md                       -- optional deep local dossier for exact state, local trade rows, offers, thread summaries, and market/news detail\nchat/<name>/CHAT.md           -- optional deep read for one specific contact when you need older or deferred thread history\n');
 
-  if (!content.includes('TURN.md                       -- your primary turn context')) {
+  if (!content.includes('TURN.md                       -- optional deep local dossier')) {
     content = content.replace(
       /HEARTBEAT\.md\s+-- what you have done recently\n/,
-      'HEARTBEAT.md               -- what you have done recently\nTURN.md                       -- your primary turn context, state, offers, stable profile summary, and market/news summary\nJOURNAL.md                    -- your private nightly journal history for long-term memory\nchat/<name>/CHAT.md           -- optional deep read for one specific contact when you need older or deferred thread history\n',
+      'TURN.md                       -- optional deep local dossier for exact state, local trade rows, offers, thread summaries, stable profile summary, and market/news detail\nchat/<name>/CHAT.md           -- optional deep read for one specific contact when you need older or deferred thread history\n',
     );
   }
 
@@ -1130,10 +1077,10 @@ async function refreshRuntimeAgentsMd(workspaceDir: string, data: any): Promise<
     .replace(/,\s*"duration_ticks"\s*:\s*1/g, '')
     .replace(/"duration_ticks"\s*:\s*1,\s*/g, '')
     .replace(/Use `thought` for why now, `chat` for outward framing, and `memory_note` for the private takeaway\./g, 'Use `thought` for why now, `message` or `text` for outward visible wording.')
-    .replace(/Use tools to read files, search memory, and update your private notes\.\n/g, 'Use tools only to read files before your final action. Do not edit your prompt files directly.\n')
-    .replace(/Update self\/social\/<name>\/private\.md after any meaningful\ninteraction\.[\s\S]*?These are your compass\.\n\n/g, 'Your private long-term memory now lives in `JOURNAL.md`, which the world writes from your nightly sleep journal.\n\n')
+    .replace(/Use tools to read files, search memory, and update your private notes\.\n/g, 'Use tools only to read files or recall memory before your final action. Do not edit your prompt files directly.\n')
+    .replace(/Update self\/social\/<name>\/private\.md after any meaningful\ninteraction\.[\s\S]*?These are your compass\.\n\n/g, 'Use `memory_recall` when you need older private or social context beyond what TURN.md shows.\n\n')
     .replace(/Update self\/beliefs\.md when something shifts your worldview\.\n\n/g, '')
-    .replace(/You may read and think with tools, but you must not try to execute the world action yourself\.\n/g, 'You may read and think with tools, but you must not try to execute the world action yourself.\nUse the canonical read flow: HEARTBEAT.md, then TURN.md, then JOURNAL.md only if you need older private memory, then at most one chat/<name>/CHAT.md if needed.\nDo not use shell commands or globbing to discover world context.\nDo not edit JOURNAL.md directly. Long-term memory is recorded through the required `journal` field on `sleep`.\n');
+    .replace(/You may read and think with tools, but you must not try to execute the world action yourself\.\n/g, 'You may read and think with tools, but you must not try to execute the world action yourself.\nUse the canonical read flow: act from the prompt summary when it is enough, open TURN.md when you need exact local detail, use memory_recall only for older private, social, or strategic context, then read at most one chat/<name>/CHAT.md if needed for older or deferred thread history.\nDo not use shell commands or globbing to discover world context.\n');
 
   if (!content.includes('Speak in plain modern English.')) {
     content = content.replace(
@@ -1142,16 +1089,16 @@ async function refreshRuntimeAgentsMd(workspaceDir: string, data: any): Promise<
     );
   }
 
-  if (!content.includes('JOURNAL.md')) {
+  if (!content.includes('memory_recall')) {
     content = content.replace(
-      /TURN\.md\s+-- your primary turn context, state, offers, and market\/news summary\n/,
-      'TURN.md                       -- your primary turn context, state, offers, stable profile summary, and market/news summary\nJOURNAL.md                    -- your private nightly journal history for long-term memory\n',
+      /TURN\.md\s+-- (?:your primary turn context, state, offers, and market\/news summary|optional deep local dossier for exact state, local trade rows, offers, thread summaries, and market\/news detail)\n/,
+      'TURN.md                       -- optional deep local dossier for exact state, local trade rows, offers, thread summaries, stable profile summary, and market/news detail\nmemory_recall                -- optional recall for older private, social, or strategic context\n',
     );
   }
 
   content = content.replace(
     /(Use the canonical read flow: HEARTBEAT\.md, then TURN\.md, then JOURNAL\.md only if you need older private memory, then at most one chat\/<name>\/CHAT\.md if needed\.\nDo not use shell commands or globbing to discover world context\.\nDo not edit JOURNAL\.md directly\. Long-term memory is recorded through the required `journal` field on `sleep`\.\n)+/g,
-    'Use the canonical read flow: HEARTBEAT.md, then TURN.md, then JOURNAL.md only if you need older private memory, then at most one chat/<name>/CHAT.md if needed for older or deferred thread history.\nDo not use shell commands or globbing to discover world context.\nDo not edit JOURNAL.md directly. Long-term memory is recorded through the required `journal` field on `sleep`.\n',
+    'Use the canonical read flow: act from the prompt summary when it is enough, open TURN.md when you need exact local detail, use memory_recall only for older private, social, or strategic context, then read at most one chat/<name>/CHAT.md if needed for older or deferred thread history.\nDo not use shell commands or globbing to discover world context.\n',
   );
 
   await fs.writeFile(runtimePath, content, 'utf8');

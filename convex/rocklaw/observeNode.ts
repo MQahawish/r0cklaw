@@ -153,9 +153,7 @@ function isRuntimeGenerated(file: string): boolean {
   const normalized = file.replace(/\\/g, '/');
   return normalized === 'workspace/AGENTS.md'
     || normalized === 'workspace/TOOLS.md'
-    || normalized === 'workspace/HEARTBEAT.md'
     || normalized === 'workspace/TURN.md'
-    || normalized === 'workspace/JOURNAL.md'
     || normalized.startsWith('workspace/skills/');
 }
 
@@ -175,9 +173,7 @@ function runtimePriority(file: string): string {
   if (normalized === 'workspace/SOUL.md') return '01';
   if (normalized === 'workspace/AGENTS.md') return '02';
   if (normalized === 'workspace/TOOLS.md') return '03';
-  if (normalized === 'workspace/HEARTBEAT.md') return '10';
-  if (normalized === 'workspace/TURN.md') return '11';
-  if (normalized === 'workspace/JOURNAL.md') return '12';
+  if (normalized === 'workspace/TURN.md') return '10';
   if (normalized.startsWith('workspace/skills/')) return '20';
   return '30';
 }
@@ -188,9 +184,7 @@ function shouldIncludeFile(file: string): boolean {
     || normalized === 'workspace/SOUL.md'
     || normalized === 'workspace/AGENTS.md'
     || normalized === 'workspace/TOOLS.md'
-    || normalized === 'workspace/HEARTBEAT.md'
     || normalized === 'workspace/TURN.md'
-    || normalized === 'workspace/JOURNAL.md'
     || normalized.startsWith('workspace/skills/');
 }
 

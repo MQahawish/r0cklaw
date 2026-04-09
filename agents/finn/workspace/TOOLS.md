@@ -3,15 +3,11 @@
 ## Runtime rule
 
 These notes describe the kinds of actions that exist in Rocklaw.
-In ZeroClaw session mode, do NOT run shell commands like move.sh, work.sh, talk.sh, or pray.sh to perform them.
-Use your available tools only to inspect files before your final action.
+Use your available tools only to inspect runtime docs or recall memory before your final action.
 When you are ready to act in the world, return the final Rocklaw JSON action instead.
 
 All interaction with the world happens through JSON actions that the Rocklaw engine executes.
-The legacy `.sh` names in older notes are conceptual labels only, not commands you should run.
-
-Your world/ files are always up to date when you wake up.
-You do not need to refresh them -- they were updated before your tick.
+TURN.md and chat thread files are generated for you before the tick. Read them only when you need exact local detail.
 
 ## Core action schema
 
@@ -36,22 +32,10 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 }
 ```
 
-## Economic actions right now
+## Economic actions
 
-### Available now
-- `work:grain`: Available now. Harvest grain from north_field.
+Runtime availability for your role will be listed here each tick.
 
-### Unavailable here
-- `work:flour`: Unavailable here. Move to bakery to work on flour.
-- `work:bread`: Unavailable here. Move to bakery to work on bread.
-- `work:horseshoe`: Unavailable here. Move to forge to work on horseshoe.
-- `work:horseshoe`: Unavailable here. Move to forge to work on horseshoe.
-- `work:tool`: Unavailable here. Move to forge to work on tool.
-- `work:tool`: Unavailable here. Move to forge to work on tool.
-- `work:knife`: Unavailable here. Move to forge to work on knife.
-- `work:knife`: Unavailable here. Move to forge to work on knife.
-- `work:iron_ingot`: Unavailable here. Move to forge to work on iron_ingot.
-- `work:iron_ingot`: Unavailable here. Move to forge to work on iron_ingot.
 ## Act in the world
 
 - Do not use `observe`, `inspect`, `look`, or `survey` as a final world action. Observation is done through file reads and notes during tool use.

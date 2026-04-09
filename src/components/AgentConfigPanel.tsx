@@ -177,18 +177,30 @@ function buildMergedTurnRows(recentActions: AgentRecentAction[], debugTrace: Age
       ?? traces[0]
       ?? null;
     const traceAction = parseTraceAction(preferredTrace?.parsedActionJson);
+    const pickedAction = typeof traceAction?.action === 'string' ? traceAction.action : null;
+    const pickedTarget = typeof traceAction?.target === 'string'
+      ? traceAction.target
+      : typeof traceAction?.location === 'string'
+      ? traceAction.location
+      : typeof traceAction?.item === 'string'
+      ? traceAction.item
+      : null;
+    const pickedMessage = typeof traceAction?.text === 'string'
+      ? traceAction.text
+      : typeof traceAction?.message === 'string'
+      ? traceAction.message
+      : typeof traceAction?.journal === 'string'
+      ? traceAction.journal
+      : null;
 
     rows.push({
       key,
       day: action?.day ?? preferredTrace?.day ?? null,
       tick: action?.tick ?? preferredTrace?.tick ?? null,
       timeOfDay: action?.timeOfDay ?? preferredTrace?.timeOfDay ?? null,
-      action: action?.action ?? (typeof traceAction?.action === 'string' ? traceAction.action : null),
-      target: action?.target ?? (typeof traceAction?.target === 'string' ? traceAction.target : null),
-      message: action?.message
-        ?? (typeof traceAction?.text === 'string' ? traceAction.text : null)
-        ?? (typeof traceAction?.message === 'string' ? traceAction.message : null)
-        ?? (typeof traceAction?.journal === 'string' ? traceAction.journal : null),
+      action: pickedAction ?? action?.action ?? null,
+      target: pickedTarget ?? action?.target ?? null,
+      message: pickedMessage ?? action?.message ?? null,
       thought: typeof traceAction?.thought === 'string' ? traceAction.thought : null,
       outcome: action?.outcome ?? preferredTrace?.validationOutcome ?? null,
       outcomeNote: action?.outcomeNote ?? preferredTrace?.validationNote ?? null,

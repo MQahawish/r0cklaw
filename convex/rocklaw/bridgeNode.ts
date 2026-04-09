@@ -49,7 +49,7 @@ type PlannedTurnResult =
       agentName: string;
       outcome: 'transport_failed' | 'parse_failed' | 'invalid_action';
       note: string;
-      heartbeatLine: string;
+      activityLine: string;
       pendingNote?: string;
     };
 
@@ -247,6 +247,9 @@ async function resetOpenRouterFreeFailureState(ctx: any, agentName: string) {
 async function handleOpenRouterFreeFailure(
   ctx: any,
   agentName: string,
+  tick: number,
+  day: number,
+  timeOfDay: string,
   failureKind: 'transport_failed' | 'parse_failed' | 'invalid_action',
   summary: string,
 ) {
@@ -266,9 +269,12 @@ async function handleOpenRouterFreeFailure(
     ? `paid fallback model ${transition.model}`
     : `next free model ${transition.model}`;
   const previous = transition.previousModel ? ` from ${transition.previousModel}` : '';
-  await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+  await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
     agentName,
     line: `- Day model switch: openrouter-free ${failureKind}${previous} -> ${switchLabel}. ${summary}`,
+    tick,
+    day,
+    timeOfDay,
   });
   await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
     agentName,
@@ -310,9 +316,12 @@ export const tickAgent = internalAction({
           day,
         });
         if (completion && 'action' in completion) {
-          await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+          await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
             agentName,
             line: summariseAction(completion.action, day, timeOfDay, completion.outcome, completion.note),
+            tick,
+            day,
+            timeOfDay,
           });
         }
         agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName });
@@ -338,8 +347,10 @@ export const tickAgent = internalAction({
       timeOfDay,
     });
 
-    const lastHeartbeatLine = await ctx.runAction(internal.rocklaw.worldRefreshNode.getLatestHeartbeatLine, {
+    const recentActivityLines = await ctx.runAction((internal as any).rocklaw.worldRefreshNode.readRecentActivityNotes, {
       agentName,
+      limit: 5,
+      tick,
     });
     const possibleValidActions = await ctx.runQuery(internal.rocklaw.bridge.getPromptActionHints, {
       agentName,
@@ -355,7 +366,7 @@ export const tickAgent = internalAction({
       timeOfDay,
       tick,
       agent.location,
-      lastHeartbeatLine ?? undefined,
+      recentActivityLines ?? undefined,
       undefined,
       possibleValidActions,
     );
@@ -406,11 +417,14 @@ export const tickAgent = internalAction({
         debugRecord.events = err.events;
       }
       console.error(`[bridge] Gateway call failed for ${agentName}:`, err);
-      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
         agentName,
         line: summariseFailure(day, timeOfDay, 'agent turn failed before a final action', failureMessage),
+        tick,
+        day,
+        timeOfDay,
       });
-      await handleOpenRouterFreeFailure(ctx, agentName, 'transport_failed', failureMessage);
+      await handleOpenRouterFreeFailure(ctx, agentName, tick, day, timeOfDay, 'transport_failed', failureMessage);
       await ctx.runMutation(internal.rocklaw.engine.pauseForAgentFailure, {
         agentName,
         tick,
@@ -438,11 +452,14 @@ export const tickAgent = internalAction({
         note,
       };
       console.error(`[bridge] Non-JSON response from ${agentName} with no recoverable action:\n${rawResponse}`);
-      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
         agentName,
         line: summariseFailure(day, timeOfDay, 'response rejected: no recoverable action JSON', note),
+        tick,
+        day,
+        timeOfDay,
       });
-      await handleOpenRouterFreeFailure(ctx, agentName, 'parse_failed', note);
+      await handleOpenRouterFreeFailure(ctx, agentName, tick, day, timeOfDay, 'parse_failed', note);
       await appendTickDebug(agent.workspacePath, debugRecord);
       await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
         agentName,
@@ -463,11 +480,14 @@ export const tickAgent = internalAction({
         note,
       };
       console.error(`[bridge] Could not parse action from ${agentName}'s response:\n${rawResponse}`);
-      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
         agentName,
         line: summariseFailure(day, timeOfDay, 'response rejected: JSON parse failed', note),
+        tick,
+        day,
+        timeOfDay,
       });
-      await handleOpenRouterFreeFailure(ctx, agentName, 'parse_failed', note);
+      await handleOpenRouterFreeFailure(ctx, agentName, tick, day, timeOfDay, 'parse_failed', note);
       await appendTickDebug(agent.workspacePath, debugRecord);
       await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
         agentName,
@@ -491,11 +511,14 @@ export const tickAgent = internalAction({
         note,
       };
       console.error(`[bridge] Invalid action from ${agentName}:`, action);
-      await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+      await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
         agentName,
         line: summariseRejectedAttempt(action, day, timeOfDay, note),
+        tick,
+        day,
+        timeOfDay,
       });
-      await handleOpenRouterFreeFailure(ctx, agentName, 'invalid_action', note);
+      await handleOpenRouterFreeFailure(ctx, agentName, tick, day, timeOfDay, 'invalid_action', note);
       await appendTickDebug(agent.workspacePath, debugRecord);
       await ctx.runMutation(internal.rocklaw.bridge.setAgentPendingNote, {
         agentName,
@@ -529,9 +552,12 @@ export const tickAgent = internalAction({
     debugRecord.timestamp = new Date().toISOString();
 
     await resetOpenRouterFreeFailureState(ctx, agentName);
-    await ctx.runAction(internal.rocklaw.worldRefreshNode.appendHeartbeat, {
+    await ctx.runAction(internal.rocklaw.worldRefreshNode.recordActivityNote, {
       agentName,
       line: summariseAction(action, day, timeOfDay, result?.outcome, result?.note),
+      tick,
+      day,
+      timeOfDay,
     });
 
     await appendTickDebug(agent.workspacePath, debugRecord);
@@ -584,7 +610,7 @@ export const planAgentAction = internalAction({
         agentName,
         outcome: 'invalid_action',
         note: 'Agent not found.',
-        heartbeatLine: summariseFailure(day, timeOfDay, 'agent planning failed', 'Agent not found.'),
+        activityLine: summariseFailure(day, timeOfDay, 'agent planning failed', 'Agent not found.'),
       };
     }
 
@@ -609,13 +635,15 @@ export const planAgentAction = internalAction({
         agentName,
         outcome: 'invalid_action',
         note,
-        heartbeatLine: summariseFailure(day, timeOfDay, 'world file refresh failed', note),
+        activityLine: summariseFailure(day, timeOfDay, 'world file refresh failed', note),
         pendingNote: `SYSTEM: World refresh failed before your turn could be planned. ${note}`,
       };
     }
 
-    const lastHeartbeatLine = await ctx.runAction(internal.rocklaw.worldRefreshNode.getLatestHeartbeatLine, {
+    const recentActivityLines = await ctx.runAction((internal as any).rocklaw.worldRefreshNode.readRecentActivityNotes, {
       agentName,
+      limit: 5,
+      tick,
     });
     const possibleValidActions = await ctx.runQuery(internal.rocklaw.bridge.getPromptActionHints, {
       agentName,
@@ -634,7 +662,7 @@ export const planAgentAction = internalAction({
       timeOfDay,
       tick,
       agent.location,
-      lastHeartbeatLine ?? undefined,
+      recentActivityLines ?? undefined,
       promptPrefix ?? undefined,
       possibleValidActions,
     );
@@ -663,7 +691,7 @@ export const planAgentAction = internalAction({
         timeOfDay,
         tick,
         agent.location,
-        lastHeartbeatLine ?? undefined,
+        recentActivityLines ?? undefined,
         buildLiveSceneRecoveryPrompt(liveSceneRetryContext, note),
         ['- chat: continue with ' + liveSceneRetryContext.partner, '- leave_chat'],
       );
@@ -724,7 +752,7 @@ export const planAgentAction = internalAction({
           agentName,
           outcome: 'transport_failed',
           note: recoveryNote,
-          heartbeatLine: summariseFailure(
+          activityLine: summariseFailure(
             day,
             timeOfDay,
             `live chat reply failed with ${liveSceneRetryContext.partner}; scene stalled awaiting retry`,
@@ -759,7 +787,7 @@ export const planAgentAction = internalAction({
           agentName,
           outcome: 'parse_failed',
           note: recoveryNote,
-          heartbeatLine: summariseFailure(
+          activityLine: summariseFailure(
             day,
             timeOfDay,
             `live chat reply failed with ${liveSceneRetryContext.partner}; scene stalled awaiting retry`,
@@ -787,7 +815,7 @@ export const planAgentAction = internalAction({
           agentName,
           outcome: 'parse_failed',
           note: recoveryNote,
-          heartbeatLine: summariseFailure(
+          activityLine: summariseFailure(
             day,
             timeOfDay,
             `live chat reply failed with ${liveSceneRetryContext.partner}; scene stalled awaiting retry`,
@@ -816,7 +844,7 @@ export const planAgentAction = internalAction({
           agentName,
           outcome: 'invalid_action',
           note: recoveryNote,
-          heartbeatLine: summariseFailure(
+          activityLine: summariseFailure(
             day,
             timeOfDay,
             `live chat reply failed with ${liveSceneRetryContext.partner}; scene stalled awaiting retry`,
@@ -870,7 +898,7 @@ export const planAgentAction = internalAction({
         debugRecord.gatewayHost = err.host;
         debugRecord.events = err.events;
       }
-      await handleOpenRouterFreeFailure(ctx, agentName, 'transport_failed', failureMessage);
+      await handleOpenRouterFreeFailure(ctx, agentName, tick, day, timeOfDay, 'transport_failed', failureMessage);
       const recoveryPlan = await attemptLiveSceneRecovery('transport_failed', failureMessage);
       await appendTickDebug(agent.workspacePath, debugRecord);
       if (recoveryPlan) return recoveryPlan;
@@ -879,7 +907,7 @@ export const planAgentAction = internalAction({
         agentName,
         outcome: 'transport_failed',
         note: failureMessage,
-        heartbeatLine: summariseFailure(day, timeOfDay, 'agent turn failed before a final action', failureMessage),
+        activityLine: summariseFailure(day, timeOfDay, 'agent turn failed before a final action', failureMessage),
       };
     }
 
@@ -895,7 +923,7 @@ export const planAgentAction = internalAction({
       debugRecord.phase = 'parse_failed';
       debugRecord.timestamp = new Date().toISOString();
       debugRecord.validation = { outcome: 'parse_failed', note };
-      await handleOpenRouterFreeFailure(ctx, agentName, 'parse_failed', note);
+      await handleOpenRouterFreeFailure(ctx, agentName, tick, day, timeOfDay, 'parse_failed', note);
       const recoveryPlan = await attemptLiveSceneRecovery('parse_failed', note);
       await appendTickDebug(agent.workspacePath, debugRecord);
       if (recoveryPlan) return recoveryPlan;
@@ -904,7 +932,7 @@ export const planAgentAction = internalAction({
         agentName,
         outcome: 'parse_failed',
         note,
-        heartbeatLine: summariseFailure(day, timeOfDay, 'response rejected: no recoverable action JSON', note),
+        activityLine: summariseFailure(day, timeOfDay, 'response rejected: no recoverable action JSON', note),
         pendingNote: 'SYSTEM: Return one valid Rocklaw action JSON object. Do not wrap it in prose.',
       };
     }
@@ -914,7 +942,7 @@ export const planAgentAction = internalAction({
       debugRecord.phase = 'parse_failed';
       debugRecord.timestamp = new Date().toISOString();
       debugRecord.validation = { outcome: 'parse_failed', note };
-      await handleOpenRouterFreeFailure(ctx, agentName, 'parse_failed', note);
+      await handleOpenRouterFreeFailure(ctx, agentName, tick, day, timeOfDay, 'parse_failed', note);
       const recoveryPlan = await attemptLiveSceneRecovery('parse_failed', note);
       await appendTickDebug(agent.workspacePath, debugRecord);
       if (recoveryPlan) return recoveryPlan;
@@ -923,7 +951,7 @@ export const planAgentAction = internalAction({
         agentName,
         outcome: 'parse_failed',
         note,
-        heartbeatLine: summariseFailure(day, timeOfDay, 'response rejected: JSON parse failed', note),
+        activityLine: summariseFailure(day, timeOfDay, 'response rejected: JSON parse failed', note),
         pendingNote: 'SYSTEM: Next response must be JSON only. Start with { and end with }.',
       };
     }
@@ -936,7 +964,7 @@ export const planAgentAction = internalAction({
       debugRecord.phase = 'invalid_action';
       debugRecord.timestamp = new Date().toISOString();
       debugRecord.validation = { outcome: 'invalid_action', note };
-      await handleOpenRouterFreeFailure(ctx, agentName, 'invalid_action', note);
+      await handleOpenRouterFreeFailure(ctx, agentName, tick, day, timeOfDay, 'invalid_action', note);
       const recoveryPlan = await attemptLiveSceneRecovery('invalid_action', note);
       await appendTickDebug(agent.workspacePath, debugRecord);
       if (recoveryPlan) return recoveryPlan;
@@ -945,7 +973,7 @@ export const planAgentAction = internalAction({
         agentName,
         outcome: 'invalid_action',
         note,
-        heartbeatLine: summariseRejectedAttempt(action, day, timeOfDay, note),
+        activityLine: summariseRejectedAttempt(action, day, timeOfDay, note),
         pendingNote: 'SYSTEM: Next response must be one valid JSON action object only.',
       };
     }
@@ -1015,32 +1043,31 @@ function buildTickMessage(
   timeOfDay: string,
   tick: number,
   location: string,
-  lastHeartbeatLine?: string,
+  recentActivityLines?: string[],
   promptPrefix?: string,
   possibleValidActions?: string[],
 ): string {
+  const compactSummary = buildInlineTurnSummary(possibleValidActions);
+  const recentLines = Array.isArray(recentActivityLines)
+    ? collapseRecentActionLines(
+        recentActivityLines.filter((line) => typeof line === 'string' && line.trim().length > 0).slice(-5),
+      )
+    : [];
   const sections = [
     `It is ${timeOfDay}, Day ${day}, tick ${tick} in Rocklaw.`,
     `You are in ${location}.`,
-    `Last tick: ${lastHeartbeatLine ?? 'none yet'}`,
+    ...(recentLines.length > 0
+      ? ['Recent actions (oldest to newest):', ...recentLines.map((line) => `- ${formatRecentActionLine(line)}`)]
+      : ['Recent actions:', '- none yet']),
     ...(promptPrefix ? ['', promptPrefix] : []),
+    ...(compactSummary.length > 0 ? ['', 'Quick situation summary:', ...compactSummary] : []),
     ...(Array.isArray(possibleValidActions) && possibleValidActions.length > 0
       ? ['', 'Possible valid actions now:', ...possibleValidActions]
       : []),
-    'Read HEARTBEAT.md, then TURN.md.',
-    'Read JOURNAL.md only if TURN.md is not enough and you truly need older private memory.',
-    'Read at most one chat/<name>/CHAT.md only if needed.',
-    'If TURN.md already shows an obvious valid action, do not keep exploring. Take the action immediately.',
-    'Ground your choice in TURN.md first.',
-    'Only choose an action that appears under "Possible valid actions now". If it is not listed there, do not choose it.',
-    'For buy_place, sell_place, and deliver_place, use only items listed under "Available place trading here" in TURN.md.',
-    'Do not infer direct place trading from the village price table alone.',
-    'Use only people, places, items, offers, and relationships that actually appear in TURN.md, JOURNAL.md, or an active chat thread.',
-    'If no valid person is shown there, do not choose chat.',
-    'If an active interaction directly addresses you, respond to it before starting unrelated work unless you have a clear reason not to.',
-    'Use tools only to read files before your final action.',
-    'Do not use tools or shell commands to perform world actions.',
-    'Do not edit JOURNAL.md directly. Long-term private memory is recorded through the required `journal` field on `sleep`.',
+    'Follow AGENTS.md and TOOLS.md.',
+    'Act from the prompt summary if it is enough. Open TURN.md only for exact local detail. Use memory_recall only for older private, social, or strategic context. Read at most one chat/<name>/CHAT.md only if needed.',
+    'Only choose an action listed under "Possible valid actions now".',
+    'For buy_place, sell_place, and deliver_place, read TURN.md first and use only the local place-trading rows shown there.',
     '',
     'Final output rule:',
     'Return exactly one Rocklaw action JSON object.',
@@ -1049,6 +1076,153 @@ function buildTickMessage(
   ];
 
   return sections.join('\n');
+}
+
+function formatRecentActionLine(line: string): string {
+  const trimmed = line.replace(/^-+\s*/, '').trim();
+  const match = trimmed.match(/^Day\s+(\d+)\s+([a-z_]+):\s*(.+)$/i);
+  if (!match) return trimmed;
+  const [, day, period, rest] = match;
+  return `D${day} ${period} · ${rest.trim()}`;
+}
+
+type ParsedRecentActionLine = {
+  day: number;
+  period: string;
+  rest: string;
+  formatted: string;
+};
+
+function collapseRecentActionLines(lines: string[]): string[] {
+  const parsed = lines
+    .map(parseRecentActionLine)
+    .filter((entry): entry is ParsedRecentActionLine => entry !== null);
+  if (parsed.length === 0) return lines.map((line) => formatRecentActionLine(line));
+
+  const collapsed: string[] = [];
+  for (let index = 0; index < parsed.length; index += 1) {
+    const current = parsed[index];
+    const next = parsed[index + 1];
+    const merged = next ? collapseBusyActionPair(current, next) : null;
+    if (merged) {
+      collapsed.push(merged);
+      index += 1;
+      continue;
+    }
+    collapsed.push(current.formatted);
+  }
+  return collapsed;
+}
+
+function parseRecentActionLine(line: string): ParsedRecentActionLine | null {
+  const trimmed = line.replace(/^-+\s*/, '').trim();
+  const match = trimmed.match(/^Day\s+(\d+)\s+([a-z_]+):\s*(.+)$/i);
+  if (!match) return null;
+  const [, dayRaw, period, rest] = match;
+  return {
+    day: Number(dayRaw),
+    period,
+    rest: rest.trim(),
+    formatted: `D${dayRaw} ${period} · ${rest.trim()}`,
+  };
+}
+
+function collapseBusyActionPair(
+  start: ParsedRecentActionLine,
+  finish: ParsedRecentActionLine,
+): string | null {
+  const startWork = extractStartedWorkItem(start.rest);
+  const finishWork = extractFinishedWorkItem(finish.rest);
+  if (startWork && finishWork && startWork === finishWork) {
+    return `${formatRecentRange(start, finish)} · worked on ${startWork}`;
+  }
+
+  if (isSleepStart(start.rest) && isSleepFinish(finish.rest)) {
+    return `${formatRecentRange(start, finish)} · slept`;
+  }
+
+  return null;
+}
+
+function extractStartedWorkItem(rest: string): string | null {
+  const warningMatch = rest.match(/You are busy work ([a-z_]+) until tick \d+/i);
+  if (warningMatch) return warningMatch[1];
+  const arrowMatch = rest.match(/^work\s+→\s+([a-z_]+)/i);
+  return arrowMatch?.[1] ?? null;
+}
+
+function extractFinishedWorkItem(rest: string): string | null {
+  const match = rest.match(/^work\s+→\s+([a-z_]+)/i);
+  return match?.[1] ?? null;
+}
+
+function isSleepStart(rest: string): boolean {
+  return /You are busy sleeping until tick \d+/i.test(rest) || /^sleep\b/i.test(rest);
+}
+
+function isSleepFinish(rest: string): boolean {
+  return /^sleep\b/i.test(rest);
+}
+
+function formatRecentRange(start: ParsedRecentActionLine, finish: ParsedRecentActionLine): string {
+  if (start.day === finish.day) {
+    return `D${start.day} ${start.period}→${finish.period}`;
+  }
+  return `D${start.day} ${start.period}→D${finish.day} ${finish.period}`;
+}
+
+function buildInlineTurnSummary(possibleValidActions?: string[]): string[] {
+  if (!Array.isArray(possibleValidActions) || possibleValidActions.length === 0) return [];
+
+  const labelled = new Map<string, string[]>();
+  const bare: string[] = [];
+
+  for (const rawLine of possibleValidActions) {
+    const trimmed = rawLine.trim();
+    const match = trimmed.match(/^- ([a-z_]+):\s*(.+)$/i);
+    if (!match) {
+      bare.push(trimmed.replace(/^- /, ''));
+      continue;
+    }
+    const [, label, value] = match;
+    const rows = labelled.get(label) ?? [];
+    rows.push(value.trim());
+    labelled.set(label, rows);
+  }
+
+  const summary: string[] = [];
+  const responseSignals: string[] = [];
+  const tradeSignals: string[] = [];
+  const actionSignals: string[] = [];
+  const travelSignals: string[] = [];
+  const recoverySignals: string[] = [];
+
+  const collect = (label: string, prefix: string, target: string[]) => {
+    const values = labelled.get(label);
+    if (!values || values.length === 0) return;
+    target.push(`${prefix}${values.join('; ')}`);
+  };
+
+  collect('chat', 'People / interaction pressure: ', responseSignals);
+  collect('buy_place', 'Local place trade available: buy ', tradeSignals);
+  collect('sell_place', 'Local place trade available: sell ', tradeSignals);
+  collect('deliver_place', 'Local supply / storage option: ', tradeSignals);
+  collect('work', 'Role work available: ', actionSignals);
+  collect('use', 'Useful inventory option: ', actionSignals);
+  collect('move', 'Reachable places from here: ', travelSignals);
+
+  if (bare.includes('rest')) recoverySignals.push('Recovery option: rest is valid now.');
+  if (bare.includes('sleep')) recoverySignals.push('Recovery option: sleep is valid now.');
+  if (bare.includes('say')) actionSignals.push('Public speech option: say is valid now.');
+  if (bare.includes('leave_chat')) responseSignals.push('Live chat can be exited with leave_chat.');
+
+  summary.push(...responseSignals.slice(0, 1));
+  summary.push(...tradeSignals.slice(0, 1));
+  summary.push(...actionSignals.slice(0, 2));
+  summary.push(...travelSignals.slice(0, 1));
+  summary.push(...recoverySignals.slice(0, 1));
+
+  return summary;
 }
 
 function buildSessionId(agentName: string): string {

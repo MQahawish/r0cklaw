@@ -3,15 +3,11 @@
 ## Runtime rule
 
 These notes describe the kinds of actions that exist in Rocklaw.
-In ZeroClaw session mode, do NOT run shell commands like move.sh, work.sh, talk.sh, or pray.sh to perform them.
-Use your available tools only to inspect files before your final action.
+Use your available tools only to inspect runtime docs or recall memory before your final action.
 When you are ready to act in the world, return the final Rocklaw JSON action instead.
 
 All interaction with the world happens through JSON actions that the Rocklaw engine executes.
-The legacy `.sh` names in older notes are conceptual labels only, not commands you should run.
-
-Your world/ files are always up to date when you wake up.
-You do not need to refresh them -- they were updated before your tick.
+TURN.md and chat thread files are generated for you before the tick. Read them only when you need exact local detail.
 
 ## Core action schema
 
@@ -36,19 +32,10 @@ Return one JSON object when you are ready to act. Use only the fields that matte
 }
 ```
 
-## Economic actions right now
+## Economic actions
 
-### Available now
-- `buy_place:market:bread`: Available now at market: 4 bread in stock for 7c each.
-- `buy_place:market:tool`: Available now at market: 1 tool in stock for 70c each.
-- `buy_place:market:medicine`: Available now at market: 1 medicine in stock for 30c each.
+Runtime availability for your role will be listed here each tick.
 
-### Unavailable here
-- `sell_place:market:bread`: You do not have bread to sell into market.
-- `sell_place:market:tool`: You do not have tool to sell into market.
-- `buy_place:market:horseshoe`: market is out of horseshoe right now.
-- `sell_place:market:horseshoe`: You do not have horseshoe to sell into market.
-- `sell_place:market:medicine`: You do not have medicine to sell into market.
 ## Act in the world
 
 - Do not use `observe`, `inspect`, `look`, or `survey` as a final world action. Observation is done through file reads and notes during tool use.

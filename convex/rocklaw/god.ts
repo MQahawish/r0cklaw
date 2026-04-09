@@ -9,7 +9,7 @@
  */
 
 import { v } from 'convex/values';
-import { query, mutation, action, internalMutation } from '../_generated/server';
+import { query, mutation, action, internalMutation, internalQuery } from '../_generated/server';
 import { api, internal } from '../_generated/api';
 
 const RUN_CONSOLE_SINGLETON = 'main';
@@ -170,14 +170,16 @@ export const getRunConsole = query({
     return {
       state,
       worldState,
-      tickHistory: historyDocs.map((entry) => ({
-        _id: entry._id,
-        tick: entry.tick,
-        day: entry.day,
-        timeOfDay: entry.timeOfDay,
-        createdAt: entry.createdAt,
-        summary: parseJsonValue<any>(entry.summaryJson, null),
-      })),
+      tickHistory: historyDocs
+        .map((entry) => ({
+          _id: entry._id,
+          tick: entry.tick,
+          day: entry.day,
+          timeOfDay: entry.timeOfDay,
+          createdAt: entry.createdAt,
+          summary: parseJsonValue<any>(entry.summaryJson, null),
+        }))
+        .sort((a, b) => (b.day - a.day) || (b.tick - a.tick) || (b.createdAt - a.createdAt)),
     };
   },
 });
@@ -431,6 +433,24 @@ export const _recordRunTickSummary = internalMutation({
     for (const stale of entries.slice(300)) {
       await ctx.db.delete(stale._id);
     }
+  },
+});
+
+export const _getJournalEntry = internalQuery({
+  args: { journalEntryId: v.id('rl_journal_entries') },
+  handler: async (ctx, { journalEntryId }) => {
+    return await ctx.db.get(journalEntryId);
+  },
+});
+
+export const _markJournalMemoryIngested = internalMutation({
+  args: {
+    journalEntryId: v.id('rl_journal_entries'),
+    memoryKey: v.string(),
+    memoryIngestedAt: v.number(),
+  },
+  handler: async (ctx, { journalEntryId, memoryKey, memoryIngestedAt }) => {
+    await ctx.db.patch(journalEntryId, { memoryKey, memoryIngestedAt });
   },
 });
 

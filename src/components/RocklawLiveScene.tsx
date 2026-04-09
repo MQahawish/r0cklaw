@@ -1,9 +1,23 @@
 import { Container, Graphics, Text, useApp } from '@pixi/react';
 import { Stage } from '@pixi/react';
+import {
+  Background,
+  BaseEdge,
+  Controls,
+  Edge,
+  EdgeProps,
+  Handle,
+  Node,
+  NodeProps,
+  Position,
+  ReactFlow,
+  getSmoothStepPath,
+} from '@xyflow/react';
 import * as PIXI from 'pixi.js';
 import { useEffect, useMemo, useState } from 'react';
 import { useElementSize } from 'usehooks-ts';
 import PixiViewport from './PixiViewport.tsx';
+import { ROCKLAW_OVERVIEW_PRIMARY_LANES } from '../../convex/rocklaw/mapLayout';
 import {
   RocklawAgentVisualState,
   RocklawLiveActionState,
@@ -13,6 +27,7 @@ import {
   ROCKLAW_ACTION_ICONS,
   ROCKLAW_AGENT_COLORS,
 } from '../../convex/rocklaw/liveScene';
+import '@xyflow/react/dist/style.css';
 
 const TILE_DIM = 44;
 const WORLD_MARGIN = 120;
@@ -53,16 +68,23 @@ type RecentMoveGlow = {
   startedAt: number;
 };
 
+type CompactGraphNodeData = {
+  summary: NodeSummary;
+};
+
+type CompactGraphEdgeData = {
+  activeCount: number;
+  recentGlowStrength: number;
+};
+
 export default function RocklawLiveScene({
   snapshot,
   mode = 'full',
   isExpanded = false,
-  onToggleExpanded,
 }: {
   snapshot: RocklawLiveSnapshot;
   mode?: 'compact' | 'full';
   isExpanded?: boolean;
-  onToggleExpanded?: () => void;
 }) {
   const [wrapperRef, { width, height }] = useElementSize();
   const [frameNow, setFrameNow] = useState(() => Date.now());
@@ -161,9 +183,10 @@ export default function RocklawLiveScene({
     () => buildNodeSummaries(snapshot, placements),
     [placements, snapshot],
   );
+  const compact = mode === 'compact';
   const edges = useMemo(
-    () => buildEdgeUsage(snapshot, locationById),
-    [locationById, snapshot],
+    () => buildEdgeUsage(snapshot, locationById, compact && !isExpanded),
+    [compact, isExpanded, locationById, snapshot],
   );
 
   const selectedLocation = selectedLocationId ? locationById.get(selectedLocationId) ?? null : null;
@@ -191,7 +214,16 @@ export default function RocklawLiveScene({
     () => buildRecentMoveGlowByEdge(recentMoveGlows, frameNow, snapshot.tickIntervalMs),
     [frameNow, recentMoveGlows, snapshot.tickIntervalMs],
   );
-  const compact = mode === 'compact';
+  const compactGraphNodes = useMemo(
+    () => (compact && !isExpanded ? buildCompactGraphNodes(nodeSummaries) : []),
+    [compact, isExpanded, nodeSummaries],
+  );
+  const compactGraphEdges = useMemo(
+    () => (compact && !isExpanded
+      ? buildCompactGraphEdges(edges, recentMoveGlowByEdge, visibleEdgeCounts)
+      : []),
+    [compact, edges, isExpanded, recentMoveGlowByEdge, visibleEdgeCounts],
+  );
   const frameStyle: React.CSSProperties = {
     ...LIVE_FRAME_STYLE,
     minHeight: compact && !isExpanded ? 360 : LIVE_FRAME_STYLE.minHeight,
@@ -231,18 +263,6 @@ export default function RocklawLiveScene({
             )}
           </div>
           <div style={HEADER_TOGGLES_STYLE}>
-            {onToggleExpanded ? (
-              <button
-                type="button"
-                onClick={onToggleExpanded}
-                style={{
-                  ...TOGGLE_CHIP_STYLE,
-                  ...(isExpanded ? TOGGLE_CHIP_ACTIVE_STYLE : TOGGLE_CHIP_INACTIVE_STYLE),
-                }}
-              >
-                {isExpanded ? 'Collapse scene' : 'Expand scene'}
-              </button>
-            ) : null}
             {(!compact || isExpanded) && (
               <>
                 <ToggleChip label="Busy" active={showBusy} onClick={() => setShowBusy((value) => !value)} />
@@ -280,7 +300,16 @@ export default function RocklawLiveScene({
               <LegendItem color="#f8fafc" label="Selected node" />
             </div>
           )}
-          {width > 0 && height > 0 ? (
+          {compact && !isExpanded ? (
+            <div style={{ position: 'absolute', inset: 0 }}>
+              <CompactOverviewGraph
+                nodes={compactGraphNodes}
+                edges={compactGraphEdges}
+                selectedLocationId={selectedLocationId}
+                onSelectLocation={setSelectedLocationId}
+              />
+            </div>
+          ) : width > 0 && height > 0 ? (
             <div style={{ position: 'absolute', inset: 0 }}>
               <Stage width={width} height={height} options={{ backgroundColor: 0x0f172a, antialias: true }}>
                 <RocklawGraphCanvas
@@ -318,6 +347,190 @@ export default function RocklawLiveScene({
     </div>
   );
 }
+
+function CompactOverviewGraph({
+  nodes,
+  edges,
+  selectedLocationId,
+  onSelectLocation,
+}: {
+  nodes: Node<CompactGraphNodeData>[];
+  edges: Edge<CompactGraphEdgeData>[];
+  selectedLocationId: string | null;
+  onSelectLocation: (locationId: string) => void;
+}) {
+  const selectedNodes = useMemo(
+    () =>
+      nodes.map((node) => ({
+        ...node,
+        selected: node.id === selectedLocationId,
+      })),
+    [nodes, selectedLocationId],
+  );
+
+  return (
+    <ReactFlow
+      nodes={selectedNodes}
+      edges={edges}
+      nodeTypes={COMPACT_NODE_TYPES}
+      edgeTypes={COMPACT_EDGE_TYPES}
+      nodesDraggable={false}
+      nodesConnectable={false}
+      elementsSelectable
+      fitView
+      fitViewOptions={{ padding: 0.24 }}
+      minZoom={0.2}
+      maxZoom={1.5}
+      panOnDrag
+      panOnScroll
+      zoomOnScroll
+      zoomOnPinch
+      zoomOnDoubleClick={false}
+      proOptions={{ hideAttribution: true }}
+      onNodeClick={(_, node) => onSelectLocation(node.id)}
+      style={{ background: '#0b1120' }}
+    >
+      <Background color="#203047" gap={TILE_DIM} size={1} />
+      <Controls showInteractive={false} position="bottom-right" />
+    </ReactFlow>
+  );
+}
+
+function CompactLocationNode({ data, selected }: NodeProps) {
+  const { summary } = data as CompactGraphNodeData;
+  const compactMeta = buildCompactNodeMeta(summary);
+
+  return (
+    <div
+      style={{
+        width: 214,
+        minHeight: 110,
+        borderRadius: 18,
+        border: `2px solid ${selected ? '#f8fafc' : summary.active ? '#93c5fd' : '#64748b'}`,
+        background: selected ? '#1e293b' : '#0f172a',
+        boxShadow: summary.active
+          ? `0 0 0 6px ${summary.liveSceneCount > 0 ? 'rgba(245, 158, 11, 0.18)' : 'rgba(56, 189, 248, 0.14)'}`
+          : 'none',
+        padding: '12px 14px',
+        color: '#e2e8f0',
+      }}
+    >
+      {FLOW_HANDLE_SPECS.map((spec) => (
+        <Handle
+          key={`target-${spec.id}`}
+          id={spec.id}
+          type="target"
+          position={spec.position}
+          style={{ ...FLOW_HANDLE_STYLE, ...spec.style }}
+        />
+      ))}
+      {FLOW_HANDLE_SPECS.map((spec) => (
+        <Handle
+          key={`source-${spec.id}`}
+          id={`${spec.id}-source`}
+          type="source"
+          position={spec.position}
+          style={{ ...FLOW_HANDLE_STYLE, ...spec.style }}
+        />
+      ))}
+
+      <div style={{ fontSize: 15, fontWeight: 800, textAlign: 'center', color: '#f8fafc' }}>
+        {summary.location.label}
+      </div>
+      <div style={{ marginTop: 6, fontSize: 11, textAlign: 'center', color: '#94a3b8' }}>
+        {buildNodeCaption(summary)}
+      </div>
+      <div
+        style={{
+          marginTop: 10,
+          fontSize: 10,
+          lineHeight: 1.35,
+          color: '#cbd5e1',
+          whiteSpace: 'pre-wrap',
+        }}
+      >
+        {compactMeta}
+      </div>
+    </div>
+  );
+}
+
+function CompactLaneEdge(props: EdgeProps) {
+  const [edgePath] = getSmoothStepPath({
+    sourceX: props.sourceX,
+    sourceY: props.sourceY,
+    sourcePosition: props.sourcePosition,
+    targetX: props.targetX,
+    targetY: props.targetY,
+    targetPosition: props.targetPosition,
+    borderRadius: 22,
+    offset: 18,
+  });
+  const activeCount = (props.data as CompactGraphEdgeData | undefined)?.activeCount ?? 0;
+  const recentGlowStrength = (props.data as CompactGraphEdgeData | undefined)?.recentGlowStrength ?? 0;
+
+  return (
+    <>
+      <BaseEdge path={edgePath} style={{ stroke: '#0f1b2d', strokeWidth: 14, opacity: 0.96 }} />
+      <BaseEdge
+        path={edgePath}
+        style={{
+          stroke: activeCount > 0 ? '#7dd3fc' : '#64748b',
+          strokeWidth: activeCount > 0 ? 5 : 3,
+          opacity: activeCount > 0 ? 0.9 : 0.64,
+        }}
+      />
+      {recentGlowStrength > 0 ? (
+        <>
+          <BaseEdge
+            path={edgePath}
+            style={{ stroke: '#67e8f9', strokeWidth: 10, opacity: Math.min(0.22, recentGlowStrength * 0.22) }}
+          />
+          <BaseEdge
+            path={edgePath}
+            style={{ stroke: '#e0f2fe', strokeWidth: 5, opacity: Math.min(0.82, recentGlowStrength * 0.82) }}
+          />
+        </>
+      ) : null}
+    </>
+  );
+}
+
+const COMPACT_NODE_TYPES: Record<string, React.ComponentType<any>> = {
+  locationCard: CompactLocationNode,
+};
+
+const COMPACT_EDGE_TYPES: Record<string, React.ComponentType<any>> = {
+  lane: CompactLaneEdge,
+};
+
+const FLOW_HANDLE_STYLE = {
+  width: 8,
+  height: 8,
+  borderRadius: 999,
+  background: '#e2e8f0',
+  border: '2px solid #0f172a',
+  opacity: 0,
+};
+
+const FLOW_HANDLE_SPECS: Array<{
+  id: string;
+  position: Position;
+  style: React.CSSProperties;
+}> = [
+  { id: 'top-left', position: Position.Top, style: { left: '28%' } },
+  { id: 'top-center', position: Position.Top, style: { left: '50%' } },
+  { id: 'top-right', position: Position.Top, style: { left: '72%' } },
+  { id: 'right-top', position: Position.Right, style: { top: '30%' } },
+  { id: 'right-center', position: Position.Right, style: { top: '50%' } },
+  { id: 'right-bottom', position: Position.Right, style: { top: '70%' } },
+  { id: 'bottom-left', position: Position.Bottom, style: { left: '28%' } },
+  { id: 'bottom-center', position: Position.Bottom, style: { left: '50%' } },
+  { id: 'bottom-right', position: Position.Bottom, style: { left: '72%' } },
+  { id: 'left-top', position: Position.Left, style: { top: '30%' } },
+  { id: 'left-center', position: Position.Left, style: { top: '50%' } },
+  { id: 'left-bottom', position: Position.Left, style: { top: '70%' } },
+];
 
 function RocklawGraphCanvas({
   snapshot,
@@ -441,49 +654,85 @@ function GraphEdge({
 }) {
   const activeCount = visibleActiveCount;
   const pulse = activeCount > 0 ? 0.55 + Math.sin(frameNow / 260) * 0.18 : 0.18;
+  const path = buildEdgePath(edge);
 
   return (
     <Graphics
       draw={(g) => {
-        const startX = toPx(edge.a.center.x);
-        const startY = toPx(edge.a.center.y);
-        const endX = toPx(edge.b.center.x);
-        const endY = toPx(edge.b.center.y);
-        const bend = Math.abs(startX - endX) > Math.abs(startY - endY)
-          ? { x: startX + (endX - startX) * 0.5, y: startY }
-          : { x: startX, y: startY + (endY - startY) * 0.5 };
-
         g.clear();
-        g.lineStyle(14, 0x18263a, 0.92);
-        g.moveTo(startX, startY);
-        g.lineTo(bend.x, bend.y);
-        g.lineTo(endX, endY);
-
-        g.lineStyle(activeCount > 0 ? 5 : 3, activeCount > 0 ? 0x7dd3fc : 0x475569, pulse);
-        g.moveTo(startX, startY);
-        g.lineTo(bend.x, bend.y);
-        g.lineTo(endX, endY);
+        drawEdgePolyline(g, path, 14, 0x0f1b2d, 0.96);
+        drawEdgePolyline(g, path, activeCount > 0 ? 5 : 3, activeCount > 0 ? 0x7dd3fc : 0x64748b, activeCount > 0 ? Math.max(0.62, pulse) : 0.58);
 
         if (recentGlowStrength > 0) {
-          g.lineStyle(12, 0x67e8f9, Math.min(0.26, recentGlowStrength * 0.26));
-          g.moveTo(startX, startY);
-          g.lineTo(bend.x, bend.y);
-          g.lineTo(endX, endY);
-
-          g.lineStyle(6, 0xe0f2fe, Math.min(0.9, recentGlowStrength * 0.9));
-          g.moveTo(startX, startY);
-          g.lineTo(bend.x, bend.y);
-          g.lineTo(endX, endY);
+          drawEdgePolyline(g, path, 10, 0x67e8f9, Math.min(0.22, recentGlowStrength * 0.22));
+          drawEdgePolyline(g, path, 5, 0xe0f2fe, Math.min(0.82, recentGlowStrength * 0.82));
         }
 
         if (activeCount > 1) {
+          const midpoint = path[Math.floor(path.length / 2)];
           g.beginFill(0x7dd3fc, 0.96);
-          g.drawCircle(bend.x, bend.y, 9);
+          g.drawCircle(midpoint.x, midpoint.y, 8);
           g.endFill();
         }
       }}
     />
   );
+}
+
+function drawEdgePolyline(
+  g: PIXI.Graphics,
+  points: Array<{ x: number; y: number }>,
+  width: number,
+  color: number,
+  alpha: number,
+) {
+  if (points.length < 2) return;
+  g.lineStyle(width, color, alpha, 0.5, true);
+  g.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i += 1) {
+    g.lineTo(points[i].x, points[i].y);
+  }
+}
+
+function buildEdgePath(edge: EdgeUsage) {
+  const start = getEdgePort(edge.a, edge.b);
+  const end = getEdgePort(edge.b, edge.a);
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const horizontalBias = Math.abs(dx) >= Math.abs(dy);
+
+  if (Math.abs(dx) < 6 || Math.abs(dy) < 6) {
+    return [start, end];
+  }
+
+  if (horizontalBias) {
+    const midX = start.x + dx * 0.5;
+    return [start, { x: midX, y: start.y }, { x: midX, y: end.y }, end];
+  }
+
+  const midY = start.y + dy * 0.5;
+  return [start, { x: start.x, y: midY }, { x: end.x, y: midY }, end];
+}
+
+function getEdgePort(source: RocklawLocationNode, target: RocklawLocationNode) {
+  const x = toPx(source.center.x);
+  const y = toPx(source.center.y);
+  const dx = target.center.x - source.center.x;
+  const dy = target.center.y - source.center.y;
+  const xOffset = Math.max(18, ((source.region.width * TILE_DIM) / 2) - 18);
+  const yOffset = Math.max(14, ((source.region.height * TILE_DIM) / 2) - 18);
+
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return {
+      x: x + Math.sign(dx || 1) * xOffset,
+      y,
+    };
+  }
+
+  return {
+    x,
+    y: y + Math.sign(dy || 1) * yOffset,
+  };
 }
 
 function LocationNode({
@@ -501,8 +750,8 @@ function LocationNode({
   const x = toPx(location.center.x);
   const y = toPx(location.center.y);
   const activePulse = summary.active ? 0.5 + 0.2 * Math.sin(Date.now() / 400) : 0;
-  const nodeWidth = compact ? 236 : 156;
-  const nodeHeight = compact ? 118 : 88;
+  const nodeWidth = compact ? 214 : 156;
+  const nodeHeight = compact ? 110 : 88;
   const hitArea = new PIXI.Rectangle(x - nodeWidth / 2, y - nodeHeight / 2, nodeWidth, nodeHeight);
   const compactMeta = buildCompactNodeMeta(summary);
 
@@ -543,7 +792,7 @@ function LocationNode({
             fontWeight: '700',
             align: 'center',
             wordWrap: true,
-            wordWrapWidth: compact ? 188 : 132,
+                wordWrapWidth: compact ? 176 : 132,
           })
         }
       />
@@ -563,7 +812,7 @@ function LocationNode({
             }
           />
           <Text
-            x={x - 100}
+            x={x - 90}
             y={y + 14}
             anchor={{ x: 0, y: 0.5 }}
             text={compactMeta}
@@ -573,7 +822,7 @@ function LocationNode({
                 fontSize: 9,
                 lineHeight: 13,
                 wordWrap: true,
-                wordWrapWidth: 200,
+                wordWrapWidth: 180,
               })
             }
           />
@@ -827,9 +1076,48 @@ function buildNodeSummaries(snapshot: RocklawLiveSnapshot, placements: AgentPlac
   });
 }
 
+function buildCompactGraphNodes(nodeSummaries: NodeSummary[]): Node<CompactGraphNodeData>[] {
+  return nodeSummaries.map((summary) => ({
+    id: summary.location.id,
+    type: 'locationCard',
+    position: {
+      x: toPx(summary.location.center.x) - 107,
+      y: toPx(summary.location.center.y) - 55,
+    },
+    data: { summary },
+  }));
+}
+
+function buildCompactGraphEdges(
+  edges: EdgeUsage[],
+  recentMoveGlowByEdge: Map<string, number>,
+  visibleEdgeCounts: Map<string, number>,
+): Edge<CompactGraphEdgeData>[] {
+  const edgeByKey = new Map(edges.map((edge) => [edge.key, edge]));
+  return ROCKLAW_OVERVIEW_PRIMARY_LANES.flatMap((lane) => {
+    const key = [lane.source, lane.target].sort().join('::');
+    const edge = edgeByKey.get(key);
+    if (!edge) return [];
+    return [{
+      id: edge.key,
+      source: lane.source,
+      target: lane.target,
+      sourceHandle: `${lane.sourceHandle}-source`,
+      targetHandle: lane.targetHandle,
+      type: 'lane',
+      selectable: false,
+      data: {
+        activeCount: visibleEdgeCounts.get(edge.key) ?? 0,
+        recentGlowStrength: recentMoveGlowByEdge.get(edge.key) ?? 0,
+      },
+    }];
+  });
+}
+
 function buildEdgeUsage(
   snapshot: RocklawLiveSnapshot,
   locationById: Map<string, RocklawLocationNode>,
+  compactPrimaryOnly = false,
 ): EdgeUsage[] {
   const activeCounts = new Map<string, number>();
   for (const agent of snapshot.agents) {
@@ -838,22 +1126,26 @@ function buildEdgeUsage(
     activeCounts.set(key, (activeCounts.get(key) ?? 0) + 1);
   }
 
-  const seen = new Set<string>();
   const edges: EdgeUsage[] = [];
-  for (const location of snapshot.locations) {
-    for (const neighborId of location.neighbors) {
-      const neighbor = locationById.get(neighborId);
-      if (!neighbor) continue;
-      const key = [location.id, neighbor.id].sort().join('::');
-      if (seen.has(key)) continue;
-      seen.add(key);
-      edges.push({
-        key,
-        a: location,
-        b: neighbor,
-        activeCount: activeCounts.get(key) ?? 0,
-      });
-    }
+  const edgePairs = compactPrimaryOnly
+    ? ROCKLAW_OVERVIEW_PRIMARY_LANES.map((lane) => [lane.source, lane.target] as [string, string])
+    : snapshot.locations.flatMap((location) =>
+        location.neighbors.map((neighborId) => [location.id, neighborId] as [string, string]));
+
+  const seen = new Set<string>();
+  for (const [leftId, rightId] of edgePairs) {
+    const left = locationById.get(leftId);
+    const right = locationById.get(rightId);
+    if (!left || !right) continue;
+    const key = [left.id, right.id].sort().join('::');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    edges.push({
+      key,
+      a: left,
+      b: right,
+      activeCount: activeCounts.get(key) ?? 0,
+    });
   }
   return edges;
 }

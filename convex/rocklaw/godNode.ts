@@ -3,7 +3,7 @@
 import { v } from 'convex/values';
 import { action, internalAction } from '../_generated/server';
 import { api, internal } from '../_generated/api';
-import { Doc } from '../_generated/dataModel';
+import { Doc, Id } from '../_generated/dataModel';
 
 const AGENT_NAME_BY_SLUG: Record<string, string> = {
   elena: 'Elena Voss',
@@ -315,6 +315,66 @@ async function buildGatewayEnv() {
     ZEROCLAW_DISABLE_PROVIDER_STREAMING: '1',
   };
 }
+
+function buildJournalMemoryKey(agentName: string, day: number, tick: number) {
+  return `rocklaw:journal:${agentName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}:d${day}:t${tick}`;
+}
+
+function buildJournalMemoryContent(entry: {
+  agentName: string;
+  day: number;
+  tick: number;
+  timeOfDay: string;
+  summary: string;
+}) {
+  return [
+    `Rocklaw private journal entry for ${entry.agentName}.`,
+    `Day ${entry.day}, tick ${entry.tick}, ${entry.timeOfDay}.`,
+    entry.summary.trim(),
+  ].join('\n');
+}
+
+export const ingestJournalMemory: any = internalAction({
+  args: {
+    journalEntryId: v.id('rl_journal_entries'),
+  },
+  handler: async (ctx, { journalEntryId }) => {
+    const entry: Doc<'rl_journal_entries'> | null = await ctx.runQuery(internal.rocklaw.god._getJournalEntry, {
+      journalEntryId,
+    });
+    if (!entry) return { status: 'missing' as const };
+    if (entry.memoryIngestedAt) {
+      return { status: 'already_ingested' as const, memoryKey: entry.memoryKey ?? null };
+    }
+
+    const agent = await ctx.runQuery(internal.rocklaw.bridge.getAgent, { agentName: entry.agentName });
+    if (!agent) throw new Error(`Agent not found for journal ingestion: ${entry.agentName}`);
+
+    const memoryKey = buildJournalMemoryKey(entry.agentName, entry.day, entry.tick);
+    const response = await fetch(`http://127.0.0.1:${agent.gatewayPort}/api/memory`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        key: memoryKey,
+        category: 'daily',
+        content: buildJournalMemoryContent(entry),
+      }),
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      throw new Error(`Memory ingest failed for ${entry.agentName}: ${response.status} ${response.statusText}${body ? ` :: ${body}` : ''}`);
+    }
+
+    await ctx.runMutation(internal.rocklaw.god._markJournalMemoryIngested, {
+      journalEntryId: journalEntryId as Id<'rl_journal_entries'>,
+      memoryKey,
+      memoryIngestedAt: Date.now(),
+    });
+    return { status: 'ingested' as const, memoryKey };
+  },
+});
 
 async function stopAllAgentProcesses(projectRoot?: string | null) {
   const { execFileSync } = await import('child_process');

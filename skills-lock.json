@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "godot-gdscript-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "computedHash": "5aae14bd9f5a5e16cfed5d692ed9b6ddd3848a0569d29ae86a623d09af997bfe"
+    }
+  }
+}

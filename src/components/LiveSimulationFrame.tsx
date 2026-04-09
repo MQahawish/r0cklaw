@@ -4,11 +4,9 @@ import { useRocklawLiveSnapshot } from '../lib/rocklawSimulationClient.ts';
 export default function LiveSimulationFrame({
   mode = 'full',
   isExpanded = false,
-  onToggleExpanded,
 }: {
   mode?: 'compact' | 'full';
   isExpanded?: boolean;
-  onToggleExpanded?: () => void;
 }) {
   const snapshot = useRocklawLiveSnapshot();
 
@@ -31,7 +29,6 @@ export default function LiveSimulationFrame({
       snapshot={snapshot}
       mode={mode}
       isExpanded={isExpanded}
-      onToggleExpanded={onToggleExpanded}
     />
   );
 }

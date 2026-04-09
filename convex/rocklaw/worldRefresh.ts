@@ -1,8 +1,6 @@
 /**
- * World Refresh -- writes the agent's world/ files from Convex state
+ * World Refresh -- writes the agent runtime files from Convex state
  * before each tick fires. The agent reads these files as "reality".
- *
- * Also handles HEARTBEAT.md appends (world engine only, never the agent).
  */
 
 import { v } from 'convex/values';
@@ -303,7 +301,22 @@ function buildEconomicSurface(args: {
     }
   }
 
-  return entries;
+  const deduped = new Map<string, EconomicSurfaceEntry>();
+  for (const entry of entries) {
+    const existing = deduped.get(entry.action);
+    if (!existing) {
+      deduped.set(entry.action, entry);
+      continue;
+    }
+    if (existing.status === 'available') {
+      continue;
+    }
+    if (entry.status === 'available') {
+      deduped.set(entry.action, entry);
+    }
+  }
+
+  return Array.from(deduped.values());
 }
 
 // ── Letter delivery ───────────────────────────────────────────────────────────
@@ -888,6 +901,67 @@ export const getWorldSnapshot = internalQuery({
       }),
       workspacePath: agent.workspacePath,
     };
+  },
+});
+
+export const appendActivityNote = internalMutation({
+  args: {
+    agentName: v.string(),
+    line: v.string(),
+    tick: v.number(),
+    day: v.number(),
+    timeOfDay: v.string(),
+  },
+  handler: async (ctx, { agentName, line, tick, day, timeOfDay }) => {
+    await ctx.db.insert('rl_activity_notes', {
+      agentName,
+      line,
+      tick,
+      day,
+      timeOfDay,
+      createdAt: Date.now(),
+    });
+    const notes = await ctx.db
+      .query('rl_activity_notes')
+      .withIndex('agent_createdAt', (q) => q.eq('agentName', agentName))
+      .order('desc')
+      .take(13);
+    for (const stale of notes.slice(12)) {
+      await ctx.db.delete(stale._id);
+    }
+  },
+});
+
+export const getLatestActivityNote = internalQuery({
+  args: { agentName: v.string() },
+  handler: async (ctx, { agentName }) => {
+    const notes = await ctx.db
+      .query('rl_activity_notes')
+      .withIndex('agent_createdAt', (q) => q.eq('agentName', agentName))
+      .order('desc')
+      .take(1);
+    return notes[0]?.line ?? null;
+  },
+});
+
+export const getRecentActivityNotes = internalQuery({
+  args: {
+    agentName: v.string(),
+    limit: v.optional(v.number()),
+    upToTick: v.number(),
+  },
+  handler: async (ctx, { agentName, limit, upToTick }) => {
+    const cappedLimit = Math.max(1, Math.min(limit ?? 5, 10));
+    const notes = await ctx.db
+      .query('rl_activity_notes')
+      .withIndex('agent_createdAt', (q) => q.eq('agentName', agentName))
+      .order('desc')
+      .take(25);
+    return notes
+      .filter((note) => typeof note.tick === 'number' && note.tick <= upToTick)
+      .sort((a, b) => ((a.tick ?? 0) - (b.tick ?? 0)) || (a.createdAt - b.createdAt))
+      .slice(-cappedLimit)
+      .map((note) => note.line);
   },
 });
 

@@ -429,6 +429,108 @@ export const getFrontendAgentDetails = query({
   },
 });
 
+export const getConversationOverview = query({
+  args: {},
+  handler: async (ctx) => {
+    const scenes = await ctx.db.query('rl_chat_scenes').collect();
+    const messages = await ctx.db.query('rl_chat_messages').collect();
+
+    const sceneById = new Map(scenes.map((scene) => [scene.sceneId, scene]));
+    const sceneMessagesById = new Map<string, any[]>();
+    const threadMessagesByKey = new Map<string, any[]>();
+
+    for (const message of messages) {
+      if (message.sceneId) {
+        const bucket = sceneMessagesById.get(message.sceneId) ?? [];
+        bucket.push(message);
+        sceneMessagesById.set(message.sceneId, bucket);
+        continue;
+      }
+      const bucket = threadMessagesByKey.get(message.threadKey) ?? [];
+      bucket.push(message);
+      threadMessagesByKey.set(message.threadKey, bucket);
+    }
+
+    const sceneConversations = scenes.map((scene) => {
+      const sceneMessages = (sceneMessagesById.get(scene.sceneId) ?? [])
+        .slice()
+        .sort(compareChatMessageOrder);
+      const latestMessage = sceneMessages[sceneMessages.length - 1] ?? null;
+      return {
+        key: `scene:${scene.sceneId}`,
+        kind: 'scene',
+        status: scene.status,
+        participants: [scene.agentA, scene.agentB],
+        location: scene.location,
+        nextSpeaker: scene.status === 'live' ? scene.nextSpeaker : null,
+        openedTick: scene.openedTick ?? null,
+        openedDay: scene.openedDay ?? null,
+        closedTick: scene.closedTick ?? null,
+        closedDay: scene.closedDay ?? null,
+        latestTick: latestMessage?.sentTick ?? scene.lastActiveTick ?? scene.openedTick ?? 0,
+        latestDay: latestMessage?.sentDay ?? scene.lastActiveDay ?? scene.openedDay ?? 0,
+        latestText: latestMessage?.text ?? scene.openingText ?? null,
+        messages: sceneMessages.map((message) => ({
+          fromAgent: message.fromAgent,
+          toAgent: message.toAgent,
+          text: message.text,
+          sentTick: message.sentTick,
+          sentDay: message.sentDay,
+          deliveryMode: message.deliveryMode,
+          status: message.status,
+        })),
+      };
+    });
+
+    const threadConversations = Array.from(threadMessagesByKey.entries()).map(([threadKey, threadMessages]) => {
+      const ordered = threadMessages.slice().sort(compareChatMessageOrder);
+      const first = ordered[0];
+      const latest = ordered[ordered.length - 1];
+      const participants = first ? [first.fromAgent, first.toAgent].sort((a, b) => a.localeCompare(b)) : threadKey.split('::');
+      const linkedScene = scenes.find((scene) =>
+        (scene.agentA === participants[0] && scene.agentB === participants[1])
+        || (scene.agentA === participants[1] && scene.agentB === participants[0]),
+      );
+      const latestScene = linkedScene
+        ? Math.max(linkedScene.closedTick ?? -1, linkedScene.lastActiveTick ?? -1, linkedScene.openedTick ?? -1)
+        : -1;
+      const shouldHideThread = linkedScene && latestScene >= (latest?.sentTick ?? -1);
+      return shouldHideThread ? null : {
+        key: `thread:${threadKey}`,
+        kind: 'thread',
+        status: ordered.some((message) => message.status === 'unread') ? 'unread' : 'archived',
+        participants,
+        location: null,
+        nextSpeaker: null,
+        openedTick: first?.sentTick ?? null,
+        openedDay: first?.sentDay ?? null,
+        closedTick: null,
+        closedDay: null,
+        latestTick: latest?.sentTick ?? 0,
+        latestDay: latest?.sentDay ?? 0,
+        latestText: latest?.text ?? null,
+        messages: ordered.map((message) => ({
+          fromAgent: message.fromAgent,
+          toAgent: message.toAgent,
+          text: message.text,
+          sentTick: message.sentTick,
+          sentDay: message.sentDay,
+          deliveryMode: message.deliveryMode,
+          status: message.status,
+        })),
+      };
+    }).filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+
+    return [...sceneConversations, ...threadConversations]
+      .sort((a, b) =>
+        (a.status === 'live' ? -1 : 0) - (b.status === 'live' ? -1 : 0)
+        || (b.latestDay - a.latestDay)
+        || (b.latestTick - a.latestTick)
+        || a.key.localeCompare(b.key),
+      );
+  },
+});
+
 function createChatThreadKey(agentA: string, agentB: string): string {
   return [agentA, agentB].sort((a, b) => a.localeCompare(b)).join('::');
 }
@@ -461,6 +563,18 @@ function summarizeTransactionItems(items: Array<{ item: string; quantity: number
     .join(', ');
 }
 
+function isSceneActiveAtTick(scene: any, tick: number): boolean {
+  if (typeof scene.openedTick !== 'number' || scene.openedTick > tick) return false;
+  if (typeof scene.closedTick === 'number' && scene.closedTick <= tick) return false;
+  return true;
+}
+
+function isTransactionPendingAtTick(txn: any, tick: number): boolean {
+  if (typeof txn.createdTick !== 'number' || txn.createdTick > tick) return false;
+  if (typeof txn.resolvedTick === 'number' && txn.resolvedTick <= tick) return false;
+  return true;
+}
+
 export const getStepSummary = query({
   args: {
     tick: v.optional(v.number()),
@@ -474,10 +588,7 @@ export const getStepSummary = query({
     const day = requestedDay ?? worldState?.day ?? 1;
     const timeOfDay = requestedTimeOfDay ?? (requestedTick !== undefined ? timeOfDayForTick(requestedTick) : worldState?.timeOfDay ?? 'morning');
     const actionTick = tick === 1 ? 0 : tick;
-    const scenes = await ctx.db
-      .query('rl_chat_scenes')
-      .withIndex('status_location', (q) => q.eq('status', 'live'))
-      .collect();
+    const allScenes = await ctx.db.query('rl_chat_scenes').collect();
     const transactions = await ctx.db.query('rl_transactions').collect();
     const actions = await ctx.db.query('rl_actions_log').withIndex('tick', (q) => q.eq('tick', actionTick)).collect();
     const marketPrices = await ctx.db.query('rl_market_prices').collect();
@@ -485,6 +596,8 @@ export const getStepSummary = query({
     const allPriceHistory = await ctx.db.query('rl_price_history').collect();
     const reputations = await ctx.db.query('rl_reputation').collect();
     const reputationByAgent = new Map(reputations.map((entry) => [entry.agentName, entry.score]));
+
+    const scenes = allScenes.filter((scene) => isSceneActiveAtTick(scene, tick));
 
     const sceneSummaries = await Promise.all(
       scenes.map(async (scene) => {
@@ -524,7 +637,7 @@ export const getStepSummary = query({
           recentMessages,
           pendingOffers: transactions
             .filter((txn) =>
-              txn.status === 'pending'
+              isTransactionPendingAtTick(txn, tick)
               && ((txn.fromAgent === scene.agentA && txn.toAgent === scene.agentB)
                 || (txn.fromAgent === scene.agentB && txn.toAgent === scene.agentA)),
             )
@@ -631,23 +744,33 @@ export const getStepSummary = query({
       const finished = agentActions.find(a => a.outcomeNote?.startsWith('Finished'));
       const started = agentActions.find(a => a.outcomeNote?.startsWith('Started'));
       const dialogue = agentActions.find(a => a.action === 'say' || a.action === 'chat');
+      const latestIsDialogue = latest === dialogue;
+      const latestIsStarted = latest === started;
 
-      if (finished) {
+      if (latestIsDialogue) {
+        const verb = latest.action === 'say' ? 'said' : 'chatted';
+        parts.push(verb + (latest.target ? ` with ${latest.target}` : ''));
+      } else if (latestIsStarted && started?.outcomeNote) {
+        if (finished && finished.action === started.action && finished.target === started.target) {
+          parts.push(`started again ${started.outcomeNote.replace('Started ', '').toLowerCase()}`);
+        } else {
+          parts.push(started.outcomeNote);
+        }
+      } else if (latest.outcomeNote) {
+        parts.push(latest.outcomeNote);
+      }
+
+      if (finished && finished !== latest) {
         parts.push(finished.outcomeNote!);
       }
       
-      if (dialogue && dialogue !== finished && dialogue !== started) {
+      if (dialogue && dialogue !== latest && dialogue !== finished && dialogue !== started) {
         const verb = dialogue.action === 'say' ? 'said' : 'chatted';
         parts.push(verb + (dialogue.target ? ` with ${dialogue.target}` : ''));
       }
 
-      if (started) {
-        // If we finished and started the same thing, simplify
-        if (finished && finished.action === started.action && finished.target === started.target) {
-          parts.push(`started again ${started.outcomeNote!.replace('Started ', '').toLowerCase()}`);
-        } else {
-          parts.push(started.outcomeNote!.toLowerCase());
-        }
+      if (started && started !== latest) {
+        parts.push(started.outcomeNote!.toLowerCase());
       }
 
       // If we couldn't find specific started/finished patterns, just join everything unique
@@ -733,7 +856,7 @@ export const getStepSummary = query({
       transactionDeltas,
       priceDeltas,
       interrupts: Array.from(new Set(interruptLines)),
-      pendingOfferCount: transactions.filter((txn) => txn.status === 'pending').length,
+      pendingOfferCount: transactions.filter((txn) => isTransactionPendingAtTick(txn, tick)).length,
       criticalShortages: marketPrices
         .filter((entry) => entry.shortageLevel === 'critical')
         .map((entry) => entry.item),

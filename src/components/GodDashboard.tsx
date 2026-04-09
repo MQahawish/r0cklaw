@@ -9,7 +9,7 @@
  *   Systems    -- live knob configuration, scenario presets
  */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery, useMutation } from 'convex/react';
 import { api } from '../../convex/_generated/api';
 import AgentInspector from './AgentInspector';
@@ -188,6 +188,132 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
   );
 }
 
+function trimInline(text: string | null | undefined, max = 120) {
+  const compact = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!compact) return '';
+  if (compact.length <= max) return compact;
+  return `${compact.slice(0, max - 1).trimEnd()}…`;
+}
+
+function conversationStatusLabel(conversation: any) {
+  if (conversation.status === 'live') return 'live';
+  if (conversation.kind === 'thread' && conversation.status === 'unread') return 'thread · unread';
+  if (conversation.kind === 'thread') return 'thread';
+  if (conversation.status === 'closed') return 'closed';
+  return conversation.status ?? conversation.kind;
+}
+
+function ConversationBrowser({
+  conversations,
+}: {
+  conversations: any[] | undefined;
+}) {
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const selectedConversation = useMemo(() => {
+    const rows = conversations ?? [];
+    const fallbackKey = rows[0]?.key ?? null;
+    const activeKey = rows.some((row) => row.key === selectedKey) ? selectedKey : fallbackKey;
+    return rows.find((row) => row.key === activeKey) ?? null;
+  }, [conversations, selectedKey]);
+
+  if (!conversations) {
+    return <div style={{ fontSize: 12, color: '#4b5563', fontStyle: 'italic' }}>Loading conversations…</div>;
+  }
+  if (conversations.length === 0) {
+    return <div style={{ fontSize: 12, color: '#4b5563', fontStyle: 'italic' }}>No conversations yet.</div>;
+  }
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '280px minmax(0, 1fr)', gap: 12, minHeight: 360 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 420, overflowY: 'auto', paddingRight: 6 }}>
+        {conversations.map((conversation) => {
+          const selected = selectedConversation?.key === conversation.key;
+          return (
+            <button
+              key={conversation.key}
+              onClick={() => setSelectedKey(conversation.key)}
+              style={{
+                textAlign: 'left',
+                background: selected ? '#132238' : '#111827',
+                border: `1px solid ${selected ? '#3b82f6' : '#1f2937'}`,
+                borderRadius: 8,
+                padding: '10px 12px',
+                cursor: 'pointer',
+                color: '#e5e7eb',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'baseline' }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: '#f9fafb' }}>
+                  {conversation.participants.join(' ↔ ')}
+                </div>
+                <div style={{ fontSize: 10, color: conversation.status === 'live' ? '#fbbf24' : '#64748b', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                  {conversationStatusLabel(conversation)}
+                </div>
+              </div>
+              <div style={{ marginTop: 4, fontSize: 11, color: '#94a3b8' }}>
+                {conversation.location ? `@ ${conversation.location}` : 'private thread'}
+                {conversation.nextSpeaker ? ` · next ${conversation.nextSpeaker}` : ''}
+              </div>
+              {conversation.latestText && (
+                <div style={{ marginTop: 6, fontSize: 11, color: '#cbd5e1', lineHeight: 1.35 }}>
+                  {trimInline(conversation.latestText, 110)}
+                </div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{ background: '#0b1220', border: '1px solid #1f2937', borderRadius: 8, minHeight: 360, display: 'flex', flexDirection: 'column' }}>
+        {selectedConversation ? (
+          <>
+            <div style={{ padding: '12px 14px', borderBottom: '1px solid #1f2937' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#f9fafb' }}>
+                  {selectedConversation.participants.join(' ↔ ')}
+                </div>
+                <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                  {selectedConversation.location ? `@ ${selectedConversation.location}` : 'thread'}
+                  {selectedConversation.nextSpeaker ? ` · next ${selectedConversation.nextSpeaker}` : ''}
+                </div>
+              </div>
+            </div>
+            <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 420, overflowY: 'auto' }}>
+              {(selectedConversation.messages ?? []).length === 0 ? (
+                <div style={{ fontSize: 12, color: '#4b5563', fontStyle: 'italic' }}>No messages in this conversation yet.</div>
+              ) : (
+                selectedConversation.messages.map((message: any, index: number) => {
+                  const isLeft = message.fromAgent === selectedConversation.participants[0];
+                  return (
+                    <div
+                      key={`${selectedConversation.key}-${index}`}
+                      style={{
+                        alignSelf: isLeft ? 'flex-start' : 'flex-end',
+                        maxWidth: '78%',
+                        background: isLeft ? '#172032' : '#1d3049',
+                        border: '1px solid #243244',
+                        borderRadius: 10,
+                        padding: '8px 10px',
+                      }}
+                    >
+                      <div style={{ fontSize: 10, color: '#93c5fd', marginBottom: 4 }}>
+                        {message.fromAgent} · D{message.sentDay} t{message.sentTick}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#e5e7eb', lineHeight: 1.45, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        {message.text}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 // ── Main dashboard ────────────────────────────────────────────────────────────
 
 type Tab = 'overview' | 'run' | 'economy' | 'systems' | 'agents';
@@ -203,12 +329,12 @@ const TABS: { id: Tab; label: string }[] = [
 export default function GodDashboard({ onClose }: { onClose?: () => void }) {
   const dashboard = useQuery(api.rocklaw.god.getDashboard);
   const runConsole = useQuery(api.rocklaw.god.getRunConsole);
+  const conversations = useQuery(api.rocklaw.observe.getConversationOverview);
   const startSim = useMutation(api.rocklaw.god.startSim);
   const stopSim = useMutation(api.rocklaw.god.stopSim);
 
   const [activeTab, setActiveTab] = useState<Tab>('overview');
   const [selectedAgentName, setSelectedAgentName] = useState<string | null>(null);
-  const [isOverviewLiveExpanded, setIsOverviewLiveExpanded] = useState(false);
 
   if (!dashboard) {
     return (
@@ -345,7 +471,7 @@ export default function GodDashboard({ onClose }: { onClose?: () => void }) {
         {activeTab === 'overview' && <div style={{ display: 'grid', gridTemplateColumns: '250px 1fr', gap: 16, minHeight: 0 }}>
 
           {/* ── Column 1: Agents ── */}
-          <div style={{ overflowY: 'auto', maxHeight: 540, paddingRight: 10 }}>
+          <div style={{ overflowY: 'auto', maxHeight: 'calc(100vh - 180px)', paddingRight: 10 }}>
             <SectionHeader>Agents ({agents.length})</SectionHeader>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {agents.map((a: any) => <AgentCard key={a._id} agent={a} repScore={(repByAgent ?? {})[a.name]} />)}
@@ -353,7 +479,7 @@ export default function GodDashboard({ onClose }: { onClose?: () => void }) {
           </div>
 
           {/* ── Column 2: World log + Economy + Prayers ── */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto', maxHeight: 540, paddingRight: 10 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto', maxHeight: 'calc(100vh - 180px)', paddingRight: 10 }}>
 
             <div>
               <SectionHeader>Usage</SectionHeader>
@@ -372,11 +498,12 @@ export default function GodDashboard({ onClose }: { onClose?: () => void }) {
 
             <div>
               <SectionHeader>Live Scene</SectionHeader>
-              <LiveSimulationFrame
-                mode="compact"
-                isExpanded={isOverviewLiveExpanded}
-                onToggleExpanded={() => setIsOverviewLiveExpanded((value) => !value)}
-              />
+              <LiveSimulationFrame mode="compact" />
+            </div>
+
+            <div>
+              <SectionHeader>Conversations</SectionHeader>
+              <ConversationBrowser conversations={conversations as any[] | undefined} />
             </div>
 
             {/* World log */}
@@ -434,17 +561,17 @@ const PAGE_STYLE: React.CSSProperties = {
   display: 'flex',
   alignItems: 'stretch',
   justifyContent: 'center',
-  padding: 20,
+  padding: 0,
 };
 
 const PANEL_STYLE: React.CSSProperties = {
   background: '#111827',
-  border: '1px solid #374151',
-  borderRadius: 8,
+  border: 'none',
+  borderRadius: 0,
   padding: 20,
   width: '100%',
-  maxWidth: 1500,
-  minHeight: 'calc(100vh - 40px)',
+  maxWidth: 'none',
+  minHeight: '100vh',
   overflowY: 'auto',
   overflowX: 'hidden',
   color: '#e5e7eb',

@@ -1,5 +1,5 @@
-default_provider = "google"
-default_model = "gemini-3-flash-preview" # pinned
+default_provider = "anthropic"
+default_model = "claude-sonnet-4-6" # pinned
 default_temperature = 0.8
 
 [agent]
