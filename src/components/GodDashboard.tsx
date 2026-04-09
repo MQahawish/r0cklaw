@@ -75,6 +75,13 @@ function repColour(score: number): string {
   return '#fbbf24';
 }
 
+function eldersCountdown(day: number, eldersDay: number): { text: string; color: string } {
+  const daysLeft = Math.max(0, eldersDay - day);
+  if (daysLeft === 0) return { text: "Elder's Day is TODAY", color: '#ef4444' };
+  const color = daysLeft <= 3 ? '#ef4444' : daysLeft <= 7 ? '#fbbf24' : '#9ca3af';
+  return { text: `${daysLeft}d until Elder's Day`, color };
+}
+
 function AgentCard({ agent, repScore }: { agent: any; repScore?: number }) {
   const [expanded, setExpanded] = useState(false);
   const inv = JSON.parse(agent.inventory ?? '{}') as Record<string, number>;
@@ -184,6 +191,79 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', color: '#6b7280', textTransform: 'uppercase', marginBottom: 8, borderBottom: '1px solid #1f2937', paddingBottom: 4 }}>
       {children}
+    </div>
+  );
+}
+
+// ── Hidden Roles section ──────────────────────────────────────────────────────
+
+const ROLE_STYLE: Record<string, { bg: string; color: string }> = {
+  Saboteur: { bg: '#ef444422', color: '#f87171' },
+  Usurper:  { bg: '#a78bfa22', color: '#c4b5fd' },
+  Heir:     { bg: '#fbbf2422', color: '#fcd34d' },
+};
+
+function HiddenRolesSection({
+  hiddenRoles,
+  bakeryGrain,
+  gossipHitsByAgent,
+  agentCoinMap,
+}: {
+  hiddenRoles: any[];
+  bakeryGrain: number;
+  gossipHitsByAgent: Record<string, number>;
+  agentCoinMap: Record<string, number>;
+}) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <SectionHeader>Hidden Roles</SectionHeader>
+      {(!hiddenRoles || hiddenRoles.length === 0) ? (
+        <div style={{ fontSize: 12, color: '#4b5563', fontStyle: 'italic' }}>Roles not yet assigned.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {hiddenRoles.map((role: any) => {
+            const s = ROLE_STYLE[role.roleType] ?? { bg: '#37415122', color: '#9ca3af' };
+            let stat: React.ReactNode = null;
+
+            if (role.roleType === 'Saboteur') {
+              const ok = bakeryGrain < 10;
+              stat = (
+                <span style={{ color: ok ? '#34d399' : '#f87171', fontSize: 11 }}>
+                  grain: {bakeryGrain} {ok ? '✓' : '✗'}
+                </span>
+              );
+            } else if (role.roleType === 'Usurper') {
+              const hits = gossipHitsByAgent[role.agentName] ?? 0;
+              stat = <span style={{ color: '#c4b5fd', fontSize: 11 }}>hits: {hits}</span>;
+            } else if (role.roleType === 'Heir') {
+              const myCoin = agentCoinMap[role.agentName] ?? 0;
+              const rivalCoin = role.rival ? (agentCoinMap[role.rival] ?? 0) : null;
+              const diff = rivalCoin !== null ? myCoin - rivalCoin : null;
+              stat = rivalCoin === null ? (
+                <span style={{ color: '#9ca3af', fontSize: 11 }}>rival unknown</span>
+              ) : (
+                <span style={{ color: diff! > 0 ? '#34d399' : diff === 0 ? '#fbbf24' : '#f87171', fontSize: 11 }}>
+                  vs {role.rival}: {diff! > 0 ? `+${diff}c` : diff === 0 ? 'tied' : `${diff}c`}
+                </span>
+              );
+            }
+
+            return (
+              <div key={role._id} style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                padding: '5px 8px', background: '#1f2937',
+                borderRadius: 4, border: `1px solid ${s.color}44`,
+              }}>
+                <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, background: s.bg, color: s.color, fontWeight: 700, flexShrink: 0 }}>
+                  {role.roleType.toUpperCase()}
+                </span>
+                <span style={{ fontSize: 12, color: '#e5e7eb', flex: 1 }}>{role.agentName}</span>
+                {stat}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -346,7 +426,7 @@ export default function GodDashboard({ onClose }: { onClose?: () => void }) {
     );
   }
 
-  const { worldState, agents, prices, recentPrayers, tension, repByAgent } = dashboard as any;
+  const { worldState, agents, prices, recentPrayers, tension, repByAgent, hiddenRoles, bakeryGrain, gossipHitsByAgent, agentCoinMap } = dashboard as any;
   const recentTickHistory = (runConsole?.tickHistory ?? []).slice(0, 8);
   const effectiveSelectedAgent = agents.some((agent: any) => agent.name === selectedAgentName)
     ? selectedAgentName
@@ -370,6 +450,10 @@ export default function GodDashboard({ onClose }: { onClose?: () => void }) {
             </span>
             <span style={{ marginLeft: 12, fontSize: 13, color: '#9ca3af' }}>
               Day {worldState?.day ?? '?'}, {worldState?.timeOfDay ?? '?'} — Tick {worldState?.tick ?? '?'}
+              {worldState?.eldersDay != null && (() => {
+                const { text, color } = eldersCountdown(worldState.day ?? 0, worldState.eldersDay);
+                return <span style={{ marginLeft: 10, color, fontWeight: worldState.eldersDay - (worldState.day ?? 0) <= 3 ? 700 : 400 }}>— {text}</span>;
+              })()}
             </span>
             <div style={{ marginTop: 4, fontSize: 12, color: '#64748b' }}>
               Analytical dashboard first. The live town view is now embedded in Overview.
@@ -480,6 +564,13 @@ export default function GodDashboard({ onClose }: { onClose?: () => void }) {
 
           {/* ── Column 2: World log + Economy + Prayers ── */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto', maxHeight: 'calc(100vh - 180px)', paddingRight: 10 }}>
+
+            <HiddenRolesSection
+              hiddenRoles={hiddenRoles ?? []}
+              bakeryGrain={bakeryGrain ?? 0}
+              gossipHitsByAgent={gossipHitsByAgent ?? {}}
+              agentCoinMap={agentCoinMap ?? {}}
+            />
 
             <div>
               <SectionHeader>Usage</SectionHeader>

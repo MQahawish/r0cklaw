@@ -118,6 +118,31 @@ export const getDashboard = query({
       repByAgent[r.agentName] = r.score;
     }
 
+    // Hidden roles
+    const hiddenRoles = await ctx.db.query('rl_hidden_roles').collect();
+
+    // Saboteur: current bakery grain stock
+    const bakeryStock = await ctx.db
+      .query('rl_place_stocks')
+      .withIndex('place_item', (q) => q.eq('placeName', 'bakery').eq('item', 'grain'))
+      .unique();
+    const bakeryGrain = bakeryStock?.quantity ?? 0;
+
+    // Usurper: gossip hits per agent (events that triggered rep penalty)
+    const gossipEvents = await ctx.db.query('rl_gossip_events').collect();
+    const gossipHitsByAgent: Record<string, number> = {};
+    for (const e of gossipEvents) {
+      if (e.repPenaltyApplied) {
+        gossipHitsByAgent[e.sourceAgent] = (gossipHitsByAgent[e.sourceAgent] ?? 0) + 1;
+      }
+    }
+
+    // Heir: coin map for rival lookup
+    const agentCoinMap: Record<string, number> = {};
+    for (const a of agents) {
+      agentCoinMap[a.name] = a.coin ?? 0;
+    }
+
     return {
       worldState,
       agents,
@@ -127,6 +152,10 @@ export const getDashboard = query({
       recentPrayers,
       tension,
       repByAgent,
+      hiddenRoles,
+      bakeryGrain,
+      gossipHitsByAgent,
+      agentCoinMap,
     };
   },
 });
