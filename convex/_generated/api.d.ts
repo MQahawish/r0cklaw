@@ -53,6 +53,7 @@ import type * as rocklaw_economy from "../rocklaw/economy.js";
 import type * as rocklaw_engine from "../rocklaw/engine.js";
 import type * as rocklaw_god from "../rocklaw/god.js";
 import type * as rocklaw_godNode from "../rocklaw/godNode.js";
+import type * as rocklaw_hiddenRoles from "../rocklaw/hiddenRoles.js";
 import type * as rocklaw_init from "../rocklaw/init.js";
 import type * as rocklaw_liveScene from "../rocklaw/liveScene.js";
 import type * as rocklaw_mapLayout from "../rocklaw/mapLayout.js";
@@ -129,6 +130,7 @@ declare const fullApi: ApiFromModules<{
   "rocklaw/engine": typeof rocklaw_engine;
   "rocklaw/god": typeof rocklaw_god;
   "rocklaw/godNode": typeof rocklaw_godNode;
+  "rocklaw/hiddenRoles": typeof rocklaw_hiddenRoles;
   "rocklaw/init": typeof rocklaw_init;
   "rocklaw/liveScene": typeof rocklaw_liveScene;
   "rocklaw/mapLayout": typeof rocklaw_mapLayout;

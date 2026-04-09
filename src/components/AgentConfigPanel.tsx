@@ -267,11 +267,13 @@ function RepBadge({ score }: { score: number | undefined }) {
 function AgentRow({
   agent,
   repScore,
+  hiddenRole,
   selected,
   onClick,
 }: {
   agent: any;
   repScore: number | undefined;
+  hiddenRole?: any;
   selected: boolean;
   onClick: () => void;
 }) {
@@ -293,6 +295,19 @@ function AgentRow({
           <div style={{ fontSize: 11, color: '#6b7280', lineHeight: 1.2, marginTop: 2 }}>{agent.role}</div>
         </div>
         <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {hiddenRole && (() => {
+            const roleColors: Record<string, { bg: string; color: string }> = {
+              Saboteur: { bg: '#ef444422', color: '#f87171' },
+              Usurper:  { bg: '#a78bfa22', color: '#c4b5fd' },
+              Heir:     { bg: '#fbbf2422', color: '#fcd34d' },
+            };
+            const s = roleColors[hiddenRole.roleType] ?? { bg: '#37415122', color: '#9ca3af' };
+            return (
+              <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: s.bg, color: s.color, fontWeight: 700, letterSpacing: '0.04em' }}>
+                {hiddenRole.roleType.toUpperCase()}
+              </span>
+            );
+          })()}
           <RepBadge score={repScore} />
           {agent.paused && (
             <span style={{ fontSize: 10, padding: '1px 5px', borderRadius: 3, background: '#7c3aed22', color: '#a78bfa' }}>
@@ -952,9 +967,10 @@ const INPUT_STYLE: React.CSSProperties = {
   outline: 'none',
 };
 
-export default function AgentConfigPanel({ agents, repByAgent, selectedAgentName, onSelectAgent }: {
+export default function AgentConfigPanel({ agents, repByAgent, hiddenRoles, selectedAgentName, onSelectAgent }: {
   agents: any[];
   repByAgent: Record<string, number>;
+  hiddenRoles?: any[];
   selectedAgentName?: string | null;
   onSelectAgent?: (agentName: string) => void;
 }) {
@@ -977,6 +993,7 @@ export default function AgentConfigPanel({ agents, repByAgent, selectedAgentName
             key={a._id}
             agent={a}
             repScore={repByAgent[a.name]}
+            hiddenRole={(hiddenRoles ?? []).find((r: any) => r.agentName === a.name)}
             selected={selected === a.name}
             onClick={() => handleSelect(a.name)}
           />

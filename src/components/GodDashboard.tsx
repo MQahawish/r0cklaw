@@ -82,7 +82,7 @@ function eldersCountdown(day: number, eldersDay: number): { text: string; color:
   return { text: `${daysLeft}d until Elder's Day`, color };
 }
 
-function AgentCard({ agent, repScore }: { agent: any; repScore?: number }) {
+function AgentCard({ agent, repScore, hiddenRole }: { agent: any; repScore?: number; hiddenRole?: any }) {
   const [expanded, setExpanded] = useState(false);
   const inv = JSON.parse(agent.inventory ?? '{}') as Record<string, number>;
   const inputTokens = agent.lifetimeInputTokens ?? 0;
@@ -109,6 +109,14 @@ function AgentCard({ agent, repScore }: { agent: any; repScore?: number }) {
           <div style={{ color: '#9ca3af', fontSize: 11, lineHeight: 1.2, marginTop: 2 }}>{agent.role}</div>
         </div>
         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+          {hiddenRole && (() => {
+            const s = ROLE_STYLE[hiddenRole.roleType] ?? { bg: '#37415122', color: '#9ca3af' };
+            return (
+              <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: s.bg, color: s.color, fontWeight: 700, letterSpacing: '0.04em' }}>
+                {hiddenRole.roleType.toUpperCase()}
+              </span>
+            );
+          })()}
           {repScore !== undefined && (
             <span style={{
               fontSize: 10, padding: '1px 5px', borderRadius: 3,
@@ -517,6 +525,7 @@ export default function GodDashboard({ onClose }: { onClose?: () => void }) {
             <AgentConfigPanel
               agents={agents}
               repByAgent={repByAgent ?? {}}
+              hiddenRoles={hiddenRoles ?? []}
               selectedAgentName={effectiveSelectedAgent}
               onSelectAgent={setSelectedAgentName}
             />
@@ -558,7 +567,7 @@ export default function GodDashboard({ onClose }: { onClose?: () => void }) {
           <div style={{ overflowY: 'auto', maxHeight: 'calc(100vh - 180px)', paddingRight: 10 }}>
             <SectionHeader>Agents ({agents.length})</SectionHeader>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {agents.map((a: any) => <AgentCard key={a._id} agent={a} repScore={(repByAgent ?? {})[a.name]} />)}
+              {agents.map((a: any) => <AgentCard key={a._id} agent={a} repScore={(repByAgent ?? {})[a.name]} hiddenRole={(hiddenRoles ?? []).find((r: any) => r.agentName === a.name)} />)}
             </div>
           </div>
 
