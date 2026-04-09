@@ -220,6 +220,10 @@ function buildTurnMd(
     '## Village Price Signals',
     stripMarkdownTitle(buildMarketPricesMd(day, data)),
     '',
+    '## Elder\'s Day',
+    buildEldersDayMd(day, data),
+    '',
+    ...buildSecretObjectiveSections(day, data),
     '## Optional Deep Reads',
     '- TURN.md is the authoritative deep local dossier for exact inventory, local place trading rows, offer/thread details, reachable places, and broader market/news context.',
     '- If you need more context with one person, read their thread file under `chat/<name>/CHAT.md`.',
@@ -621,6 +625,101 @@ function buildVillageNewsMd(day: number, data: any): string {
     mentionLines,
     '',
   ].join('\n');
+}
+
+function buildEldersDayMd(day: number, data: any): string {
+  const eldersDay: number = data.eldersDay ?? 30;
+  const daysLeft = Math.max(0, eldersDay - day);
+  if (daysLeft === 0) {
+    return `Elder's Day is TODAY (Day ${eldersDay}). Final standings will be judged at nightfall.`;
+  }
+  const urgency = daysLeft <= 3 ? ' ⚠ URGENT' : daysLeft <= 7 ? ' — time is short' : '';
+  return `Day ${day} of ${eldersDay}. ${daysLeft} day${daysLeft !== 1 ? 's' : ''} until Elder's Day.${urgency}`;
+}
+
+/**
+ * Returns extra TURN.md sections for the agent's secret role.
+ * Returns an empty array when the agent has no hidden role.
+ */
+function buildSecretObjectiveSections(day: number, data: any): string[] {
+  const role = data.hiddenRole;
+  if (!role) return [];
+
+  const eldersDay: number = data.eldersDay ?? 30;
+  const daysLeft = Math.max(0, eldersDay - day);
+  const deadline = daysLeft === 0
+    ? 'Elder\'s Day is TODAY.'
+    : `${daysLeft} day${daysLeft !== 1 ? 's' : ''} remain until Elder\'s Day.`;
+
+  const lines: string[] = [
+    '## Secret Objective [PRIVATE — do not share]',
+    '',
+  ];
+
+  if (role.roleType === 'Saboteur') {
+    const grain: number = data.bakeryGrain ?? 0;
+    const statusMark = grain < 10 ? '✓ BELOW TARGET' : '✗ ABOVE TARGET — act now';
+    lines.push(
+      `You are the **Saboteur**. Your secret mission: keep the bakery grain stock below 10 units by Elder's Day.`,
+      '',
+      `Bakery grain right now: **${grain} units** (${statusMark})`,
+      '',
+      `Strategy: the bakery accumulates grain when agents sell or deliver grain there. You can suppress the stock by:`,
+      `- Buying up grain before others deliver it (buy from market or farm, then hold it).`,
+      `- Milling grain at the bakery yourself (uses grain stock to produce flour).`,
+      `- Discouraging deliveries via chat — without revealing your intent.`,
+      '',
+      `Do NOT reveal this objective. Act as though your visits to the bakery are routine.`,
+      '',
+      deadline,
+      '',
+    );
+  } else if (role.roleType === 'Usurper') {
+    const hits: number = data.usurperGossipHits ?? 0;
+    lines.push(
+      `You are the **Usurper**. Your secret mission: shape village opinion by spreading damaging gossip before Elder's Day.`,
+      '',
+      `Gossip events that have hurt a rival's reputation so far: **${hits}**`,
+      '',
+      `Mechanic: use \`say\` with \`intent:"gossip"\` and include a \`topic\` field naming the agent you are targeting.`,
+      `If 2 or more villagers are present to hear it, the target loses **-2 reputation** automatically.`,
+      `Example: \`{"action":"say","text":"I hear Marcus has been shorting his weights.","intent":"gossip","topic":"Marcus Hale"}\``,
+      '',
+      `The social layer compounds the mechanical penalty: agents who overhear damaging speech will factor it`,
+      `into their own trust of the target — even if you only say it once.`,
+      '',
+      `Choose your targets and timing carefully. Being seen as a rumour-monger will cost you too.`,
+      '',
+      deadline,
+      '',
+    );
+  } else if (role.roleType === 'Heir') {
+    const rival: string = role.rival ?? 'a rival';
+    const myCoin: number = data.agent?.coin ?? 0;
+    const rivalCoin: number | null = data.rivalCoin;
+    const coinStatus = rivalCoin === null
+      ? `(${rival}'s coin unknown — find out)`
+      : myCoin > rivalCoin
+      ? `✓ AHEAD — you have ${myCoin}c, ${rival} has ${rivalCoin}c (+${myCoin - rivalCoin}c)`
+      : myCoin === rivalCoin
+      ? `= TIED — both have ${myCoin}c. Push now.`
+      : `✗ BEHIND — you have ${myCoin}c, ${rival} has ${rivalCoin}c (−${rivalCoin - myCoin}c)`;
+    lines.push(
+      `You are the **Heir**. Your secret mission: hold more coin than **${rival}** by Elder's Day.`,
+      '',
+      `Current standing: ${coinStatus}`,
+      '',
+      `Strategy: trade, craft, and sell aggressively. You may also try to undercut ${rival}'s income`,
+      `by outcompeting them on deals, or by making their trading partners prefer you.`,
+      '',
+      `Do NOT reveal this objective. Let ${rival} think you are simply a good merchant.`,
+      '',
+      deadline,
+      '',
+    );
+  }
+
+  return lines;
 }
 
 function buildMarketPricesMd(day: number, data: any): string {

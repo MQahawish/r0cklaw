@@ -379,7 +379,45 @@ export const rocklawTables = {
       v.literal('night'),
     ),
     isRunning: v.boolean(),
+    // Day on which Elder's Day fires. Fixed at world gen.
+    eldersDay: v.optional(v.number()),
   }),
+
+  // Secret role assignments handed out at world gen.
+  // Only the assigned agent sees this in their TURN.md.
+  rl_hidden_roles: defineTable({
+    agentName: v.string(),
+    roleType: v.union(
+      v.literal('Saboteur'),
+      v.literal('Usurper'),
+      v.literal('Heir'),
+    ),
+    // Heir: the specific rival they must out-earn.
+    // Usurper: unused (they pick their own targets via gossip).
+    rival: v.optional(v.string()),
+    assignedDay: v.number(),
+  })
+    .index('agentName', ['agentName'])
+    .index('roleType', ['roleType']),
+
+  // Gossip events created when an agent uses say + intent:"gossip" + topic.
+  // When witnessCount >= 2 the engine applies a rep penalty to the topic agent.
+  rl_gossip_events: defineTable({
+    gossipId: v.string(),
+    sourceAgent: v.string(),
+    // The agent name being gossiped about.
+    topic: v.string(),
+    content: v.string(),
+    tick: v.number(),
+    day: v.number(),
+    // Number of agents at the location when the gossip was spoken (excl. speaker).
+    witnessCount: v.number(),
+    // Whether the -2 rep penalty has been applied to topic yet.
+    repPenaltyApplied: v.boolean(),
+  })
+    .index('gossipId', ['gossipId'])
+    .index('topic_day', ['topic', 'day'])
+    .index('source_day', ['sourceAgent', 'day']),
 
   rl_run_console_state: defineTable({
     singletonKey: v.string(),

@@ -4795,6 +4795,11 @@ async function executeResolvedAction(
 
   if (parsed.action === 'say') {
     const speech = parsed.text ?? parsed.message ?? '';
+    const nearby = await ctx.db
+      .query('rl_agents')
+      .withIndex('location', (q: any) => q.eq('location', agentDoc.location))
+      .collect();
+    const witnessCount = nearby.filter((a: any) => a.name !== agentDoc.name).length;
     await createLocalSpeechNotes(ctx, {
       speaker: agentDoc.name,
       location: agentDoc.location,
@@ -4802,6 +4807,26 @@ async function executeResolvedAction(
       tick,
       day,
     });
+    // Gossip mechanic: if intent is gossip and topic names a known agent,
+    // record the event and apply a -2 rep penalty when 2+ witnesses are present.
+    if (parsed.intent === 'gossip' && typeof parsed.topic === 'string' && parsed.topic.trim()) {
+      const topicAgent = await ctx.db
+        .query('rl_agents')
+        .withIndex('name', (q: any) => q.eq('name', parsed.topic!.trim()))
+        .unique();
+      if (topicAgent) {
+        const gossipId = `gossip-${tick}-${agentDoc.name.replace(/\s+/g, '_')}`;
+        await ctx.scheduler.runAfter(0, internal.rocklaw.hiddenRoles.recordGossipEvent, {
+          gossipId,
+          sourceAgent: agentDoc.name,
+          topic: topicAgent.name,
+          content: speech,
+          tick,
+          day,
+          witnessCount,
+        });
+      }
+    }
   }
 
   if (parsed.action === 'pay' || parsed.action === 'give') {
