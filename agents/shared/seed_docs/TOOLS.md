@@ -73,6 +73,7 @@ Runtime availability for your role will be listed here each tick.
 
 - `say`: use `text` to speak out loud in your current location. This is local speech, not a thread, and it does not take a target.
   Example JSON: `{"action":"say","text":"Fresh bread at the inn if anyone wants some."}`
-- `say` may also carry `intent:"gossip"` when you want to spread rumor or shape what nearby people hear in public.
+- `say` may also carry `intent:"gossip"` + `topic` (an agent name) when you want to publicly implicate someone. When 2 or more villagers are present to hear it, this carries social and mechanical weight against the named agent.
+  Example JSON: `{"action":"say","text":"I hear she has been cheating her customers.","intent":"gossip","topic":"Elena Marsh"}`
 
 If you want to pray, return a final JSON action with `"action": "pray"` and put the prayer text in `text`.
